@@ -57,9 +57,10 @@ html, body {
   width: 578px;
   height: 328px;
   flex: none;
-  background: linear-gradient(150deg, #7376c4 0%, #5f62b2 38%, #4c4e9c 72%, #3d3f86 100%);
+  background: linear-gradient(150deg, #666bc2 0%, #575cb4 38%, #4a4ea3 72%, #3d4192 100%);
   border: 3px solid #101124;
-  border-radius: 70px 70px 112px 112px / 88px 88px 132px 132px;
+  /* flat-ish top corners, bulging sides, big bottom grips */
+  border-radius: 110px 110px 130px 130px / 64px 64px 96px 96px;
   box-shadow:
     inset 0 4px 0 rgba(255,255,255,.16),
     inset 6px 0 0 rgba(255,255,255,.05),
@@ -76,34 +77,35 @@ html, body {
 
 /* light-gray shoulder caps wrapping the top corners, like the real unit */
 .shoulder {
+  /* thin caps hugging the top corners; lower half hides behind the body */
   position: absolute;
-  top: -6px;
-  width: 112px;
-  height: 40px;
+  top: -11px;
+  width: 154px;
+  height: 78px;
   background: linear-gradient(#cfd0e0, #a5a6bc);
   border: 3px solid #101124;
   z-index: -1;
 }
-.shoulder-l { left: -6px; border-radius: 26px 12px 6px 48px; transform: rotate(-3deg); }
-.shoulder-r { right: -6px; border-radius: 12px 26px 48px 6px; transform: rotate(3deg); }
+.shoulder-l { left: -6px; border-radius: 50px 16px 16px 90px / 40px 16px 16px 60px; transform: rotate(-4deg); }
+.shoulder-r { right: -6px; border-radius: 16px 50px 90px 16px / 16px 40px 60px 16px; transform: rotate(4deg); }
 
 /* screen bezel */
 #bezel {
-  /* lens glass ~84x51.5mm, screen slightly above face center like the real unit */
+  /* lens proportions taken from the reference: 53% of body width, 80% of height */
   position: absolute;
   left: 50%;
-  top: 48px;
+  top: 52px;
   transform: translateX(-50%);
-  width: 336px;
-  height: 206px;
+  width: 282px;
+  height: 238px;
   background: linear-gradient(#191a33, #14152b 20%, #1a1b36);
   border: 2px solid #0b0c1a;
-  border-radius: 20px;
+  border-radius: 26px;
   box-shadow: inset 0 3px 0 rgba(0,0,0,.45), 0 2px 0 rgba(255,255,255,.10);
 }
 .bezel-caption {
   position: absolute;
-  bottom: 5px;
+  bottom: 10px;
   width: 100%;
   text-align: center;
   font-size: 7px;
@@ -114,8 +116,8 @@ html, body {
 .power-led {
   /* top-right of the face, right of the lens, with its POWER label */
   position: absolute;
-  left: 362px;
-  top: 4px;
+  left: 328px;
+  top: 12px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -138,7 +140,7 @@ html, body {
 #screen {
   position: absolute;
   left: 50%;
-  top: 20px;
+  top: 35px;
   margin-left: -120px;
   width: 240px;
   height: 160px;
@@ -185,12 +187,12 @@ html, body {
 /* ============================ CONTROLS ============================ */
 
 #dpad {
-  /* center ~23mm from left edge, level with the screen like the real unit */
+  /* fully on the left wing, clear of the lens, per the reference */
   position: absolute;
-  left: 42px;
-  top: 100px;
-  width: 100px;
-  height: 100px;
+  left: 30px;
+  top: 95px;
+  width: 82px;
+  height: 82px;
 }
 .dpad-btn {
   position: absolute;
@@ -205,26 +207,26 @@ html, body {
   pointer-events: none;
   opacity: .5;
 }
-.dpad-up::after    { left: 10px; top: 8px;    border-bottom-color: #6e70a0; border-top-width: 0; }
-.dpad-down::after  { left: 10px; bottom: 8px; border-top-color: #6e70a0; border-bottom-width: 0; }
-.dpad-left::after  { top: 9px; left: 8px;     border-right-color: #6e70a0; border-left-width: 0; }
-.dpad-right::after { top: 9px; right: 8px;    border-left-color: #6e70a0; border-right-width: 0; }
+.dpad-up::after    { left: 8px; top: 7px;    border-bottom-color: #6e70a0; border-top-width: 0; }
+.dpad-down::after  { left: 8px; bottom: 7px; border-top-color: #6e70a0; border-bottom-width: 0; }
+.dpad-left::after  { top: 8px; left: 7px;    border-right-color: #6e70a0; border-left-width: 0; }
+.dpad-right::after { top: 8px; right: 7px;   border-left-color: #6e70a0; border-right-width: 0; }
 .dpad-btn.pressed, .ab.pressed, .pill.pressed { filter: brightness(1.45); }
-.dpad-up    { left: 33px; top: 0;    width: 34px; height: 36px; border-radius: 8px 8px 0 0; border-bottom: 0; }
-.dpad-down  { left: 33px; bottom: 0; width: 34px; height: 36px; border-radius: 0 0 8px 8px; border-top: 0; }
-.dpad-left  { left: 0;    top: 33px; width: 36px; height: 34px; border-radius: 8px 0 0 8px; border-right: 0; }
-.dpad-right { right: 0;   top: 33px; width: 36px; height: 34px; border-radius: 0 8px 8px 0; border-left: 0; }
+.dpad-up    { left: 27px; top: 0;    width: 28px; height: 29px; border-radius: 7px 7px 0 0; border-bottom: 0; }
+.dpad-down  { left: 27px; bottom: 0; width: 28px; height: 29px; border-radius: 0 0 7px 7px; border-top: 0; }
+.dpad-left  { left: 0;    top: 27px; width: 29px; height: 28px; border-radius: 7px 0 0 7px; border-right: 0; }
+.dpad-right { right: 0;   top: 27px; width: 29px; height: 28px; border-radius: 0 7px 7px 0; border-left: 0; }
 .dpad-core {
   position: absolute;
-  left: 35px; top: 35px;
-  width: 30px; height: 30px;
+  left: 29px; top: 29px;
+  width: 24px; height: 24px;
   background: #c3c4d8;
   pointer-events: none;
 }
 .dpad-core::after {
   content: '';
   position: absolute;
-  left: 8px; top: 8px;
+  left: 4px; top: 4px;
   width: 14px; height: 14px;
   border-radius: 50%;
   background: radial-gradient(circle at 40% 35%, #d9dae8, #9d9eb8);
@@ -233,8 +235,8 @@ html, body {
 
 .ab {
   position: absolute;
-  width: 46px;
-  height: 46px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   background: radial-gradient(circle at 38% 30%, #e6e7f1, #c6c7d9 55%, #a3a4bd);
   border: 2px solid #3f4066;
@@ -246,8 +248,8 @@ html, body {
 }
 .ab span { font-size: 13px; color: #7d7fa6; pointer-events: none; text-shadow: 0 1px 0 rgba(255,255,255,.5); }
 .ab.pressed { transform: translateY(2px); box-shadow: inset 0 -2px 0 rgba(0,0,0,.3); }
-#btn-a { right: 18px; top: 109px; }
-#btn-b { right: 72px; top: 130px; }
+#btn-a { right: 24px; top: 121px; }
+#btn-b { right: 80px; top: 136px; }
 .ab-label {
   position: absolute;
   font-size: 7px;
@@ -261,18 +263,18 @@ html, body {
 /* small oval button with an angled label banner to its left, like the real unit */
 .pill {
   position: absolute;
-  width: 26px;
-  height: 17px;
+  width: 24px;
+  height: 16px;
   background: radial-gradient(circle at 40% 30%, #e2e3ee, #b4b5ca);
   border: 2px solid #3f4066;
   border-radius: 50%;
-  transform: rotate(-20deg);
+  transform: rotate(14deg); /* descending to the right, as in the reference */
   cursor: pointer;
 }
 .pill span {
   position: absolute;
-  right: 30px;
-  top: 1px;
+  right: 28px;
+  top: -2px;
   padding: 2px 7px 1px;
   border: 2px solid rgba(28,29,62,.45);
   border-radius: 9px;
@@ -284,21 +286,21 @@ html, body {
   white-space: nowrap;
 }
 /* stacked below the D-pad: START above SELECT */
-#btn-start  { left: 92px; top: 204px; }
-#btn-select { left: 86px; top: 240px; }
+#btn-start  { left: 94px; top: 212px; }
+#btn-select { left: 92px; top: 252px; }
 
 .speaker {
   /* diagonal slit grille, bottom-right wing */
   position: absolute;
-  right: 36px;
-  bottom: 64px;
-  width: 70px;
-  height: 50px;
-  transform: rotate(-35deg);
-  border-radius: 18px;
+  right: 52px;
+  bottom: 66px;
+  width: 64px;
+  height: 56px;
+  transform: rotate(-38deg);
+  border-radius: 22px;
   background: repeating-linear-gradient(
     to bottom,
-    transparent 0 4px, #33345c 4px 8px);
+    transparent 0 4px, #33345c 4px 9px);
   opacity: .95;
 }
 .shell-tag {
