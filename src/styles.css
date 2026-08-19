@@ -57,7 +57,7 @@ html, body {
   width: 578px;
   height: 328px;
   flex: none;
-  background: linear-gradient(150deg, #5c5cb2 0%, var(--indigo) 38%, #3d3d85 72%, var(--indigo-sh) 100%);
+  background: linear-gradient(150deg, #7376c4 0%, #5f62b2 38%, #4c4e9c 72%, #3d3f86 100%);
   border: 3px solid #101124;
   border-radius: 70px 70px 112px 112px / 88px 88px 132px 132px;
   box-shadow:
@@ -74,17 +74,18 @@ html, body {
   100% { transform: translate(0,0); }
 }
 
+/* light-gray shoulder caps wrapping the top corners, like the real unit */
 .shoulder {
   position: absolute;
-  top: -10px;
-  width: 132px;
-  height: 28px;
-  background: linear-gradient(var(--indigo-sh), #26264f);
+  top: -6px;
+  width: 112px;
+  height: 40px;
+  background: linear-gradient(#cfd0e0, #a5a6bc);
   border: 3px solid #101124;
   z-index: -1;
 }
-.shoulder-l { left: 4px; border-radius: 22px 10px 0 0; }
-.shoulder-r { right: 4px; border-radius: 10px 22px 0 0; }
+.shoulder-l { left: -6px; border-radius: 26px 12px 6px 48px; transform: rotate(-3deg); }
+.shoulder-r { right: -6px; border-radius: 12px 26px 48px 6px; transform: rotate(3deg); }
 
 /* screen bezel */
 #bezel {
@@ -95,9 +96,9 @@ html, body {
   transform: translateX(-50%);
   width: 336px;
   height: 206px;
-  background: linear-gradient(#25264e, var(--indigo-sh) 20%, #26264f);
-  border: 2px solid #101124;
-  border-radius: 16px;
+  background: linear-gradient(#191a33, #14152b 20%, #1a1b36);
+  border: 2px solid #0b0c1a;
+  border-radius: 20px;
   box-shadow: inset 0 3px 0 rgba(0,0,0,.45), 0 2px 0 rgba(255,255,255,.10);
 }
 .bezel-caption {
@@ -106,19 +107,30 @@ html, body {
   width: 100%;
   text-align: center;
   font-size: 7px;
-  color: var(--mist);
-  letter-spacing: 1px;
-  text-shadow: 0 1px 0 rgba(0,0,0,.6);
+  color: #e8e9f4;
+  letter-spacing: 2px;
+  text-shadow: 0 1px 0 rgba(0,0,0,.7);
 }
 .power-led {
+  /* top-right of the face, right of the lens, with its POWER label */
   position: absolute;
-  left: 10px;
-  top: 22px;
-  width: 6px;
-  height: 6px;
+  left: 362px;
+  top: 4px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--green);
   box-shadow: 0 0 6px var(--green), 0 0 2px var(--green);
+}
+.power-led::after {
+  content: 'POWER';
+  position: absolute;
+  left: 13px;
+  top: 1px;
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: #c3c4da;
+  text-shadow: 0 1px 0 rgba(0,0,0,.4);
 }
 
 /* ============================ THE SCREEN ============================ */
@@ -182,10 +194,21 @@ html, body {
 }
 .dpad-btn {
   position: absolute;
-  background: linear-gradient(#2c2d5c, #1f2045);
-  border: 2px solid #101124;
+  background: linear-gradient(#d6d7e6, #b0b1c6);
+  border: 2px solid #3f4066;
   cursor: pointer;
 }
+.dpad-btn::after {
+  content: '';
+  position: absolute;
+  border: 5px solid transparent;
+  pointer-events: none;
+  opacity: .5;
+}
+.dpad-up::after    { left: 10px; top: 8px;    border-bottom-color: #6e70a0; border-top-width: 0; }
+.dpad-down::after  { left: 10px; bottom: 8px; border-top-color: #6e70a0; border-bottom-width: 0; }
+.dpad-left::after  { top: 9px; left: 8px;     border-right-color: #6e70a0; border-left-width: 0; }
+.dpad-right::after { top: 9px; right: 8px;    border-left-color: #6e70a0; border-right-width: 0; }
 .dpad-btn.pressed, .ab.pressed, .pill.pressed { filter: brightness(1.45); }
 .dpad-up    { left: 33px; top: 0;    width: 34px; height: 36px; border-radius: 8px 8px 0 0; border-bottom: 0; }
 .dpad-down  { left: 33px; bottom: 0; width: 34px; height: 36px; border-radius: 0 0 8px 8px; border-top: 0; }
@@ -195,7 +218,7 @@ html, body {
   position: absolute;
   left: 35px; top: 35px;
   width: 30px; height: 30px;
-  background: #26274f;
+  background: #c3c4d8;
   pointer-events: none;
 }
 .dpad-core::after {
@@ -204,7 +227,8 @@ html, body {
   left: 8px; top: 8px;
   width: 14px; height: 14px;
   border-radius: 50%;
-  background: radial-gradient(circle at 40% 35%, #34356a, #1c1d3e);
+  background: radial-gradient(circle at 40% 35%, #d9dae8, #9d9eb8);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.25);
 }
 
 .ab {
@@ -212,18 +236,18 @@ html, body {
   width: 46px;
   height: 46px;
   border-radius: 50%;
-  background: radial-gradient(circle at 38% 30%, #9a9ade, #7b7bc5 55%, #5d5daa);
-  border: 2px solid #101124;
-  box-shadow: inset 0 -5px 0 rgba(0,0,0,.3), 0 3px 0 rgba(0,0,0,.35);
+  background: radial-gradient(circle at 38% 30%, #e6e7f1, #c6c7d9 55%, #a3a4bd);
+  border: 2px solid #3f4066;
+  box-shadow: inset 0 -5px 0 rgba(0,0,0,.18), 0 3px 0 rgba(0,0,0,.3);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
 }
-.ab span { font-size: 13px; color: #2b2c5e; pointer-events: none; }
+.ab span { font-size: 13px; color: #7d7fa6; pointer-events: none; text-shadow: 0 1px 0 rgba(255,255,255,.5); }
 .ab.pressed { transform: translateY(2px); box-shadow: inset 0 -2px 0 rgba(0,0,0,.3); }
-#btn-a { right: 48px; top: 112px; }
-#btn-b { right: 100px; top: 138px; }
+#btn-a { right: 18px; top: 109px; }
+#btn-b { right: 72px; top: 130px; }
 .ab-label {
   position: absolute;
   font-size: 7px;
@@ -231,55 +255,66 @@ html, body {
   text-shadow: 0 1px 0 rgba(0,0,0,.6);
   pointer-events: none;
 }
-#lab-a { right: 58px; top: 162px; }
-#lab-b { right: 110px; top: 188px; }
+/* the real unit has no printed key hints beside A/B */
+#lab-a, #lab-b { display: none; }
 
+/* small oval button with an angled label banner to its left, like the real unit */
 .pill {
   position: absolute;
-  width: 46px;
-  height: 13px;
-  background: linear-gradient(#2c2d5c, #1f2045);
-  border: 2px solid #101124;
-  border-radius: 8px;
-  transform: rotate(-24deg);
+  width: 26px;
+  height: 17px;
+  background: radial-gradient(circle at 40% 30%, #e2e3ee, #b4b5ca);
+  border: 2px solid #3f4066;
+  border-radius: 50%;
+  transform: rotate(-20deg);
   cursor: pointer;
 }
 .pill span {
   position: absolute;
-  top: 15px;
-  left: -6px;
-  width: 58px;
-  text-align: center;
+  right: 30px;
+  top: 1px;
+  padding: 2px 7px 1px;
+  border: 2px solid rgba(28,29,62,.45);
+  border-radius: 9px;
   font-size: 6px;
-  color: var(--mist);
+  letter-spacing: 1px;
+  color: #c3c4da;
+  text-shadow: 0 1px 0 rgba(0,0,0,.4);
   pointer-events: none;
+  white-space: nowrap;
 }
-/* under the D-pad, SELECT lower-left / START upper-right on the A-B diagonal */
-#btn-select { left: 53px; top: 248px; }
-#btn-start  { left: 105px; top: 236px; }
+/* stacked below the D-pad: START above SELECT */
+#btn-start  { left: 92px; top: 204px; }
+#btn-select { left: 86px; top: 240px; }
 
 .speaker {
-  /* six round holes in a slanted grid, bottom-right wing */
+  /* diagonal slit grille, bottom-right wing */
   position: absolute;
-  right: 42px;
-  bottom: 42px;
-  width: 66px;
-  height: 44px;
-  transform: rotate(-28deg);
-  background-image: radial-gradient(circle, #1c1d3e 4.5px, transparent 5.5px);
-  background-size: 22px 21px;
-  background-position: 11px 10px;
+  right: 36px;
+  bottom: 64px;
+  width: 70px;
+  height: 50px;
+  transform: rotate(-35deg);
+  border-radius: 18px;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 4px, #33345c 4px 8px);
   opacity: .95;
 }
 .shell-tag {
+  /* embossed brand pill on the top edge, like the real unit */
   position: absolute;
   left: 50%;
-  bottom: 26px;
+  top: 7px;
   transform: translateX(-50%);
+  padding: 3px 16px 2px;
+  border: 2px solid rgba(16,17,36,.4);
+  border-radius: 12px;
   font-size: 7px;
   letter-spacing: 1px;
-  color: #6a6ab8;
-  text-shadow: 0 1px 0 rgba(0,0,0,.5);
+  color: #494b90;
+  text-shadow: 0 1px 0 rgba(255,255,255,.18);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.25);
 }
 
 /* ============================ DIALOG CHROME ============================ */
