@@ -59,8 +59,8 @@ html, body {
   flex: none;
   background: linear-gradient(150deg, #666bc2 0%, #575cb4 38%, #4a4ea3 72%, #3d4192 100%);
   border: 3px solid #101124;
-  /* flat-ish top corners, bulging sides, big bottom grips */
-  border-radius: 110px 110px 130px 130px / 64px 64px 96px 96px;
+  /* wide dome top (center high, corners low), big bottom grips — measured */
+  border-radius: 240px 240px 130px 130px / 70px 70px 96px 96px;
   box-shadow:
     inset 0 4px 0 rgba(255,255,255,.16),
     inset 6px 0 0 rgba(255,255,255,.05),
@@ -99,10 +99,10 @@ html, body {
   /* lens proportions taken from the reference: 53% of body width, 80% of height */
   position: absolute;
   left: 50%;
-  top: 52px;
+  top: 30px;
   transform: translateX(-50%);
-  width: 282px;
-  height: 238px;
+  width: 315px;
+  height: 267px;
   background: linear-gradient(#191a33, #14152b 20%, #1a1b36);
   border: 2px solid #0b0c1a;
   border-radius: 26px;
@@ -121,8 +121,8 @@ html, body {
 .power-led {
   /* top-right of the face, right of the lens, with its POWER label */
   position: absolute;
-  left: 328px;
-  top: 12px;
+  left: 339px;
+  top: 20px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -145,7 +145,7 @@ html, body {
 #screen {
   position: absolute;
   left: 50%;
-  top: 35px;
+  top: 32px;
   margin-left: -120px;
   width: 240px;
   height: 160px;
@@ -194,10 +194,10 @@ html, body {
 #dpad {
   /* fully on the left wing, clear of the lens, per the reference */
   position: absolute;
-  left: 30px;
-  top: 95px;
-  width: 82px;
-  height: 82px;
+  left: 33px;
+  top: 100px;
+  width: 72px;
+  height: 72px;
 }
 .dpad-btn {
   position: absolute;
@@ -217,13 +217,13 @@ html, body {
 .dpad-left::after  { top: 8px; left: 7px;    border-right-color: #6e70a0; border-left-width: 0; }
 .dpad-right::after { top: 8px; right: 7px;   border-left-color: #6e70a0; border-right-width: 0; }
 .dpad-btn.pressed, .ab.pressed, .pill.pressed { filter: brightness(1.45); }
-.dpad-up    { left: 27px; top: 0;    width: 28px; height: 29px; border-radius: 7px 7px 0 0; border-bottom: 0; }
-.dpad-down  { left: 27px; bottom: 0; width: 28px; height: 29px; border-radius: 0 0 7px 7px; border-top: 0; }
-.dpad-left  { left: 0;    top: 27px; width: 29px; height: 28px; border-radius: 7px 0 0 7px; border-right: 0; }
-.dpad-right { right: 0;   top: 27px; width: 29px; height: 28px; border-radius: 0 7px 7px 0; border-left: 0; }
+.dpad-up    { left: 24px; top: 0;    width: 24px; height: 25px; border-radius: 6px 6px 0 0; border-bottom: 0; }
+.dpad-down  { left: 24px; bottom: 0; width: 24px; height: 25px; border-radius: 0 0 6px 6px; border-top: 0; }
+.dpad-left  { left: 0;    top: 24px; width: 25px; height: 24px; border-radius: 6px 0 0 6px; border-right: 0; }
+.dpad-right { right: 0;   top: 24px; width: 25px; height: 24px; border-radius: 0 6px 6px 0; border-left: 0; }
 .dpad-core {
   position: absolute;
-  left: 29px; top: 29px;
+  left: 24px; top: 24px;
   width: 24px; height: 24px;
   background: #c3c4d8;
   pointer-events: none;
@@ -231,7 +231,7 @@ html, body {
 .dpad-core::after {
   content: '';
   position: absolute;
-  left: 4px; top: 4px;
+  left: 5px; top: 5px;
   width: 14px; height: 14px;
   border-radius: 50%;
   background: radial-gradient(circle at 40% 35%, #d9dae8, #9d9eb8);
@@ -253,8 +253,8 @@ html, body {
 }
 .ab span { font-size: 13px; color: #7d7fa6; pointer-events: none; text-shadow: 0 1px 0 rgba(255,255,255,.5); }
 .ab.pressed { transform: translateY(2px); box-shadow: inset 0 -2px 0 rgba(0,0,0,.3); }
-#btn-a { right: 24px; top: 121px; }
-#btn-b { right: 80px; top: 136px; }
+#btn-a { right: 22px; top: 106px; }
+#btn-b { right: 76px; top: 125px; }
 .ab-label {
   position: absolute;
   font-size: 7px;
@@ -268,8 +268,8 @@ html, body {
 /* small oval button with an angled label banner to its left, like the real unit */
 .pill {
   position: absolute;
-  width: 24px;
-  height: 16px;
+  width: 15px;
+  height: 13px;
   background: radial-gradient(circle at 40% 30%, #e2e3ee, #b4b5ca);
   border: 2px solid #3f4066;
   border-radius: 50%;
@@ -278,7 +278,7 @@ html, body {
 }
 .pill span {
   position: absolute;
-  right: 28px;
+  right: 22px;
   top: -2px;
   padding: 2px 7px 1px;
   border: 2px solid rgba(28,29,62,.45);
@@ -291,21 +291,21 @@ html, body {
   white-space: nowrap;
 }
 /* stacked below the D-pad: START above SELECT */
-#btn-start  { left: 94px; top: 212px; }
-#btn-select { left: 92px; top: 252px; }
+#btn-start  { left: 101px; top: 212px; }
+#btn-select { left: 101px; top: 245px; }
 
 .speaker {
   /* diagonal slit grille, bottom-right wing */
   position: absolute;
-  right: 52px;
-  bottom: 66px;
-  width: 64px;
-  height: 56px;
+  right: -3px;
+  bottom: 65px;
+  width: 128px;
+  height: 36px;
   transform: rotate(-38deg);
-  border-radius: 22px;
+  border-radius: 16px;
   background: repeating-linear-gradient(
     to bottom,
-    transparent 0 4px, #33345c 4px 9px);
+    transparent 0 3px, #262744 3px 6px);
   opacity: .95;
 }
 .shell-tag {
