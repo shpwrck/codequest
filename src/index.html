@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Code Quest Advance</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="main.js" defer></script>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="shell">
+        <div class="shoulder shoulder-l"></div>
+        <div class="shoulder shoulder-r"></div>
+
+        <div id="bezel">
+          <div class="bezel-caption">CODE QUEST ADVANCE</div>
+          <div class="power-led"></div>
+          <div id="screen">
+            <div id="screen-inner">
+
+              <!-- ================= TITLE ================= -->
+              <section class="scr active" id="scr-title">
+                <div class="starfield" id="starfield"></div>
+                <div class="logotype">
+                  <div class="logo-a">CODE QUEST</div>
+                  <div class="logo-b">ADVANCE</div>
+                  <div class="logo-sub">EVERY COMMAND IS A BOSS</div>
+                </div>
+                <div class="press-start">PRESS START</div>
+                <div class="save-block dialog-thin">
+                  <div id="save-l1">LV 1 SCRIPT SQUIRE</div>
+                  <div id="save-l2">EXP 0/10 STREAK 0</div>
+                </div>
+                <div class="palette-row" id="palette-row"></div>
+              </section>
+
+              <!-- ================= QUEST SELECT ================= -->
+              <section class="scr" id="scr-select">
+                <div class="dialog select-top"><div id="select-msg"></div></div>
+                <div class="name-entry" id="name-entry">
+                  <span class="prompt-ch">&gt;</span>
+                  <input id="cmd-input" spellcheck="false" autocomplete="off" maxlength="400" placeholder="NAME THY QUEST..." />
+                  <span class="blockcur"></span>
+                </div>
+                <div class="select-head">
+                  <span>CHOOSE THY QUEST</span>
+                  <span>SEL:WARD B:BACK A:FIGHT</span>
+                </div>
+                <div class="select-clip"><div id="quest-list"></div></div>
+              </section>
+
+              <!-- ================= BATTLE ================= -->
+              <section class="scr" id="scr-battle">
+                <div class="arena" id="arena">
+                  <div class="ground"></div>
+                  <div class="boss-wrap" id="boss-wrap">
+                    <div class="boss-name" id="boss-name"></div>
+                    <div class="boss-sprite" id="boss-sprite"></div>
+                  </div>
+                  <div class="hero-sprite" id="hero-sprite"></div>
+                  <div class="turns" id="turn-counter">TURN 000</div>
+                  <div class="combo" id="combo-counter">x0</div>
+                  <div id="fx-layer"></div>
+                </div>
+
+                <div class="status">
+                  <div class="dialog stat-box left"><span id="player-tag">CODER LV 1</span></div>
+                  <div class="dialog stat-box right">
+                    <div class="hp-row">
+                      <span class="hp-label">HP</span>
+                      <div class="hp-cells" id="hp-cells"></div>
+                    </div>
+                    <div class="xp-bar"><div class="xp-fill" id="xp-fill"></div></div>
+                  </div>
+                </div>
+
+                <div class="dialog logbox" id="logbox">
+                  <div class="flee-meter" id="flee-meter"></div>
+                  <div class="pause-tag">PAUSE</div>
+                  <div class="log-clip"><div id="log-lines"></div></div>
+                  <div class="log-arrow"></div>
+                </div>
+
+                <div class="overlay hurt" id="hurt-overlay"></div>
+                <div class="overlay flash" id="flash-overlay"></div>
+                <div class="laststand" id="laststand"></div>
+
+                <!-- victory overlay -->
+                <div class="victory" id="victory">
+                  <div class="stamp" id="stamp">
+                    <span class="stamp-ring"></span>
+                    <span class="stamp-text">QUEST<br />CLEARED</span>
+                  </div>
+                  <div class="dialog tally" id="tally">
+                    <div id="tally-rows"></div>
+                    <div class="tally-menu" id="tally-menu">A:NEW QUEST&nbsp;&nbsp;START:REMATCH</div>
+                  </div>
+                </div>
+
+                <!-- defeat overlay -->
+                <div class="defeat" id="defeat">
+                  <div class="gameover">GAME OVER</div>
+                  <div class="dialog fatal">
+                    <div class="fatal-title">THE FATAL BLOW:</div>
+                    <div id="fatal-lines"></div>
+                  </div>
+                  <div class="defeat-menu">
+                    <span class="dm-item sel" id="dm-retry">RETRY</span>
+                    <span class="dm-item" id="dm-flee">FLEE</span>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ================= LEVEL UP ================= -->
+              <section class="scr" id="scr-levelup">
+                <div class="lvl-flash"></div>
+                <div class="lvl-title">LEVEL UP!</div>
+                <div class="lvl-hero" id="lvl-hero"></div>
+                <div class="burst"></div>
+                <div class="dialog lvl-panel"><div id="lvl-rows"></div></div>
+                <div class="lvl-hint">PRESS ANY BUTTON</div>
+              </section>
+
+            </div>
+            <div id="scanlines"></div>
+            <div id="screen-shade"></div>
+          </div>
+        </div>
+
+        <!-- physical controls -->
+        <div id="dpad">
+          <div class="dpad-btn dpad-up" data-btn="up"></div>
+          <div class="dpad-btn dpad-down" data-btn="down"></div>
+          <div class="dpad-btn dpad-left" data-btn="left"></div>
+          <div class="dpad-btn dpad-right" data-btn="right"></div>
+          <div class="dpad-core"></div>
+        </div>
+        <div class="ab" id="btn-a" data-btn="a"><span>A</span></div>
+        <div class="ab" id="btn-b" data-btn="b"><span>B</span></div>
+        <div class="ab-label" id="lab-a">X KEY</div>
+        <div class="ab-label" id="lab-b">Z KEY</div>
+        <div class="pill" id="btn-select" data-btn="select"><span>SELECT</span></div>
+        <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
+        <div class="speaker"></div>
+        <div class="shell-tag">CQA-001</div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "code-quest-advance",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "tauri": "NO_STRIP=true PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/share/pkgconfig tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

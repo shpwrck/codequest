@@ -1,0 +1,4 @@
+# Homebrew's pkg-config shadows Fedora's and doesn't search the system
+# .pc directories, so point every cargo build at them explicitly.
+[env]
+PKG_CONFIG_PATH = "/usr/lib64/pkgconfig:/usr/share/pkgconfig"
