@@ -17,21 +17,40 @@
               <stop offset="1" stop-color="#b4b5ca"/>
             </linearGradient>
           </defs>
-          <path d="M 135 2 C 100 0, 56 8, 26 22 C 12 30, 2 40, -2 52 C -3 58, 1 64, 7 64 C 40 56, 90 30, 135 2 Z"
+          <path id="shoulder-l" data-btn="l" class="shoulder-btn" d="M 135 2 C 100 0, 56 8, 26 22 C 12 30, 2 40, -2 52 C -3 58, 1 64, 7 64 C 40 56, 90 30, 135 2 Z"
                 fill="url(#shldGrad)" stroke="#101124" stroke-width="3"/>
-          <path d="M 443 2 C 478 0, 522 8, 552 22 C 566 30, 576 40, 580 52 C 581 58, 577 64, 571 64 C 538 56, 488 30, 443 2 Z"
+          <path id="shoulder-r" data-btn="r" class="shoulder-btn" d="M 443 2 C 478 0, 522 8, 552 22 C 566 30, 576 40, 580 52 C 581 58, 577 64, 571 64 C 538 56, 488 30, 443 2 Z"
                 fill="url(#shldGrad)" stroke="#101124" stroke-width="3"/>
         </svg>
+
+        <!-- cartridge peeking from the top-back slot; behind the shell by DOM order -->
+        <div id="cart-back" class="empty" title="CARTRIDGE SLOT"></div>
 
         <div id="shell">
         <div id="bezel">
           <div class="bezel-caption"><span class="cap-solid">CODEQUEST</span><span class="cap-outline">ADVANCE</span></div>
-          <div class="power-led"></div>
+          <div class="power-led off"></div>
           <div id="screen">
             <div id="screen-inner">
 
               <!-- ================= TITLE ================= -->
-              <section class="scr active" id="scr-title">
+              <!-- ================= POWERED OFF ================= -->
+              <section class="scr active" id="scr-off"></section>
+
+              <!-- ================= BOOT ================= -->
+              <section class="scr" id="scr-boot">
+                <div class="boot-logo">
+                  <div class="boot-word">CODEQUEST<div class="boot-shine"></div></div>
+                  <div class="boot-maker"><span>CQA SYSTEM</span></div>
+                </div>
+              </section>
+
+              <!-- ================= STICK CONTRA (konami secret) ================= -->
+              <section class="scr" id="scr-contra">
+                <canvas id="contra-canvas" width="234" height="154"></canvas>
+              </section>
+
+              <section class="scr" id="scr-title">
                 <div class="starfield" id="starfield"></div>
                 <div class="logotype">
                   <div class="logo-a">CODE QUEST</div>
@@ -46,6 +65,52 @@
                 <div class="palette-row" id="palette-row"></div>
               </section>
 
+              <!-- ================= GAME MENU (quiz mode) ================= -->
+              <section class="scr" id="scr-menu">
+                <div class="menu-title" id="menu-title">REPO</div>
+                <div class="menu-sub">ENDLESS REPO QUIZ</div>
+                <div class="dialog menu-box">
+                  <div class="menu-item" id="menu-continue">CONTINUE<span class="menu-cont-info" id="menu-cont-info"></span></div>
+                  <div class="menu-item" id="menu-new">NEW GAME</div>
+                </div>
+              </section>
+
+              <!-- ================= HERO CUSTOMIZATION ================= -->
+              <section class="scr" id="scr-hero">
+                <div class="hero-head">CREATE YOUR HERO</div>
+                <div class="hero-sprite-box"><div id="hero-preview"></div></div>
+                <div class="hero-rows">
+                  <div class="hero-row sel"><span class="hr-label">NAME</span><span class="hr-val" id="hr-name"></span></div>
+                  <div class="hero-row"><span class="hr-label">CLASS</span><span class="hr-val" id="hr-class"></span></div>
+                  <div class="hero-row"><span class="hr-label">COLORS</span><span class="hr-val" id="hr-pal"></span></div>
+                  <div class="hero-row begin"><span class="hr-label">BEGIN QUEST</span></div>
+                </div>
+                <div class="hero-oracle" id="hero-oracle"></div>
+              </section>
+
+              <!-- ================= QUIZ ================= -->
+              <section class="scr" id="scr-quiz">
+                <div class="quiz-hud">
+                  <span id="quiz-lv">LV 1</span>
+                  <span id="quiz-hearts"></span>
+                  <span id="quiz-score">0</span>
+                </div>
+                <div class="quiz-timer"><div id="quiz-timer-fill"></div></div>
+                <div class="dialog quiz-q" id="quiz-q"></div>
+                <div class="quiz-choices" id="quiz-choices"></div>
+                <div class="quiz-wait" id="quiz-wait">
+                  <div class="travel-stars"></div>
+                  <div class="travel-ground"></div>
+                  <div id="travel-hero"></div>
+                  <div class="travel-line" id="travel-line"></div>
+                </div>
+                <div class="quiz-over" id="quiz-over">
+                  <div class="qo-title">GAME OVER</div>
+                  <div id="qo-stats"></div>
+                  <div class="qo-hint">PRESS ANY BUTTON</div>
+                </div>
+              </section>
+
               <!-- ================= QUEST SELECT ================= -->
               <section class="scr" id="scr-select">
                 <div class="dialog select-top"><div id="select-msg"></div></div>
@@ -55,7 +120,7 @@
                   <span class="blockcur"></span>
                 </div>
                 <div class="select-head">
-                  <span>CHOOSE THY QUEST</span>
+                  <span id="select-title">CHOOSE THY QUEST</span>
                   <span>SEL:WARD B:BACK A:FIGHT</span>
                 </div>
                 <div class="select-clip"><div id="quest-list"></div></div>
@@ -154,7 +219,16 @@
         <div class="pill" id="btn-select" data-btn="select"><span>SELECT</span></div>
         <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
         <div class="speaker"></div>
+        <div id="power-switch" title="POWER"><span class="ps-nub"></span></div>
         <div class="shell-tag">CQA-001</div>
+        </div>
+      </div>
+      <div id="cart-tray" class="hidden">
+        <div class="tray-panel">
+          <div class="tray-head">SELECT CARTRIDGE</div>
+          <div id="tray-carts"></div>
+          <div id="tray-error" class="hidden"></div>
+          <div class="tray-hint">CLICK TO INSERT &middot; ESC TO CLOSE &middot; SWAP WITH POWER OFF</div>
         </div>
       </div>
     </div>

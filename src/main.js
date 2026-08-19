@@ -132,38 +132,92 @@
     return cells;
   };
 
-  const HERO_COLORS = { o: C.ink, h: C.gold, b: C.royal, g: C.gold, s: C.parch, c: C.plum };
+  // the hero is Clawd, the Claude Code crab; rows 0-2 are headroom for hats
+  const CLAWD = '#CE8E6B';
   const HERO_MAP = [
     '................',
-    '.....oooooo.....',
-    '....ohhhhhho....',
-    '...ohhhhhhhho...',
-    '...ohhhhhhhho...',
-    '...ohhhhhhhho...',
-    '....ohhhhhho....',
-    '..ooocbbbbcooo..',
-    '.ocbbbbbbbbbbco.',
-    '.ocbbbbbbbbbbco.',
-    '.ocbbbbbbbbbbco.',
-    '..obbbbbbbbbbo..',
-    '..oggggggggggo..',
-    '...obbo..obbo...',
-    '...obbo..obbo...',
-    '...oooo..oooo...'
+    '................',
+    '................',
+    '..oooooooooooo..',
+    '..oooooooooooo..',
+    '..oooeooooeooo..',
+    '..oooeooooeooo..',
+    'oooooeooooeooooo',
+    'oooooooooooooooo',
+    'oooooooooooooooo',
+    '..oooooooooooo..',
+    '..oooooooooooo..',
+    '..oooooooooooo..',
+    '....o.o..o.o....',
+    '....o.o..o.o....',
+    '....o.o..o.o....'
   ];
   const HERO_FALLEN_MAP = [
     '................', '................', '................', '................',
     '................', '................', '................', '................',
-    '................', '.....oooooo.....',
-    '...oohhhhhhoo...',
-    '..ohhhhhhhhhho..',
-    '.ocbbbbbbbbbbco.',
-    '.obbbbbbbbbbbbo.',
+    '................', '................', '................', '................',
+    '....o.o..o.o....',
     '..oooooooooooo..',
-    '................'
+    'oooooooooooooooo',
+    '..oooeooooeooo..'
   ];
-  const heroCells = cellsFromMap(HERO_MAP, HERO_COLORS);
-  const heroFallenCells = cellsFromMap(HERO_FALLEN_MAP, HERO_COLORS);
+  const heroCells = cellsFromMap(HERO_MAP, { o: CLAWD, e: C.ink });
+  const heroFallenCells = cellsFromMap(HERO_FALLEN_MAP, { o: CLAWD, e: C.ink });
+
+  // name-keyed wearables and class-keyed weapons: the crab never changes; the
+  // name picks what it wears, the class picks what it wields. Cells lead the
+  // composed list, and box-shadow paints the FIRST shadow at a coordinate on
+  // top, so within each list detail cells come before body cells.
+  const WEARABLES = [
+    { name: 'MUSTACHE', cells: (a) => [[3, 7, a], [12, 7, a],
+      [4, 8, C.ink], [5, 8, C.ink], [6, 8, C.ink], [9, 8, C.ink], [10, 8, C.ink], [11, 8, C.ink]] },
+    { name: 'FEDORA', cells: (a) => [[5, 1, a], [6, 1, a], [7, 1, a], [8, 1, a], [9, 1, a], [10, 1, a],
+      [5, 0, C.ink], [6, 0, C.ink], [7, 0, C.ink], [8, 0, C.ink], [9, 0, C.ink], [10, 0, C.ink],
+      [3, 2, C.ink], [4, 2, C.ink], [5, 2, C.ink], [6, 2, C.ink], [7, 2, C.ink], [8, 2, C.ink],
+      [9, 2, C.ink], [10, 2, C.ink], [11, 2, C.ink], [12, 2, C.ink]] },
+    { name: 'BOW TIE', cells: (a) => [[7, 9, C.ink], [8, 9, C.ink],
+      [5, 9, a], [6, 9, a], [9, 9, a], [10, 9, a]] },
+    { name: 'MONOCLE', cells: (a) => [[13, 9, a],
+      [9, 4, C.gold], [10, 4, C.gold], [11, 4, C.gold],
+      [8, 5, C.gold], [8, 6, C.gold], [8, 7, C.gold],
+      [12, 5, C.gold], [12, 6, C.gold], [12, 7, C.gold],
+      [9, 8, C.gold], [10, 8, C.gold], [11, 8, C.gold], [12, 8, C.gold]] },
+    { name: 'CROWN', cells: (a) => [[6, 2, a], [9, 2, a],
+      [4, 1, C.gold], [6, 1, C.gold], [9, 1, C.gold], [11, 1, C.gold],
+      [4, 2, C.gold], [5, 2, C.gold], [7, 2, C.gold], [8, 2, C.gold], [10, 2, C.gold], [11, 2, C.gold]] },
+    { name: 'SHADES', cells: (a) => [[5, 5, a], [10, 5, a],
+      [4, 5, C.ink], [6, 5, C.ink], [7, 5, C.ink], [8, 5, C.ink], [9, 5, C.ink], [11, 5, C.ink],
+      [4, 6, C.ink], [5, 6, C.ink], [6, 6, C.ink], [9, 6, C.ink], [10, 6, C.ink], [11, 6, C.ink]] },
+    { name: 'HALO', cells: (a) => [[4, 1, a], [11, 1, a],
+      [6, 0, C.gold], [7, 0, C.gold], [8, 0, C.gold], [9, 0, C.gold]] }
+  ];
+  const wearableFor = (name) => WEARABLES[fnv1a(String(name)) % WEARABLES.length];
+
+  // one weapon per class, same order as HERO_CLASSES:
+  // CODE KNIGHT, BUG MAGE, PIPE MONK, MERGE PALADIN, LINT RANGER, SHELL DRUID
+  const WEAPONS = [
+    { name: 'SWORD', cells: (a) => [[14, 7, a],
+      [14, 1, C.parch], [14, 2, C.parch], [14, 3, C.parch], [14, 4, C.parch], [14, 5, C.parch],
+      [13, 6, C.gold], [14, 6, C.gold], [15, 6, C.gold], [14, 8, C.gold]] },
+    { name: 'ORB STAFF', cells: (a) => [[13, 1, a], [14, 1, a], [13, 2, a], [14, 2, a],
+      [15, 0, C.gold],
+      [14, 3, C.plum], [14, 4, C.plum], [14, 5, C.plum], [14, 6, C.plum], [14, 7, C.plum]] },
+    { name: 'PIPE', cells: (a) => [[14, 5, a],
+      [13, 1, C.mist], [14, 1, C.mist], [15, 1, C.mist],
+      [14, 2, C.mist], [14, 3, C.mist], [14, 4, C.mist], [14, 6, C.mist], [14, 7, C.mist], [14, 8, C.mist]] },
+    { name: 'WARHAMMER', cells: (a) => [[13, 2, a],
+      [13, 1, C.mist], [14, 1, C.mist], [15, 1, C.mist],
+      [14, 2, C.mist], [15, 2, C.mist],
+      [14, 3, C.plum], [14, 4, C.plum], [14, 5, C.plum], [14, 6, C.plum], [14, 7, C.plum]] },
+    { name: 'BOW', cells: (a) => [[12, 4, a],
+      [13, 1, C.plum], [12, 2, C.plum], [12, 3, C.plum], [12, 5, C.plum], [12, 6, C.plum], [13, 7, C.plum],
+      [14, 2, C.parch], [14, 3, C.parch], [14, 4, C.parch], [14, 5, C.parch], [14, 6, C.parch]] },
+    { name: 'SHELL SHIELD', cells: (a) => [[1, 6, a],
+      [1, 4, C.green], [0, 5, C.green], [1, 5, C.green], [2, 5, C.green],
+      [0, 6, C.green], [2, 6, C.green], [0, 7, C.green], [1, 7, C.green], [2, 7, C.green],
+      [1, 8, C.green]] }
+  ];
+  const weaponFor = (cls) => WEAPONS[((cls % WEAPONS.length) + WEAPONS.length) % WEAPONS.length];
 
   const ICONS = {
     crown: cellsFromMap(['X..X..X', 'X.XXX.X', 'XXXXXXX', '.XXXXX.'], { X: C.gold }),
@@ -285,7 +339,7 @@
   const defeatEl = $('defeat'), fatalLines = $('fatal-lines'), dmRetry = $('dm-retry'), dmFlee = $('dm-flee');
   const lvlHero = $('lvl-hero'), lvlRows = $('lvl-rows');
 
-  const screens = { title: $('scr-title'), select: $('scr-select'), battle: $('scr-battle'), levelup: $('scr-levelup') };
+  const screens = { off: $('scr-off'), boot: $('scr-boot'), contra: $('scr-contra'), title: $('scr-title'), menu: $('scr-menu'), quiz: $('scr-quiz'), select: $('scr-select'), battle: $('scr-battle'), levelup: $('scr-levelup') };
 
   // ---------------------------------------------------------- state
   let state = 'title';          // title | select | battle | levelup
@@ -308,7 +362,7 @@
 
   // ---------------------------------------------------------- scale-to-fit shell
   function fit() {
-    const s = Math.min(window.innerWidth / 584, window.innerHeight / 336);
+    const s = Math.min(window.innerWidth / 584, window.innerHeight / 352);
     const snapped = s >= 1 ? Math.floor(s * 2) / 2 : Math.max(0.35, s); // half-integer steps, integer look
     scaleEl.style.transform = `scale(${snapped})`;
   }
@@ -366,10 +420,725 @@
     saveL1.innerHTML = `LV ${lv} <span class="gold">${titleForLevel(lv)}</span>`;
     saveL2.textContent = `EXP ${save.xp}/${xpForLevel(lv + 1)} STREAK ${save.streak}`;
   }
+  // split a repo name across the two logo lines; drop noise words and, when it
+  // still cannot fit, keep the leading significant words (semantic summary)
+  function titleLines(name) {
+    const stop = new Set(['THE', 'A', 'AN', 'OF', 'MY', 'APP', 'REPO', 'PROJECT']);
+    const toks = String(name).split(/[-_. ]+/).filter(Boolean);
+    let sig = toks.filter((t) => !stop.has(t.toUpperCase()));
+    if (!sig.length) sig = toks;
+    const lines = [''];
+    for (const t of sig) {
+      const cur = lines[lines.length - 1];
+      const cand = cur ? cur + ' ' + t : t;
+      if (cand.length <= 13) lines[lines.length - 1] = cand;
+      else if (lines.length < 2) lines.push(t.length <= 13 ? t : t.slice(0, 13));
+      else break;
+    }
+    return lines;
+  }
+
   function enterTitle() {
     clearFx();
+    stopQuizTimer();
     updateSaveBlock();
+    // the title belongs to the loaded game
+    const logoA = document.querySelector('.logo-a'), logoB = document.querySelector('.logo-b'), logoSub = document.querySelector('.logo-sub');
+    const saveBlockEl = document.querySelector('.save-block');
+    if (cart && cart.mode === 'quiz') {
+      const [l1, l2] = titleLines(cart.title);
+      logoA.textContent = l1;
+      logoB.textContent = l2 || '';
+      logoSub.textContent = 'ENDLESS REPO QUIZ';
+      saveBlockEl.style.display = 'none';   // quiz title: just title, subtitle, PRESS START
+    } else {
+      logoA.textContent = 'CODE QUEST';
+      logoB.textContent = 'ADVANCE';
+      logoSub.textContent = 'EVERY COMMAND IS A BOSS';
+      saveBlockEl.style.display = '';
+    }
     show('title');
+  }
+
+  // ---------------------------------------------------------- power
+  let powered = false;
+  const powerSwitch = $('power-switch');
+  const powerLed = document.querySelector('.power-led');
+  function setPower(on) {
+    if (powered === on) return;
+    powered = on;
+    powerSwitch.classList.toggle('on', on);
+    powerLed.classList.toggle('off', !on);
+    if (on) {
+      if (trayOpen) closeTray();
+      quests = cart ? cart.quests.slice() : [];   // the loaded cart IS the game
+      enterBoot();
+    } else powerDown();
+  }
+  function powerDown() {
+    clearFx();
+    stopQuizTimer();
+    stopContra();
+    quiz = null;                                 // the save persists; the live run does not
+    runToken++;                                  // drop any late quest events
+    Promise.resolve(invoke('abort_quest')).catch(() => {});  // kill a running quest
+    show('off');
+  }
+  powerSwitch.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();                         // don't let this click skip the boot
+    setPower(!powered);
+  });
+
+  // ---------------------------------------------------------- cartridges
+  let carts = [];
+  let cart = null;
+  let trayOpen = false;
+  const cartBack = $('cart-back');
+  const trayEl = $('cart-tray');
+  const trayCarts = $('tray-carts');
+  const selectTitle = $('select-title');
+  const trayHint = document.querySelector('.tray-hint');
+  const trayError = $('tray-error');
+  const trayEsc = (s) => String(s).replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[ch]));
+  function renderCartBack() {
+    if (cart) {
+      cartBack.className = 'loaded';
+      cartBack.style.setProperty('--cart-color', cart.color || '#6a6fd1');
+      cartBack.title = 'CARTRIDGE: ' + cart.title;
+    } else {
+      cartBack.className = 'empty';
+      cartBack.style.removeProperty('--cart-color');
+      cartBack.title = 'CARTRIDGE SLOT (EMPTY)';
+    }
+  }
+  function saveCache() {
+    localStorage.setItem('cqa-repo-carts', JSON.stringify(carts.map((c) => ({ path: c.path, title: c.title, color: c.color }))));
+  }
+  function upsertCache(c) {
+    const meta = { path: c.path, title: c.title, color: c.color };
+    const i = carts.findIndex((x) => x.path === c.path);
+    if (i >= 0) carts[i] = meta; else carts.push(meta);
+    saveCache();
+  }
+  function dropCache(path) {
+    carts = carts.filter((x) => x.path !== path);
+    saveCache();
+  }
+  function showTrayError(msg) {
+    trayError.textContent = String(msg);
+    trayError.classList.remove('hidden');
+    setTimeout(() => trayError.classList.add('hidden'), 4000);
+  }
+  function insertCart(c) {
+    if (cart) return;                 // must eject first
+    qQueue = []; quizSource = ''; quiz = null;
+    cart = c;
+    localStorage.setItem('cqa-cart-id', c.path);
+    upsertCache(c);
+    renderCartBack();                 // fresh 'loaded' class replays the insert animation
+    playNotes([196, 261.6], 0.09, 0.05);
+    closeTray();
+    if (cart.mode === 'quiz') {       // the oracle starts writing the moment the cart clicks in
+      const save = loadQuizSave();
+      fetchBatch(save ? save.lv : 1, 6);
+    }
+  }
+  async function insertByPath(path) {
+    if (cart) return;
+    try {
+      const c = await invoke('load_cartridge', { path });
+      insertCart(c);
+    } catch (err) {
+      showTrayError(err);
+      dropCache(path);                // it no longer successfully loads
+      buildTray();
+    }
+  }
+  let picking = false;
+  async function addFromDisk() {
+    if (picking || cart) return;
+    picking = true;
+    try {
+      const c = await invoke('pick_cartridge');
+      if (c) insertCart(c);           // null = dialog cancelled
+    } catch (err) {
+      showTrayError(err);
+    } finally { picking = false; }
+  }
+  function ejectCart() {
+    if (!cart) return;
+    playNotes([261.6, 196], 0.09, 0.05);
+    cartBack.classList.add('ejecting');
+    setTimeout(() => {
+      cart = null;
+      qQueue = []; quizSource = ''; quiz = null;
+      localStorage.removeItem('cqa-cart-id');
+      renderCartBack();               // resets to 'empty', clearing 'ejecting'
+      if (trayOpen) buildTray();      // unlock the cards
+    }, 240);
+  }
+  function buildTray() {
+    trayCarts.innerHTML = '';
+    const shortPath = (p) => (p.length > 26 ? '…' + p.slice(-25) : p);
+    for (const c of carts) {
+      const card = document.createElement('div');
+      const isCurrent = cart && cart.path === c.path;
+      card.className = 'cart-card' + (isCurrent ? ' current' : '') + (cart ? ' locked' : '');
+      card.innerHTML = `<div class="cc-strip">CODEQUEST ADVANCE</div><div class="cc-label" style="--cc:${trayEsc(c.color || '#6a6fd1')}"><span class="cc-title">${trayEsc(c.title)}</span><span class="cc-sub">${trayEsc(shortPath(c.path))}</span></div>`;
+      if (!cart) card.addEventListener('pointerdown', (e) => { e.stopPropagation(); insertByPath(c.path); });
+      trayCarts.appendChild(card);
+    }
+    const add = document.createElement('div');
+    add.className = 'cart-card add' + (cart ? ' locked' : '');
+    add.innerHTML = `<div class="cc-strip">&nbsp;</div><div class="cc-label"><span class="cc-title">+ ADD FROM DISK</span><span class="cc-sub">PICK A GIT REPO</span></div>`;
+    if (!cart) add.addEventListener('pointerdown', (e) => { e.stopPropagation(); addFromDisk(); });
+    trayCarts.appendChild(add);
+    const ej = document.createElement('div');
+    ej.className = 'cart-card eject' + (cart ? '' : ' locked');
+    ej.innerHTML = `<div class="cc-strip">&nbsp;</div><div class="cc-label"><span class="cc-title">EMPTY SLOT</span><span class="cc-sub">${cart ? 'EJECT CARTRIDGE' : 'NO CART LOADED'}</span></div>`;
+    if (cart) ej.addEventListener('pointerdown', (e) => { e.stopPropagation(); ejectCart(); });
+    trayCarts.appendChild(ej);
+    trayError.classList.add('hidden');
+    trayHint.textContent = cart ? 'EJECT THE CARTRIDGE BEFORE SWAPPING' : 'CARTRIDGES ARE LOCAL GIT REPOS · ESC TO CLOSE';
+  }
+  function openTray() {
+    if (powered) return;              // no hot-swapping; the console stays still
+    buildTray();
+    trayEl.classList.remove('hidden');
+    trayOpen = true;
+  }
+  function closeTray() { trayEl.classList.add('hidden'); trayOpen = false; }
+  cartBack.addEventListener('pointerdown', (e) => { e.stopPropagation(); if (trayOpen) closeTray(); else openTray(); });
+  trayEl.addEventListener('pointerdown', (e) => { if (e.target === trayEl) closeTray(); });
+
+  // ---------------------------------------------------------- endless repo quiz (default game mode)
+  const menuTitle = $('menu-title'), menuCont = $('menu-continue'), menuContInfo = $('menu-cont-info'), menuNew = $('menu-new');
+  const quizLv = $('quiz-lv'), quizHearts = $('quiz-hearts'), quizScore = $('quiz-score');
+  const quizTimerFill = $('quiz-timer-fill'), quizQ = $('quiz-q'), quizChoices = $('quiz-choices');
+  const quizOver = $('quiz-over'), qoStats = $('qo-stats'), quizWait = $('quiz-wait');
+  let quiz = null;        // active run
+  let menuSel = 0;
+  let qQueue = [];        // questions served by Rust (ORACLE = claude, ARCHIVE = procedural)
+  let fetching = false;
+  let quizSource = '';
+  let pendingSaved = null;
+  const pickOf = (arr) => arr[(Math.random() * arr.length) | 0];
+  const quizSaveKey = () => 'cqa-quiz-' + (cart ? cart.path : '');
+  const heroKey = () => 'cqa-hero-' + (cart ? cart.path : '');
+  const loadQuizSave = () => { try { return JSON.parse(localStorage.getItem(quizSaveKey())); } catch (e) { return null; } };
+  const saveQuizRun = () => { if (quiz && !quiz.over) localStorage.setItem(quizSaveKey(), JSON.stringify({ lv: quiz.lv, score: quiz.score, hearts: quiz.hearts, qnum: quiz.qnum, streak: quiz.streak })); };
+  const clearQuizSave = () => localStorage.removeItem(quizSaveKey());
+
+  function enterMenu() {
+    clearFx();
+    stopQuizTimer();
+    menuTitle.textContent = cart ? cart.title : 'REPO';
+    const save = loadQuizSave();
+    menuCont.classList.toggle('disabled', !save);
+    menuContInfo.textContent = save ? `LV ${save.lv} · ${save.score}` : '';
+    menuSel = save ? 0 : 1;
+    renderMenuSel();
+    show('menu');
+  }
+  function renderMenuSel() {
+    menuCont.classList.toggle('sel', menuSel === 0);
+    menuNew.classList.toggle('sel', menuSel === 1);
+  }
+
+  async function fetchBatch(lv, count) {
+    if (fetching || !cart) return;
+    const forPath = cart.path;
+    fetching = true;
+    updateOracle();
+    try {
+      const b = await invoke('quiz_batch', { path: forPath, level: lv, count });
+      if (cart && cart.path === forPath) {          // discard stale batches after a swap
+        qQueue.push(...b.questions.filter((x) => x && Array.isArray(x.choices) && x.choices.length >= 2));
+        quizSource = b.source;
+      }
+    } catch (err) { /* rust falls back internally; a hard error leaves the queue */ }
+    fetching = false;
+    updateOracle();
+  }
+
+  // ------------------- hero customization: procedural, buys generation time
+  const heroPreview = $('hero-preview'), heroOracle = $('hero-oracle');
+  const hrName = $('hr-name'), hrClass = $('hr-class'), hrPal = $('hr-pal');
+  const heroRows = () => document.querySelectorAll('#scr-hero .hero-row');
+  const HERO_CLASSES = ['CODE KNIGHT', 'BUG MAGE', 'PIPE MONK', 'MERGE PALADIN', 'LINT RANGER', 'SHELL DRUID'];
+  const HERO_PALS = [
+    ['#41A6F6', '#3B5DC9', '#FFCD75'],
+    ['#38B764', '#257179', '#F4F4F4'],
+    ['#B13E53', '#5D275D', '#FFCD75'],
+    ['#FFCD75', '#B13E53', '#29366F'],
+    ['#94B0C2', '#566C86', '#41A6F6'],
+  ];
+  const HERO_PRE = ['GREP', 'SUDO', 'VIM', 'FORK', 'NULL', 'ASYNC', 'TURBO', 'PATCH', 'KERNEL', 'REGEX'];
+  const HERO_EPI = ['THE BOLD', 'THE LINTED', 'THE REBASED', 'THE CACHED', 'THE MERGED', 'THE RECURSIVE', 'THE SEGFAULT', 'THE UNSLEEPING'];
+  let hero = { name: 'SUDO THE BOLD', cls: 0, pal: 0 };
+  let heroRow = 0;
+  const rollName = () => pickOf(HERO_PRE) + ' ' + pickOf(HERO_EPI);
+  function renderHeroSprite() {
+    // the crab is constant; the name picks the wearable, the class the weapon,
+    // STYLE tints both accents
+    const accent = HERO_PALS[hero.pal][0];
+    const cells = wearableFor(hero.name).cells(accent)
+      .concat(weaponFor(hero.cls).cells(accent))
+      .concat(heroCells);
+    return shadowOf(cells, 4);
+  }
+  function renderHeroSpriteInto(el) { el.style.boxShadow = renderHeroSprite(); }
+  function renderHero() {
+    hrName.textContent = hero.name;
+    hrClass.textContent = HERO_CLASSES[hero.cls];
+    hrPal.textContent = 'STYLE ' + (hero.pal + 1);
+    heroRows().forEach((el, i) => el.classList.toggle('sel', i === heroRow));
+    renderHeroSpriteInto(heroPreview);
+  }
+  function updateOracle() {
+    if (state !== 'hero') return;
+    heroOracle.textContent = qQueue.length
+      ? `ORACLE READY · ${qQueue.length} QUESTIONS (${quizSource})`
+      : (fetching ? 'THE ORACLE IS WRITING QUESTIONS…' : 'ORACLE IDLE');
+  }
+  function enterHero(saved) {
+    clearFx();
+    pendingSaved = saved;
+    try { const h = JSON.parse(localStorage.getItem(heroKey())); if (h && h.name) hero = h; } catch (e) { /* fresh hero */ }
+    if (!qQueue.length) fetchBatch(saved ? saved.lv : 1, 6);
+    heroRow = 0;
+    renderHero();
+    show('hero');
+    updateOracle();
+  }
+  function heroAdjust(dir) {
+    if (heroRow === 0) hero.name = rollName();
+    else if (heroRow === 1) hero.cls = (hero.cls + dir + HERO_CLASSES.length) % HERO_CLASSES.length;
+    else if (heroRow === 2) hero.pal = (hero.pal + dir + HERO_PALS.length) % HERO_PALS.length;
+    renderHero();
+  }
+  function heroBegin() {
+    localStorage.setItem(heroKey(), JSON.stringify(hero));
+    beginQuizRun(pendingSaved);
+  }
+
+  // ------------------- the quiz run
+  function stopQuizTimer() {
+    if (quiz && quiz.timerId) { clearInterval(quiz.timerId); quiz.timerId = null; }
+    if (quiz && quiz.waitIv) { clearInterval(quiz.waitIv); quiz.waitIv = null; }
+    if (quiz && quiz.travelIv) { clearInterval(quiz.travelIv); quiz.travelIv = null; }
+    quizWait.classList.remove('on');
+  }
+  function renderQuizHud() {
+    quizLv.textContent = 'LV ' + quiz.lv;
+    quizHearts.textContent = '♥'.repeat(quiz.hearts) + '♡'.repeat(Math.max(0, 3 - quiz.hearts));
+    quizScore.textContent = String(quiz.score);
+  }
+  const TRAVEL_FOES = ['GREP GOLEM', 'SEGFAULT WRAITH', 'BORROW CHECKER', 'FLAKY HYDRA', 'STYLE BASILISK', 'OOM REAPER'];
+  function travelLine() {
+    return pickOf([
+      `${hero.name} VENTURES DEEPER INTO ${cart ? cart.title : 'THE REPO'}…`,
+      `THE ${HERO_CLASSES[hero.cls]} STUDIES ANCIENT SCROLLS…`,
+      `A ${pickOf(TRAVEL_FOES)} RUMBLES IN THE DISTANCE…`,
+      'THE ORACLE INSCRIBES NEW TRIALS…',
+      `CAMPFIRE: ${hero.name} SHARPENS THE MIND…`,
+      'STRANGE RUNES GLOW ALONG THE PATH…',
+    ]);
+  }
+  function nextQuestion() {
+    stopQuizTimer();
+    if (!qQueue.length) {
+      // no waiting screens: the journey continues until the next challenger
+      quizWait.classList.add('on');
+      renderHeroSpriteInto($('travel-hero'));
+      const lineEl = $('travel-line');
+      lineEl.textContent = travelLine();
+      quiz.travelIv = setInterval(() => { lineEl.textContent = travelLine(); }, 1700);
+      if (!fetching) fetchBatch(quiz.lv, 6);
+      quiz.waitIv = setInterval(() => {
+        if (qQueue.length) {
+          clearInterval(quiz.waitIv); quiz.waitIv = null;
+          lineEl.textContent = 'A CHALLENGER APPEARS!';
+          playNotes([523.25, 659.25], 0.09, 0.04);
+          after(750, () => { stopQuizTimer(); if (state === 'quiz' && !quiz.over) nextQuestion(); });
+        } else if (!fetching) fetchBatch(quiz.lv, 6);
+      }, 300);
+      return;
+    }
+    quiz.cur = qQueue.shift();
+    quiz.sel = 0;
+    quiz.locked = false;
+    quizQ.textContent = quiz.cur.q;
+    quizChoices.innerHTML = '';
+    quiz.cur.choices.forEach((c, i) => {
+      const el = document.createElement('div');
+      el.className = 'quiz-choice' + (i === 0 ? ' sel' : '');
+      el.textContent = c;
+      el.addEventListener('pointerdown', () => { if (!quiz.locked) { quiz.sel = i; renderQuizSel(); confirmAnswer(); } });
+      quizChoices.appendChild(el);
+    });
+    renderQuizHud();
+    const secs = Math.max(6, 16 - quiz.lv);
+    quiz.deadline = Date.now() + secs * 1000;
+    quiz.total = secs * 1000;
+    quizTimerFill.style.width = '100%';
+    quiz.timerId = setInterval(() => {
+      const left = quiz.deadline - Date.now();
+      quizTimerFill.style.width = Math.max(0, (left / quiz.total) * 100) + '%';
+      if (left <= 0) { if (quiz.timerId) clearInterval(quiz.timerId); quiz.timerId = null; resolveAnswer(-1); }
+    }, 100);
+    if (qQueue.length < 5 && !fetching) fetchBatch(quiz.lv + 1, 6);   // prefetch the next, harder batch
+  }
+  function renderQuizSel() {
+    [...quizChoices.children].forEach((el, i) => el.classList.toggle('sel', i === quiz.sel));
+  }
+  function confirmAnswer() { if (!quiz.locked) resolveAnswer(quiz.sel); }
+  function resolveAnswer(idx) {
+    if (quiz.locked) return;
+    quiz.locked = true;
+    stopQuizTimer();
+    const els = [...quizChoices.children];
+    const rightIdx = quiz.cur.answer;
+    const correct = idx === rightIdx;
+    if (els[rightIdx]) els[rightIdx].classList.add('right');
+    if (!correct && els[idx]) els[idx].classList.add('wrong');
+    if (correct) {
+      const bonus = Math.max(0, Math.round((quiz.deadline - Date.now()) / 1000));
+      quiz.score += 10 * quiz.lv + bonus;
+      quiz.streak++;
+      playNotes([659.25, 880], 0.09, 0.04);
+      if (quiz.streak % 4 === 0) quiz.lv++;
+    } else {
+      quiz.hearts--;
+      quiz.streak = 0;
+      playNotes([220, 174.6], 0.12, 0.05);
+      screenInner.classList.remove('shake'); void screenInner.offsetWidth; screenInner.classList.add('shake');
+    }
+    quiz.qnum++;
+    renderQuizHud();
+    if (quiz.hearts <= 0) { after(900, quizGameOver); return; }
+    saveQuizRun();
+    after(900, () => { if (state === 'quiz' && !quiz.over) nextQuestion(); });
+  }
+  function quizGameOver() {
+    quiz.over = true;
+    // checkpoint: death keeps the level you reached — continue restarts there
+    // with fresh hearts, but the score is forfeit (arcade rules)
+    localStorage.setItem(quizSaveKey(), JSON.stringify({ lv: quiz.lv, score: 0, hearts: 3, qnum: 0, streak: 0 }));
+    qoStats.innerHTML = `${hero.name} HAS FALLEN<br>FINAL SCORE ${quiz.score}<br>REACHED LV ${quiz.lv} · ${quiz.qnum} QUESTIONS<br>CONTINUE FROM LV ${quiz.lv}`;
+    quizOver.classList.add('on');
+  }
+  function beginQuizRun(saved) {
+    quiz = saved
+      ? { lv: saved.lv, score: saved.score, hearts: saved.hearts, qnum: saved.qnum, streak: saved.streak || 0, over: false }
+      : { lv: 1, score: 0, hearts: 3, qnum: 0, streak: 0, over: false };
+    quizOver.classList.remove('on');
+    show('quiz');
+    nextQuestion();
+  }
+
+  // ---------------------------------------------------------- boot sequence
+  const jingleBoot = () => playNotes([523.25, 783.99, 1046.5, 1568], 0.11, 0.05);
+  let bootSkip = null;                      // last boot's skip handler; re-boots must not stack listeners
+  function enterBoot() {
+    show('boot');
+    after(650, jingleBoot);                 // chime as the logo lands
+    // without a cartridge the console halts on the boot screen, like real hardware
+    if (bootSkip) {
+      window.removeEventListener('keydown', bootSkip);
+      window.removeEventListener('pointerdown', bootSkip);
+    }
+    const done = () => { if (state === 'boot' && cart) enterTitle(); };
+    bootSkip = done;
+    after(2600, done);                      // auto-advance
+    window.addEventListener('keydown', done, { once: true });   // any input skips
+    window.addEventListener('pointerdown', done, { once: true });
+    kbuf = [];                              // a fresh boot re-arms the secret
+  }
+
+  // ---------------------------------------------------------- konami code -> STICK CONTRA (secret)
+  // Armed only on the halted boot screen: powered on, no cartridge loaded.
+  const KONAMI = ['up', 'up', 'down', 'down', 'left', 'right', 'left', 'right', 'b', 'a', 'select', 'start'];
+  let kbuf = [];
+  const jingleSecret = () => playNotes([392, 523.25, 659.25, 783.99, 659.25, 783.99, 1046.5, 1318.51], 0.07, 0.06);
+  function konamiFeed(btn) {
+    kbuf.push(btn);
+    if (kbuf.length > KONAMI.length) kbuf.shift();
+    if (kbuf.length === KONAMI.length && KONAMI.every((b, i) => kbuf[i] === b)) {
+      kbuf = [];
+      jingleSecret();
+      enterContra();
+    }
+  }
+
+  const contraCanvas = $('contra-canvas');
+  // 234x154: the #screen content box after its 3px border (border-box), so the
+  // canvas maps 1:1 to CSS pixels instead of taking a 0.975 nearest-neighbor squeeze
+  const CW = 234, CH = 154, CG_GROUND = 141;
+  let cg = null, cgRaf = 0;
+
+  function enterContra() {
+    const ctx = contraCanvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    const srng = mulberry32(0xC0DE);
+    const stars = [];
+    for (let i = 0; i < 26; i++) stars.push([Math.floor(srng() * CW), Math.floor(srng() * 96)]);
+    let hi = 0;
+    try { hi = Number(localStorage.getItem('cqa-contra-hi')) || 0; } catch (e) { /* blocked */ }
+    cg = {
+      ctx, stars, t: 0, lastTs: 0, over: false, paused: false,
+      score: 0, hi, rest: 30,   // 30 lives, as tradition demands
+      player: { x: 40, y: CG_GROUND, vy: 0, face: 1, run: 0, moving: false, dead: 0, inv: 0, fireCd: 0 },
+      shots: [], eshots: [], foes: [], bursts: [], spawnNext: 150
+    };
+    show('contra');
+    cancelAnimationFrame(cgRaf);
+    cgRaf = requestAnimationFrame(contraFrame);
+  }
+  function stopContra() {
+    cancelAnimationFrame(cgRaf); cgRaf = 0;
+    if (cg && cg.score > cg.hi) { try { localStorage.setItem('cqa-contra-hi', String(cg.score)); } catch (e) { /* full/blocked */ } }
+    cg = null;
+  }
+  function exitContra() { stopContra(); enterBoot(); }   // leaving the secret reboots the console
+
+  function contraFrame(ts) {
+    if (state !== 'contra' || !cg) return;
+    const dt = cg.lastTs ? clamp((ts - cg.lastTs) / 16.667, 0.01, 3) : 1;   // no floor inflation on >240Hz panels
+    cg.lastTs = ts;
+    if (!cg.paused && !cg.over) contraStep(dt);
+    contraDraw();
+    cgRaf = requestAnimationFrame(contraFrame);
+  }
+
+  function cgBurst(x, y) {
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      cg.bursts.push({ x, y, vx: Math.cos(a) * (0.7 + Math.random()), vy: Math.sin(a) * (0.7 + Math.random()) - 0.6, life: 16 });
+    }
+  }
+  function contraFire() {
+    const p = cg.player;
+    if (cg.over || cg.paused || p.dead || p.fireCd > 0) return;
+    p.fireCd = 9;
+    if (held.up) cg.shots.push({ x: p.x, y: p.y - 17, vx: 0, vy: -3.6 });
+    else cg.shots.push({ x: p.x + p.face * 7, y: p.y - 8, vx: p.face * 3.6, vy: 0 });
+    if (cg.shots.length > 30) cg.shots.shift();
+    playNotes([1568], 0.03, 0.015);
+  }
+  function cgJump() {
+    const p = cg.player;
+    if (cg.over || cg.paused || p.dead || p.y < CG_GROUND) return;
+    p.vy = -4.4;
+    playNotes([523.25], 0.04, 0.015);
+  }
+  function cgKillPlayer() {
+    const p = cg.player;
+    if (p.dead) return;
+    cg.rest -= 1;
+    p.dead = 55;
+    cgBurst(p.x, p.y - 8);
+    playNotes([220, 164.81, 110], 0.1, 0.05);
+  }
+  function cgSpawnFoe() {
+    if (cg.foes.length >= 10) return;
+    const fromLeft = Math.random() < 0.3;
+    const shooter = Math.random() < 0.35;
+    cg.foes.push({
+      x: fromLeft ? -6 : CW + 6, y: CG_GROUND, vy: 0, dir: fromLeft ? 1 : -1,
+      type: shooter ? 'shooter' : 'runner', run: Math.random() * 6, cd: 60, still: false,
+      targetX: fromLeft ? 30 + Math.random() * 55 : 155 + Math.random() * 55
+    });
+  }
+
+  function contraStep(dt) {
+    cg.t += dt;
+    const p = cg.player;
+
+    // player
+    if (p.dead) {
+      p.dead -= dt;
+      if (p.dead <= 0) {
+        p.dead = 0;
+        if (cg.rest <= 0) {
+          cg.over = true;
+          cg.overAt = now();
+          if (cg.score > cg.hi) { cg.hi = cg.score; try { localStorage.setItem('cqa-contra-hi', String(cg.hi)); } catch (e) { /* full/blocked */ } }
+          playNotes([392, 311.13, 233.08, 196], 0.15, 0.05);
+          return;
+        }
+        p.x = 40; p.y = CG_GROUND; p.vy = 0; p.face = 1; p.inv = 100;
+        cg.eshots = [];                                              // nothing mid-air at respawn
+        cg.foes = cg.foes.filter((f) => Math.abs(f.x - p.x) > 60);   // clear any spawn camp
+      }
+    } else {
+      p.moving = false;
+      if (held.left) { p.x -= 1.4 * dt; p.face = -1; p.moving = true; }
+      if (held.right) { p.x += 1.4 * dt; p.face = 1; p.moving = true; }
+      p.x = clamp(p.x, 5, CW - 5);
+      if (p.moving) p.run += 0.32 * dt;
+      p.vy += 0.28 * dt;
+      p.y += p.vy * dt;
+      if (p.y >= CG_GROUND) { p.y = CG_GROUND; p.vy = 0; }
+      if (held.a) contraFire();
+      p.inv = Math.max(0, p.inv - dt);
+    }
+    p.fireCd = Math.max(0, p.fireCd - dt);
+
+    // spawns (the READY beat holds them off at first)
+    if (cg.t >= cg.spawnNext) {
+      cgSpawnFoe();
+      cg.spawnNext = cg.t + Math.max(28, 85 - cg.t / 90) * (0.75 + Math.random() * 0.5);
+    }
+
+    // foes
+    for (let i = cg.foes.length - 1; i >= 0; i--) {
+      const f = cg.foes[i];
+      if (f.type === 'runner') {
+        if (!p.dead) f.dir = (p.x < f.x ? -1 : 1);
+        f.x += 0.9 * f.dir * dt;
+        f.run += 0.3 * dt;
+        if (f.y >= CG_GROUND && Math.random() < 0.004 * dt) f.vy = -3.4;   // the odd hop
+      } else if (Math.abs(f.x - f.targetX) > 2) {
+        f.still = false;
+        f.dir = f.targetX > f.x ? 1 : -1;
+        f.x += 0.8 * f.dir * dt;
+        f.run += 0.28 * dt;
+      } else {
+        f.still = true;
+        f.dir = (p.x < f.x ? -1 : 1);
+        if (!p.dead) {                       // cooldowns freeze while the player is down: no respawn volley
+          f.cd -= dt;
+          if (f.cd <= 0) {
+            f.cd = 75 + Math.random() * 55;
+            cg.eshots.push({ x: f.x + f.dir * 6, y: f.y - 8, vx: f.dir * 1.5, fresh: true });
+            playNotes([392], 0.04, 0.02);
+          }
+        }
+      }
+      f.vy += 0.28 * dt;
+      f.y += f.vy * dt;
+      if (f.y >= CG_GROUND) { f.y = CG_GROUND; f.vy = 0; }
+      if (f.x < -12 || f.x > CW + 12) { cg.foes.splice(i, 1); continue; }
+      if (!p.dead && p.inv <= 0 && Math.abs(f.x - p.x) < 5 && Math.abs(f.y - p.y) < 12) cgKillPlayer();
+    }
+
+    // player shots
+    for (let i = cg.shots.length - 1; i >= 0; i--) {
+      const s = cg.shots[i];
+      const x0 = s.x;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      if (s.x < -4 || s.x > CW + 4 || s.y < -4) { cg.shots.splice(i, 1); continue; }
+      for (let j = cg.foes.length - 1; j >= 0; j--) {
+        const f = cg.foes[j];
+        // swept in x so a slow frame can't tunnel a bullet through a foe
+        if (f.x > Math.min(x0, s.x) - 4 && f.x < Math.max(x0, s.x) + 4 && s.y > f.y - 15 && s.y < f.y + 1) {
+          cg.score += f.type === 'shooter' ? 300 : 100;
+          cgBurst(f.x, f.y - 8);
+          cg.foes.splice(j, 1);
+          cg.shots.splice(i, 1);
+          playNotes([587.33, 880], 0.04, 0.03);
+          break;
+        }
+      }
+    }
+
+    // enemy shots
+    for (let i = cg.eshots.length - 1; i >= 0; i--) {
+      const s = cg.eshots[i];
+      if (s.fresh) { s.fresh = false; continue; }   // draw at the muzzle once before it can hit
+      s.x += s.vx * dt;
+      if (s.x < -4 || s.x > CW + 4) { cg.eshots.splice(i, 1); continue; }
+      if (!p.dead && p.inv <= 0 && Math.abs(s.x - p.x) < 4 && s.y > p.y - 15 && s.y < p.y + 1) {
+        cg.eshots.splice(i, 1);
+        cgKillPlayer();
+      }
+    }
+
+    // debris
+    for (let i = cg.bursts.length - 1; i >= 0; i--) {
+      const b = cg.bursts[i];
+      b.life -= dt; b.x += b.vx * dt; b.y += b.vy * dt; b.vy += 0.08 * dt;
+      if (b.life <= 0) cg.bursts.splice(i, 1);
+    }
+  }
+
+  // one stick figure, feet at (x,y); pure white lines on black
+  function drawStick(ctx, f) {
+    const x = Math.round(f.x) + 0.5, y = Math.round(f.y) + 0.5;
+    ctx.beginPath();
+    if (f.fallen) {
+      ctx.arc(x - f.face * 6, y - 2, 2, 0, Math.PI * 2);
+      ctx.moveTo(x - f.face * 3, y - 2);
+      ctx.lineTo(x + f.face * 6, y - 2);
+      ctx.stroke();
+      return;
+    }
+    const swing = f.run != null ? Math.sin(f.run) * 3 : 0;
+    ctx.arc(x, y - 12, 2, 0, Math.PI * 2);              // head
+    ctx.moveTo(x, y - 10); ctx.lineTo(x, y - 5);        // torso
+    if (f.air) {                                        // tucked jump legs
+      ctx.moveTo(x, y - 5); ctx.lineTo(x - 3, y - 2);
+      ctx.moveTo(x, y - 5); ctx.lineTo(x + 3, y - 1);
+    } else {
+      ctx.moveTo(x, y - 5); ctx.lineTo(x - 2 + swing, y);
+      ctx.moveTo(x, y - 5); ctx.lineTo(x + 2 - swing, y);
+    }
+    if (f.gunUp) {                                      // rifle skyward
+      ctx.moveTo(x, y - 8); ctx.lineTo(x, y - 16);
+      ctx.moveTo(x, y - 8); ctx.lineTo(x - f.face * 3, y - 6);
+    } else {                                            // rifle level
+      ctx.moveTo(x, y - 8); ctx.lineTo(x + f.face * 6, y - 8);
+      ctx.moveTo(x, y - 8); ctx.lineTo(x - f.face * 2, y - 5);
+    }
+    ctx.stroke();
+  }
+
+  function contraDraw() {
+    const ctx = cg.ctx;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    for (const [sx, sy] of cg.stars) ctx.fillRect(sx, sy, 1, 1);
+    ctx.fillRect(0, CG_GROUND + 1, CW, 1);
+    for (let x = 4; x < CW; x += 24) ctx.fillRect(x, CG_GROUND + 3, 1, 2);
+
+    for (const b of cg.bursts) ctx.fillRect(Math.round(b.x), Math.round(b.y), 1, 1);
+    for (const f of cg.foes) drawStick(ctx, { x: f.x, y: f.y, face: f.dir, run: f.still ? null : f.run, air: f.y < CG_GROUND - 0.5 });
+    for (const s of cg.shots) ctx.fillRect(Math.round(s.x) - 1, Math.round(s.y), s.vy ? 1 : 3, s.vy ? 3 : 1);
+    for (const s of cg.eshots) ctx.fillRect(Math.round(s.x) - 1, Math.round(s.y) - 1, 2, 2);
+
+    const p = cg.player;
+    if (p.dead || cg.over) drawStick(ctx, { x: p.x, y: CG_GROUND, face: p.face, fallen: true });
+    else if (!(p.inv > 0 && ((cg.t / 3) | 0) % 2)) {
+      drawStick(ctx, { x: p.x, y: p.y, face: p.face, run: p.moving ? p.run : null, air: p.y < CG_GROUND - 0.5, gunUp: !!held.up });
+    }
+
+    ctx.font = '8px "Press Start 2P", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('REST ' + Math.max(0, cg.rest), 5, 12);
+    ctx.textAlign = 'center';
+    ctx.fillText('HI ' + Math.max(cg.hi, cg.score), CW / 2, 12);
+    ctx.textAlign = 'right';
+    ctx.fillText(String(cg.score), CW - 5, 12);
+
+    ctx.textAlign = 'center';
+    if (cg.over) {
+      ctx.fillText('GAME OVER', CW / 2, 70);
+      ctx.fillText('SCORE ' + cg.score, CW / 2, 86);
+      if (((now() / 500) | 0) % 2) ctx.fillText('START:RETRY SELECT:EXIT', CW / 2, 106);
+    } else if (cg.paused) {
+      if (((now() / 400) | 0) % 2) ctx.fillText('PAUSE', CW / 2, 78);
+      ctx.fillText('START:RESUME SELECT:EXIT', CW / 2, 94);
+    } else if (cg.t < 110) {
+      ctx.fillText('PLAYER 1', CW / 2, 62);
+      if (((cg.t / 15) | 0) % 2) ctx.fillText('READY', CW / 2, 78);
+      ctx.fillText('A:FIRE B:JUMP SELECT:EXIT', CW / 2, 152);
+    }
+    ctx.textAlign = 'left';
   }
 
   // ---------------------------------------------------------- quest select
@@ -380,6 +1149,7 @@
   function enterSelect() {
     clearFx();
     show('select');
+    selectTitle.textContent = cart ? cart.title : 'CHOOSE THY QUEST';
     buildMenu();
     sel = menu.length > 1 ? 1 : 0;
     renderMenu();
@@ -951,12 +1721,7 @@
     after(850, () => {
       stampEl.classList.add('in');
       thudStamp();
-      after(320, () => {
-        flashOnce();
-        shellEl.classList.remove('nudge');     // the ONE full-shell reaction
-        void shellEl.offsetWidth;
-        shellEl.classList.add('nudge');
-      });
+      after(320, flashOnce);   // effects stay on-screen: the device never moves
     });
 
     after(1900, () => {
@@ -1102,8 +1867,9 @@
   // ---------------------------------------------------------- input
   const KEYMAP = {
     ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-    KeyX: 'a', KeyZ: 'b', Enter: 'start', NumpadEnter: 'start',
-    ShiftLeft: 'select', ShiftRight: 'select'
+    KeyD: 'a', KeyS: 'b', Enter: 'start', NumpadEnter: 'start',
+    ShiftLeft: 'select', ShiftRight: 'select',
+    KeyA: 'l', KeyF: 'r'
   };
   let paletteTimer = null;
 
@@ -1121,16 +1887,81 @@
     }
     if (!repeat) audio();   // unlock WebAudio on first real input
 
+    if (state === 'boot') {
+      if (!repeat && !cart) konamiFeed(btn);   // the halted no-cart boot screen hides a secret
+      return;
+    }
+
+    if (state === 'contra') {
+      if (repeat || !cg) return;
+      if (cg.over) {
+        if (now() - (cg.overAt || 0) < 700) return;   // let GAME OVER land before mashed input acts on it
+        if (btn === 'start' || btn === 'a') return enterContra();
+        if (btn === 'b' || btn === 'select') return exitContra();
+        return;
+      }
+      if (btn === 'select') return exitContra();
+      if (btn === 'start') { cg.paused = !cg.paused; return; }
+      if (btn === 'b') return cgJump();
+      if (btn === 'a') return contraFire();
+      return;
+    }
+
     if (state === 'title') {
       if (repeat) return;
-      if (btn === 'start' || btn === 'a') return enterSelect();
+      if (btn === 'start' || btn === 'a') return (cart && cart.mode === 'quiz') ? enterMenu() : enterSelect();
       if (btn === 'select') { paletteTimer = setTimeout(() => paletteRow.classList.add('on'), 300); }
+      return;
+    }
+
+    if (state === 'menu') {
+      if (repeat) return;
+      const save = loadQuizSave();
+      if (btn === 'up' || btn === 'down') { if (save) { menuSel = 1 - menuSel; renderMenuSel(); } return; }
+      if (btn === 'a' || btn === 'start') {
+        if (menuSel === 0 && save) return enterHero(save);
+        if (menuSel === 1) { clearQuizSave(); qQueue = []; return enterHero(null); }
+        return;
+      }
+      if (btn === 'b') return enterTitle();
+      return;
+    }
+
+    if (state === 'hero') {
+      if (repeat) return;
+      if (btn === 'up') { heroRow = (heroRow + 3) % 4; return renderHero(); }
+      if (btn === 'down') { heroRow = (heroRow + 1) % 4; return renderHero(); }
+      if (btn === 'left') return heroAdjust(-1);
+      if (btn === 'right') return heroAdjust(1);
+      if (btn === 'a' || btn === 'start') {
+        if (heroRow === 3) return heroBegin();
+        return heroAdjust(1);
+      }
+      if (btn === 'b') return enterMenu();
+      return;
+    }
+
+    if (state === 'quiz') {
+      if (quiz && quiz.over) { if (!repeat) enterMenu(); return; }
+      if (quiz && quiz.waitIv && btn === 'a' && !repeat) {   // hop along the journey
+        const th = $('travel-hero');
+        th.classList.remove('hop'); void th.offsetWidth; th.classList.add('hop');
+        return;
+      }
+      if (!quiz || quiz.locked) return;
+      if (btn === 'up') { quiz.sel = (quiz.sel + quiz.cur.choices.length - 1) % quiz.cur.choices.length; return renderQuizSel(); }
+      if (btn === 'down') { quiz.sel = (quiz.sel + 1) % quiz.cur.choices.length; return renderQuizSel(); }
+      if (repeat) return;
+      if (btn === 'a') return confirmAnswer();
+      if (btn === 'b') { saveQuizRun(); stopQuizTimer(); return enterMenu(); }   // suspend the run
       return;
     }
 
     if (state === 'select') {
       if (btn === 'up') return moveSel(-1);
       if (btn === 'down') return moveSel(1);
+      if (btn === 'l') return moveSel(-4);   // shoulder buttons page the menu
+      if (btn === 'r') return moveSel(4);
       if (repeat) return;
       if (btn === 'a' || btn === 'start') return activateRow();
       if (btn === 'b') return enterTitle();
@@ -1186,10 +2017,15 @@
       else if (e.key === 'ArrowUp') { e.preventDefault(); moveSel(-1); }
       return;
     }
+    if (e.key === 'p' || e.key === 'P') { setPower(!powered); return; }
+    if (e.key === 'c' || e.key === 'C') { if (trayOpen) closeTray(); else openTray(); return; }
+    if (trayOpen && (e.key === 'Escape' || e.code === 'KeyS')) { closeTray(); return; }
+    // no power gate needed: state 'off' matches no dispatch block in onButton,
+    // so buttons depress visually but do nothing — like real hardware
     const btn = KEYMAP[e.code];
     if (!btn) return;
     e.preventDefault();
-    if (e.repeat) { onButton(btn, true, true); return; }
+    if (e.repeat) { held[btn] = true; onButton(btn, true, true); return; }   // re-register a key held across a blur
     if (held[btn]) return;
     held[btn] = true;
     onButton(btn, true, false);
@@ -1202,6 +2038,7 @@
   });
   window.addEventListener('blur', () => {
     for (const b in held) if (held[b]) { held[b] = false; onButton(b, false, false); }
+    if (state === 'contra' && cg && !cg.over) cg.paused = true;   // don't drain lives while unfocused
   });
 
   // clickable shell buttons (press-and-hold works: A fast-forward, SELECT flee meter)
@@ -1230,12 +2067,28 @@
       await listenTo('quest://output', (e) => onOutput(e.payload));
       await listenTo('quest://done', (e) => onDone(e.payload));
     } catch (err) { /* no event system: demo shim already handles */ }
+    // cartridges are local git repos: restore the cache, revalidate the inserted one
     try {
-      const qs = await invoke('list_quests');
-      quests = Array.isArray(qs) ? qs.filter((q) => q && typeof q.command === 'string') : [];
-    } catch (err) { quests = []; }
+      carts = (JSON.parse(localStorage.getItem('cqa-repo-carts')) || []).filter((c) => c && typeof c.path === 'string');
+    } catch (err) { carts = []; }
+    const savedPath = localStorage.getItem('cqa-cart-id');
+    if (savedPath) {
+      try {
+        cart = await invoke('load_cartridge', { path: savedPath });
+        upsertCache(cart);
+      } catch (err) {
+        cart = null;
+        localStorage.removeItem('cqa-cart-id');
+        dropCache(savedPath);
+      }
+    }
+    renderCartBack();
+    if (cart && cart.mode === 'quiz') {
+      const save = loadQuizSave();
+      fetchBatch(save ? save.lv : 1, 6);         // generate through boot and title
+    }
     ready = true;
-    enterTitle();
+    if (!powered) show('off');                   // wait for the power switch (unless one raced init)
   }
   init();
 

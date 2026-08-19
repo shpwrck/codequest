@@ -68,12 +68,7 @@ html, body {
     0 16px 0 rgba(0,0,0,.35),
     0 26px 40px rgba(0,0,0,.5);
 }
-#shell.nudge { animation: shellNudge .18s steps(2); }
-@keyframes shellNudge {
-  0% { transform: translate(0,0); }
-  50% { transform: translate(2px,2px); }
-  100% { transform: translate(0,0); }
-}
+/* the device itself never moves; all reaction effects live on the screen */
 
 /* light-gray shoulder caps wrapping the top corners, like the real unit */
 #shell-scale {
@@ -93,6 +88,12 @@ html, body {
   pointer-events: none;
   overflow: visible;
 }
+.shoulder-btn { pointer-events: auto; cursor: pointer; transform-box: fill-box; transform-origin: center; }
+.shoulder-btn.pressed {
+  fill: #ffffff;
+  filter: drop-shadow(0 0 3px rgba(255,255,255,.8));
+  transform: translateY(2px);   /* the cap tucks into the body like a real press */
+}
 
 /* screen bezel */
 #bezel {
@@ -110,28 +111,32 @@ html, body {
 }
 .bezel-caption {
   /* GBA-logo style wordmark: heavy slanted solid + outlined tail, no spaces */
+  /* centered in the gap between screen bottom (237) and lens bottom (295) */
   position: absolute;
-  bottom: 6px;
+  bottom: 19px;
   width: 100%;
   text-align: center;
-  font-size: 13px;
+  font-size: 15px;
   letter-spacing: 0;
   transform: skewX(-8deg);
   text-shadow: none;
 }
-.cap-solid { color: #f2f3fa; }
-.cap-outline {
-  color: transparent;
+.cap-solid {
+  /* the heavy half: fill plus stroke reads as bold in Press Start 2P */
+  color: #f2f3fa;
   -webkit-text-stroke: 1px #f2f3fa;
+}
+.cap-outline {
+  color: #f2f3fa;
   margin-left: 2px;
 }
 .power-led {
   /* top-right of the face, right of the lens, with its POWER label */
   position: absolute;
-  left: 339px;
-  top: 20px;
-  width: 8px;
-  height: 8px;
+  left: 337px;
+  top: 18px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: var(--green);
   box-shadow: 0 0 6px var(--green), 0 0 2px var(--green);
@@ -139,9 +144,9 @@ html, body {
 .power-led::after {
   content: 'POWER';
   position: absolute;
-  left: 13px;
+  left: 16px;
   top: 1px;
-  font-size: 6px;
+  font-size: 8px;
   letter-spacing: 1px;
   color: #c3c4da;
   text-shadow: 0 1px 0 rgba(0,0,0,.4);
@@ -152,9 +157,10 @@ html, body {
 #screen {
   /* logical canvas stays 240x160; scaled up to the reference's LCD size
      (~273 shell px wide) and centered on the lens center */
+  /* bottom edge aligned to the START/SELECT midpoint (shell y=237) */
   position: absolute;
   left: 50%;
-  top: 51px;
+  top: 31px;
   transform: scale(1.10);
   transform-origin: center;
   margin-left: -120px;
@@ -203,12 +209,12 @@ html, body {
 /* ============================ CONTROLS ============================ */
 
 #dpad {
-  /* fully on the left wing, clear of the lens, per the reference */
+  /* fully on the left wing, clear of the lens; center fixed at (69,136) */
   position: absolute;
-  left: 33px;
-  top: 100px;
-  width: 72px;
-  height: 72px;
+  left: 27px;
+  top: 94px;
+  width: 84px;
+  height: 84px;
 }
 /* one continuous plus: two overlapping outlined bars + a patch over the
    crossing lines; the arm divs are transparent hit areas on top */
@@ -216,8 +222,8 @@ html, body {
   box-sizing: border-box;
   content: '';
   position: absolute;
-  left: 24px; top: 0;
-  width: 24px; height: 72px;
+  left: 28px; top: 0;
+  width: 28px; height: 84px;
   background: #cccdde;
   border: 2px solid #3f4066;
   border-radius: 6px;
@@ -227,8 +233,8 @@ html, body {
   box-sizing: border-box;
   content: '';
   position: absolute;
-  left: 0; top: 24px;
-  width: 72px; height: 24px;
+  left: 0; top: 28px;
+  width: 84px; height: 28px;
   background: #cccdde;
   border: 2px solid #3f4066;
   border-radius: 6px;
@@ -245,24 +251,24 @@ html, body {
 .dpad-btn::after {
   content: '';
   position: absolute;
-  border: 5px solid transparent;
+  border: 6px solid transparent;
   pointer-events: none;
   opacity: .5;
 }
-.dpad-up::after    { left: 7px; top: 8px;    border-bottom-color: #6e70a0; border-top-width: 0; }
-.dpad-down::after  { left: 7px; bottom: 8px; border-top-color: #6e70a0; border-bottom-width: 0; }
-.dpad-left::after  { top: 7px; left: 8px;    border-right-color: #6e70a0; border-left-width: 0; }
-.dpad-right::after { top: 7px; right: 8px;   border-left-color: #6e70a0; border-right-width: 0; }
+.dpad-up::after    { left: 8px; top: 9px;    border-bottom-color: #6e70a0; border-top-width: 0; }
+.dpad-down::after  { left: 8px; bottom: 9px; border-top-color: #6e70a0; border-bottom-width: 0; }
+.dpad-left::after  { top: 8px; left: 9px;    border-right-color: #6e70a0; border-left-width: 0; }
+.dpad-right::after { top: 8px; right: 9px;   border-left-color: #6e70a0; border-right-width: 0; }
 .dpad-btn.pressed, .ab.pressed, .pill.pressed { filter: brightness(1.45); }
-.dpad-up    { left: 24px; top: 0;    width: 24px; height: 26px; border-radius: 6px 6px 0 0; }
-.dpad-down  { left: 24px; bottom: 0; width: 24px; height: 26px; border-radius: 0 0 6px 6px; }
-.dpad-left  { left: 0;    top: 24px; width: 26px; height: 24px; border-radius: 6px 0 0 6px; }
-.dpad-right { right: 0;   top: 24px; width: 26px; height: 24px; border-radius: 0 6px 6px 0; }
+.dpad-up    { left: 28px; top: 0;    width: 28px; height: 30px; border-radius: 6px 6px 0 0; }
+.dpad-down  { left: 28px; bottom: 0; width: 28px; height: 30px; border-radius: 0 0 6px 6px; }
+.dpad-left  { left: 0;    top: 28px; width: 30px; height: 28px; border-radius: 6px 0 0 6px; }
+.dpad-right { right: 0;   top: 28px; width: 30px; height: 28px; border-radius: 0 6px 6px 0; }
 .dpad-core {
   /* covers the bars' crossing lines so the plus outline reads as one shape */
   position: absolute;
-  left: 26px; top: 24px;
-  width: 20px; height: 24px;
+  left: 30px; top: 28px;
+  width: 24px; height: 28px;
   background: #cccdde;
   z-index: 1;
   pointer-events: none;
@@ -270,8 +276,8 @@ html, body {
 .dpad-core::after {
   content: '';
   position: absolute;
-  left: 3px; top: 5px;
-  width: 14px; height: 14px;
+  left: 4px; top: 6px;
+  width: 16px; height: 16px;
   border-radius: 50%;
   background: radial-gradient(circle at 40% 35%, #d9dae8, #9d9eb8);
   box-shadow: inset 0 1px 2px rgba(0,0,0,.25);
@@ -279,8 +285,8 @@ html, body {
 
 .ab {
   position: absolute;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background: radial-gradient(circle at 38% 30%, #e6e7f1, #c6c7d9 55%, #a3a4bd);
   border: 2px solid #3f4066;
@@ -290,10 +296,10 @@ html, body {
   justify-content: center;
   cursor: pointer;
 }
-.ab span { font-size: 13px; color: #7d7fa6; pointer-events: none; text-shadow: 0 1px 0 rgba(255,255,255,.5); }
+.ab span { font-size: 15px; color: #7d7fa6; pointer-events: none; text-shadow: 0 1px 0 rgba(255,255,255,.5); }
 .ab.pressed { transform: translateY(2px); box-shadow: inset 0 -2px 0 rgba(0,0,0,.3); }
-#btn-a { right: 22px; top: 106px; }
-#btn-b { right: 76px; top: 125px; }
+#btn-a { right: 19px; top: 103px; }
+#btn-b { right: 73px; top: 122px; }
 .ab-label {
   position: absolute;
   font-size: 7px;
@@ -307,8 +313,8 @@ html, body {
 /* small oval button with an angled label banner to its left, like the real unit */
 .pill {
   position: absolute;
-  width: 15px;
-  height: 13px;
+  width: 17px;
+  height: 17px;
   background: radial-gradient(circle at 40% 30%, #e2e3ee, #b4b5ca);
   border: 2px solid #3f4066;
   border-radius: 50%;
@@ -317,12 +323,12 @@ html, body {
 }
 .pill span {
   position: absolute;
-  right: 22px;
-  top: -2px;
-  padding: 2px 7px 1px;
+  right: 26px;
+  top: 0;
+  padding: 2px 8px 1px;
   border: 2px solid rgba(28,29,62,.45);
-  border-radius: 9px;
-  font-size: 6px;
+  border-radius: 10px;
+  font-size: 8px;
   letter-spacing: 1px;
   color: #c3c4da;
   text-shadow: 0 1px 0 rgba(0,0,0,.4);
@@ -330,18 +336,20 @@ html, body {
   white-space: nowrap;
 }
 /* stacked below the D-pad: START above SELECT */
-#btn-start  { left: 101px; top: 212px; }
-#btn-select { left: 101px; top: 245px; }
+#btn-start  { left: 100px; top: 210px; }
+#btn-select { left: 100px; top: 243px; }
 
 .speaker {
   /* diagonal slit grille, bottom-right wing */
   /* six short rectangular slits, parallel to the A/B diagonal (~-19deg) */
   position: absolute;
-  right: 39px;
+  right: 62px;
   bottom: 54px;
   width: 44px;
   height: 58px;
-  transform: rotate(-19deg);
+  /* skew, not rotate: every slit starts and ends at the same x,
+     stacked vertically, like the reference */
+  transform: skewY(-19deg);
   background: repeating-linear-gradient(
     to bottom,
     #262744 0 5px, transparent 5px 10px);
@@ -1056,4 +1064,305 @@ html, body {
   font-size: 6px;
   color: var(--mist);
   animation: hardBlink 1.2s steps(1) infinite;
+}
+
+/* ============================ BOOT ============================ */
+#scr-boot {
+  background: #f4f4f8;
+  overflow: hidden;
+}
+#scr-boot.active .boot-logo { animation: bootDrop .65s cubic-bezier(.22,1.6,.36,1) both; }
+.boot-logo {
+  position: absolute;
+  left: 0; right: 0; top: 54px;
+  text-align: center;
+}
+.boot-word {
+  position: relative;
+  display: inline-block;
+  font-size: 20px;
+  transform: skewX(-8deg);
+  color: #3d4192;
+}
+.boot-word { -webkit-text-stroke: 1px #3d4192; }
+.boot-shine {
+  position: absolute;
+  inset: -4px -8px;
+  background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,.95) 48%, transparent 62%);
+  transform: translateX(-110%);
+  animation: bootShine .5s ease-out .8s forwards;
+  pointer-events: none;
+}
+.boot-maker {
+  /* maker wordmark in the classic racetrack outline */
+  margin-top: 16px;
+  opacity: 0;
+  animation: bootSub .3s ease-out 1.1s forwards;
+}
+.boot-maker span {
+  display: inline-block;
+  padding: 4px 12px 3px;
+  border: 2px solid #3d4192;
+  border-radius: 999px;
+  font-size: 7px;
+  letter-spacing: 2px;
+  color: #3d4192;
+}
+@keyframes bootDrop {
+  0% { transform: translateY(-90px); opacity: 0; }
+  55% { opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes bootShine { to { transform: translateX(110%); } }
+@keyframes bootSub { to { opacity: 1; } }
+
+/* ============================ POWER ============================ */
+#scr-off { background: #0e0f1a; }
+.power-led.off { background: #85879b; box-shadow: none; }
+#power-switch {
+  /* bare slider tab protruding off the right edge; slides up when on */
+  /* flush against the outer border edge, extending fully outside the body */
+  position: absolute;
+  right: -12px;
+  top: 96px;
+  width: 9px;
+  height: 26px;
+  background: linear-gradient(#d6d7e5, #a9aabf);
+  border: 3px solid #101124;
+  border-radius: 0 8px 8px 0;
+  cursor: pointer;
+  z-index: 5;
+  transition: top .12s;
+}
+#power-switch.on { top: 70px; }
+.ps-nub { display: none; }
+
+/* ============================ CARTRIDGE ============================ */
+#cart-back {
+  /* peeks above the top-back slot; behind the shell by DOM order */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 232px;
+  cursor: pointer;
+}
+#cart-back.empty {
+  top: -4px;
+  height: 22px;
+  background: #191a30;
+  border: 3px solid #101124;
+  border-radius: 6px 6px 0 0;
+}
+#cart-back.loaded {
+  top: -14px;
+  height: 42px;
+  width: 228px;
+  background: linear-gradient(#cdcedd, #aaabbf);
+  border: 3px solid #101124;
+  border-radius: 8px 8px 0 0;
+  animation: cartIn .22s ease-out;
+}
+#cart-back.loaded::after {
+  /* the pack's label color, visible as a stripe on the cart's spine */
+  content: '';
+  position: absolute;
+  left: 8px; right: 8px;
+  top: 5px;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--cart-color, #6a6fd1);
+  opacity: .9;
+}
+@keyframes cartIn {
+  from { transform: translate(-50%, -28px); }
+  to   { transform: translate(-50%, 0); }
+}
+
+#cart-tray {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(7,8,18,.82);
+}
+#cart-tray.hidden { display: none; }
+.tray-panel {
+  background: #14152b;
+  border: 3px solid #3f4066;
+  border-radius: 10px;
+  padding: 18px 22px;
+  text-align: center;
+}
+.tray-head { font-size: 12px; color: #e8e9f4; letter-spacing: 2px; margin-bottom: 16px; }
+#tray-carts { display: flex; gap: 16px; justify-content: center; }
+.cart-card {
+  position: relative;
+  width: 176px;
+  height: 108px;
+  background: linear-gradient(#cdcedd, #a5a6bc);
+  border: 3px solid #101124;
+  border-radius: 10px 10px 6px 6px;
+  cursor: pointer;
+  transition: transform .1s;
+  text-align: left;
+}
+.cart-card:hover { transform: translateY(-4px); }
+.cart-card.current { outline: 3px solid var(--gold); }
+.cc-strip {
+  margin: 7px 10px 0;
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: #8688a2;
+  text-shadow: 0 1px 0 rgba(255,255,255,.4);
+}
+.cc-label {
+  position: absolute;
+  left: 10px; right: 10px; top: 22px; bottom: 10px;
+  background: var(--cc, #6a6fd1);
+  border: 2px solid #101124;
+  border-radius: 4px;
+  padding: 10px 8px;
+  color: #fff;
+}
+.cc-title { display: block; font-size: 9px; line-height: 1.5; text-shadow: 1px 1px 0 rgba(0,0,0,.5); }
+.cc-sub { display: block; margin-top: 8px; font-size: 6px; opacity: .85; }
+.cart-card.eject { background: #1c1d38; }
+.cart-card.eject .cc-label { background: transparent; border-style: dashed; color: #8a8cb8; }
+.tray-hint { margin-top: 16px; font-size: 6px; color: #8a8cb8; letter-spacing: 1px; }
+
+.cart-card.locked { opacity: .45; cursor: default; }
+.cart-card.locked:hover { transform: none; }
+.cart-card.current { opacity: 1; cursor: default; }
+#cart-back.ejecting { animation: cartOut .24s ease-in forwards; }
+@keyframes cartOut {
+  to { transform: translate(-50%, -34px); opacity: 0; }
+}
+
+.cart-card.add { background: #1c1d38; }
+.cart-card.add .cc-label { background: transparent; border-style: dashed; color: #9ec3ff; }
+#tray-error {
+  margin-top: 12px;
+  font-size: 7px;
+  letter-spacing: 1px;
+  color: #ff5a70;
+  animation: errBlink 1s steps(2) infinite;
+}
+#tray-error.hidden { display: none; }
+@keyframes errBlink { 50% { opacity: .45; } }
+
+/* ============================ QUIZ MODE ============================ */
+#scr-menu { background: var(--navy); }
+.menu-title {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--gold);
+  text-shadow: 2px 2px 0 rgba(0,0,0,.5);
+}
+.menu-sub { text-align: center; font-size: 7px; color: var(--mist); margin-top: 7px; letter-spacing: 1px; }
+.menu-box { position: absolute; left: 44px; right: 44px; top: 72px; padding: 10px 12px; }
+.menu-item { font-size: 8px; color: var(--parch); padding: 7px 4px 6px 16px; position: relative; }
+.menu-item.sel::before { content: '>'; position: absolute; left: 3px; color: var(--gold); }
+.menu-item.disabled { opacity: .4; }
+.menu-cont-info { color: var(--sky); margin-left: 8px; font-size: 7px; }
+.menu-hint { position: absolute; bottom: 8px; width: 100%; text-align: center; font-size: 6px; color: var(--mist); }
+
+#scr-quiz { background: var(--navy); }
+.quiz-hud { display: flex; justify-content: space-between; padding: 6px 8px 2px; font-size: 7px; color: var(--parch); }
+#quiz-hearts { color: #ff6b81; letter-spacing: 2px; }
+#quiz-score { color: var(--gold); }
+.quiz-timer { margin: 3px 8px 0; height: 5px; border: 1px solid var(--ink); background: rgba(0,0,0,.35); }
+#quiz-timer-fill { height: 100%; width: 100%; background: var(--gold); }
+.quiz-q {
+  position: absolute; left: 6px; right: 6px; top: 26px; height: 42px;
+  padding: 5px 7px; font-size: 7px; line-height: 1.7; overflow: hidden;
+}
+.quiz-choices { position: absolute; left: 6px; right: 6px; top: 72px; bottom: 6px; display: flex; flex-direction: column; gap: 3px; }
+.quiz-choice {
+  flex: 1; font-size: 7px; color: var(--parch);
+  background: rgba(0,0,0,.25); border: 1px solid rgba(148,176,194,.35);
+  padding: 2px 5px 2px 16px; position: relative; overflow: hidden;
+  white-space: nowrap; display: flex; align-items: center; cursor: pointer;
+}
+.quiz-choice.sel { border-color: var(--gold); background: rgba(59,93,201,.5); }
+.quiz-choice.sel::before { content: '>'; position: absolute; left: 5px; color: var(--gold); }
+.quiz-choice.right { background: rgba(56,183,100,.55); border-color: var(--green); }
+.quiz-choice.wrong { background: rgba(177,62,83,.6); border-color: var(--red); }
+.quiz-over { position: absolute; inset: 0; z-index: 5; background: rgba(10,11,22,.93); display: none; text-align: center; }
+.quiz-over.on { display: block; }
+.qo-title { margin-top: 32px; font-size: 14px; color: #ff6b81; letter-spacing: 2px; }
+#qo-stats { margin-top: 14px; font-size: 8px; color: var(--parch); line-height: 2; }
+.qo-hint { margin-top: 12px; font-size: 6px; color: var(--mist); animation: errBlink 1s steps(2) infinite; }
+
+/* ============================ HERO CUSTOMIZATION ============================ */
+#scr-hero { background: var(--navy); }
+.hero-head { margin-top: 10px; text-align: center; font-size: 10px; color: var(--gold); text-shadow: 2px 2px 0 rgba(0,0,0,.5); }
+.hero-sprite-box {
+  position: absolute; left: 16px; top: 34px;
+  width: 76px; height: 84px;
+  background: rgba(0,0,0,.3);
+  border: 1px solid rgba(148,176,194,.35);
+}
+#hero-preview { position: absolute; left: 6px; top: 8px; width: 4px; height: 4px; }
+.hero-rows { position: absolute; left: 102px; right: 8px; top: 36px; }
+.hero-row { font-size: 7px; color: var(--parch); padding: 5px 2px 4px 12px; position: relative; }
+.hero-row.sel::before { content: '>'; position: absolute; left: 0; color: var(--gold); }
+.hero-row .hr-label { color: var(--mist); margin-right: 8px; }
+.hero-row.begin { margin-top: 6px; color: var(--gold); }
+.hero-oracle {
+  position: absolute; bottom: 7px; width: 100%;
+  text-align: center; font-size: 6px; letter-spacing: 1px; color: var(--sky);
+}
+.quiz-wait { position: absolute; inset: 0; z-index: 4; background: rgba(10,11,22,.88); display: none; }
+.quiz-wait.on { display: block; }
+.qw-text { margin-top: 70px; text-align: center; font-size: 8px; color: var(--sky); animation: errBlink 1s steps(2) infinite; }
+
+/* ============================ TRAVEL SCENE (fills generation gaps) ============================ */
+.quiz-wait { background: var(--navy); }
+.travel-stars {
+  position: absolute; inset: 0 0 40px 0;
+  background-image: radial-gradient(circle, rgba(244,244,244,.8) 1px, transparent 1.6px);
+  background-size: 46px 34px;
+  animation: travelStars 3s linear infinite;
+  opacity: .5;
+}
+@keyframes travelStars { to { background-position: -46px 0; } }
+.travel-ground {
+  position: absolute; left: 0; right: 0; bottom: 26px; height: 12px;
+  background: repeating-linear-gradient(90deg, #1f2b57 0 14px, #24316a 14px 28px);
+  border-top: 2px solid #34407c;
+  animation: travelGround .5s linear infinite;
+}
+@keyframes travelGround { to { background-position: -28px 0; } }
+#travel-hero {
+  position: absolute; left: 92px; bottom: 40px;
+  width: 4px; height: 4px;
+  margin-top: -70px;
+  transform: translateY(-65px);
+  animation: travelBob .4s steps(2) infinite;
+}
+@keyframes travelBob {
+  0%, 100% { transform: translateY(-65px); }
+  50% { transform: translateY(-67px); }
+}
+#travel-hero.hop { animation: travelHop .35s ease-out; }
+@keyframes travelHop {
+  0%, 100% { transform: translateY(-65px); }
+  50% { transform: translateY(-80px); }
+}
+.travel-line {
+  position: absolute; bottom: 6px; left: 4px; right: 4px;
+  text-align: center; font-size: 7px; line-height: 1.6; color: var(--parch);
+  text-shadow: 1px 1px 0 rgba(0,0,0,.6);
+=======
+/* ============================ STICK CONTRA (konami secret) ============================ */
+#scr-contra { background: #000; }
+#contra-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
 }
