@@ -109,14 +109,21 @@ html, body {
   box-shadow: inset 0 3px 0 rgba(0,0,0,.45), 0 2px 0 rgba(255,255,255,.10);
 }
 .bezel-caption {
+  /* GBA-logo style wordmark: heavy slanted solid + outlined tail, no spaces */
   position: absolute;
-  bottom: 10px;
+  bottom: 6px;
   width: 100%;
   text-align: center;
-  font-size: 7px;
-  color: #e8e9f4;
-  letter-spacing: 2px;
-  text-shadow: 0 1px 0 rgba(0,0,0,.7);
+  font-size: 13px;
+  letter-spacing: 0;
+  transform: skewX(-8deg);
+  text-shadow: none;
+}
+.cap-solid { color: #f2f3fa; }
+.cap-outline {
+  color: transparent;
+  -webkit-text-stroke: 1px #f2f3fa;
+  margin-left: 2px;
 }
 .power-led {
   /* top-right of the face, right of the lens, with its POWER label */
@@ -143,9 +150,13 @@ html, body {
 /* ============================ THE SCREEN ============================ */
 
 #screen {
+  /* logical canvas stays 240x160; scaled up to the reference's LCD size
+     (~273 shell px wide) and centered on the lens center */
   position: absolute;
   left: 50%;
-  top: 32px;
+  top: 51px;
+  transform: scale(1.10);
+  transform-origin: center;
   margin-left: -120px;
   width: 240px;
   height: 160px;
@@ -324,16 +335,16 @@ html, body {
 
 .speaker {
   /* diagonal slit grille, bottom-right wing */
+  /* six short rectangular slits, parallel to the A/B diagonal (~-19deg) */
   position: absolute;
-  right: -3px;
-  bottom: 65px;
-  width: 128px;
-  height: 36px;
-  transform: rotate(-38deg);
-  border-radius: 16px;
+  right: 39px;
+  bottom: 54px;
+  width: 44px;
+  height: 58px;
+  transform: rotate(-19deg);
   background: repeating-linear-gradient(
     to bottom,
-    transparent 0 3px, #262744 3px 6px);
+    #262744 0 5px, transparent 5px 10px);
   opacity: .95;
 }
 .shell-tag {
