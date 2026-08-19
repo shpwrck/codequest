@@ -199,12 +199,36 @@ html, body {
   width: 72px;
   height: 72px;
 }
+/* one continuous plus: two overlapping outlined bars + a patch over the
+   crossing lines; the arm divs are transparent hit areas on top */
+#dpad::before {
+  content: '';
+  position: absolute;
+  left: 24px; top: 0;
+  width: 24px; height: 72px;
+  background: #cccdde;
+  border: 2px solid #3f4066;
+  border-radius: 6px;
+  z-index: 0;
+}
+#dpad::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 24px;
+  width: 72px; height: 24px;
+  background: #cccdde;
+  border: 2px solid #3f4066;
+  border-radius: 6px;
+  z-index: 0;
+}
 .dpad-btn {
   position: absolute;
-  background: linear-gradient(#d6d7e6, #b0b1c6);
-  border: 2px solid #3f4066;
+  background: none;
+  border: 0;
+  z-index: 2;
   cursor: pointer;
 }
+.dpad-btn.pressed { background: rgba(255,255,255,.3); }
 .dpad-btn::after {
   content: '';
   position: absolute;
@@ -212,26 +236,28 @@ html, body {
   pointer-events: none;
   opacity: .5;
 }
-.dpad-up::after    { left: 8px; top: 7px;    border-bottom-color: #6e70a0; border-top-width: 0; }
-.dpad-down::after  { left: 8px; bottom: 7px; border-top-color: #6e70a0; border-bottom-width: 0; }
-.dpad-left::after  { top: 8px; left: 7px;    border-right-color: #6e70a0; border-left-width: 0; }
-.dpad-right::after { top: 8px; right: 7px;   border-left-color: #6e70a0; border-right-width: 0; }
+.dpad-up::after    { left: 7px; top: 8px;    border-bottom-color: #6e70a0; border-top-width: 0; }
+.dpad-down::after  { left: 7px; bottom: 8px; border-top-color: #6e70a0; border-bottom-width: 0; }
+.dpad-left::after  { top: 7px; left: 8px;    border-right-color: #6e70a0; border-left-width: 0; }
+.dpad-right::after { top: 7px; right: 8px;   border-left-color: #6e70a0; border-right-width: 0; }
 .dpad-btn.pressed, .ab.pressed, .pill.pressed { filter: brightness(1.45); }
-.dpad-up    { left: 24px; top: 0;    width: 24px; height: 25px; border-radius: 6px 6px 0 0; border-bottom: 0; }
-.dpad-down  { left: 24px; bottom: 0; width: 24px; height: 25px; border-radius: 0 0 6px 6px; border-top: 0; }
-.dpad-left  { left: 0;    top: 24px; width: 25px; height: 24px; border-radius: 6px 0 0 6px; border-right: 0; }
-.dpad-right { right: 0;   top: 24px; width: 25px; height: 24px; border-radius: 0 6px 6px 0; border-left: 0; }
+.dpad-up    { left: 24px; top: 0;    width: 24px; height: 26px; border-radius: 6px 6px 0 0; }
+.dpad-down  { left: 24px; bottom: 0; width: 24px; height: 26px; border-radius: 0 0 6px 6px; }
+.dpad-left  { left: 0;    top: 24px; width: 26px; height: 24px; border-radius: 6px 0 0 6px; }
+.dpad-right { right: 0;   top: 24px; width: 26px; height: 24px; border-radius: 0 6px 6px 0; }
 .dpad-core {
+  /* covers the bars' crossing lines so the plus outline reads as one shape */
   position: absolute;
-  left: 24px; top: 24px;
-  width: 24px; height: 24px;
-  background: #c3c4d8;
+  left: 26px; top: 24px;
+  width: 20px; height: 24px;
+  background: #cccdde;
+  z-index: 1;
   pointer-events: none;
 }
 .dpad-core::after {
   content: '';
   position: absolute;
-  left: 5px; top: 5px;
+  left: 3px; top: 5px;
   width: 14px; height: 14px;
   border-radius: 50%;
   background: radial-gradient(circle at 40% 35%, #d9dae8, #9d9eb8);
