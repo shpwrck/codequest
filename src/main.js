@@ -273,7 +273,7 @@
   }
 
   // ---------------------------------------------------------- dom refs
-  const shellEl = $('shell'), screenInner = $('screen-inner');
+  const shellEl = $('shell'), scaleEl = $('shell-scale'), screenInner = $('screen-inner');
   const saveL1 = $('save-l1'), saveL2 = $('save-l2'), paletteRow = $('palette-row'), starfield = $('starfield');
   const selectMsg = $('select-msg'), cmdInput = $('cmd-input'), nameEntry = $('name-entry'), questList = $('quest-list');
   const bossWrap = $('boss-wrap'), bossNameEl = $('boss-name'), bossSpriteEl = $('boss-sprite'), heroSpriteEl = $('hero-sprite');
@@ -308,9 +308,9 @@
 
   // ---------------------------------------------------------- scale-to-fit shell
   function fit() {
-    const s = Math.min(window.innerWidth / 584, window.innerHeight / 334);
+    const s = Math.min(window.innerWidth / 584, window.innerHeight / 354);
     const snapped = s >= 1 ? Math.floor(s * 2) / 2 : Math.max(0.35, s); // half-integer steps, integer look
-    shellEl.style.transform = `scale(${snapped})`;
+    scaleEl.style.transform = `scale(${snapped})`;
   }
   window.addEventListener('resize', fit);
 

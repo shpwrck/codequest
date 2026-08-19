@@ -9,10 +9,21 @@
   </head>
   <body>
     <div id="stage">
-      <div id="shell">
-        <div class="shoulder shoulder-l"></div>
-        <div class="shoulder shoulder-r"></div>
+      <div id="shell-scale">
+        <svg id="shoulders" viewBox="-20 -20 618 368" aria-hidden="true">
+          <defs>
+            <linearGradient id="shldGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#d6d7e5"/>
+              <stop offset="1" stop-color="#a6a7bd"/>
+            </linearGradient>
+          </defs>
+          <path d="M 172 8 C 126 -8, 72 -16, 34 -12 C 8 -9, -5 6, -6 26 C -7 50, -8 74, -6 88 C -5 100, -1 108, 5 108 C 10 108, 14 102, 17 95 C 26 76, 66 42, 172 8 Z"
+                fill="url(#shldGrad)" stroke="#101124" stroke-width="3"/>
+          <path d="M 406 8 C 452 -8, 506 -16, 544 -12 C 570 -9, 583 6, 584 26 C 585 50, 586 74, 584 88 C 583 100, 579 108, 573 108 C 568 108, 564 102, 561 95 C 552 76, 512 42, 406 8 Z"
+                fill="url(#shldGrad)" stroke="#101124" stroke-width="3"/>
+        </svg>
 
+        <div id="shell">
         <div id="bezel">
           <div class="bezel-caption">CODE QUEST ADVANCE</div>
           <div class="power-led"></div>
@@ -144,6 +155,7 @@
         <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
         <div class="speaker"></div>
         <div class="shell-tag">CQA-001</div>
+        </div>
       </div>
     </div>
   </body>
