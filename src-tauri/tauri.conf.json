@@ -11,10 +11,10 @@
     "windows": [
       {
         "title": "CODE QUEST ADVANCE",
-        "width": 1024,
-        "height": 720,
-        "minWidth": 800,
-        "minHeight": 560,
+        "width": 1168,
+        "height": 668,
+        "minWidth": 600,
+        "minHeight": 360,
         "center": true
       }
     ],

@@ -308,7 +308,7 @@
 
   // ---------------------------------------------------------- scale-to-fit shell
   function fit() {
-    const s = Math.min(window.innerWidth / 650, window.innerHeight / 410);
+    const s = Math.min(window.innerWidth / 584, window.innerHeight / 334);
     const snapped = s >= 1 ? Math.floor(s * 2) / 2 : Math.max(0.35, s); // half-integer steps, integer look
     shellEl.style.transform = `scale(${snapped})`;
   }
