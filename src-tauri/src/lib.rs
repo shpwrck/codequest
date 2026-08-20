@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod engine;
+mod font5x7;
 
 use std::process::{Command, Stdio};
 use std::thread;
