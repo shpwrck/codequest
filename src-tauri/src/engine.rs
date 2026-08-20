@@ -12,6 +12,9 @@ use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
 pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
 pub const FRAME_BYTES: usize = WIDTH * HEIGHT * 4;
+pub const QUIZ_QUESTION_COLUMNS: usize = 37;
+pub const QUIZ_QUESTION_ROWS: usize = 4;
+pub const QUIZ_CHOICE_CHARS: usize = 35;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
 
 const INK: Color = Color::rgb(26, 28, 44);
@@ -47,6 +50,22 @@ pub struct QuizQuestion {
     pub question: String,
     pub choices: Vec<String>,
     pub answer: usize,
+}
+
+pub fn quiz_question_fits(question: &str, choices: &[String], answer: usize) -> bool {
+    !question.trim().is_empty()
+        && wrap_text(question, QUIZ_QUESTION_COLUMNS).len() <= QUIZ_QUESTION_ROWS
+        && choices.len() == 4
+        && answer < choices.len()
+        && choices
+            .iter()
+            .map(|choice| choice.trim().to_ascii_uppercase())
+            .collect::<HashSet<_>>()
+            .len()
+            == choices.len()
+        && choices
+            .iter()
+            .all(|choice| !choice.trim().is_empty() && choice.chars().count() <= QUIZ_CHOICE_CHARS)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -808,7 +827,14 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
     };
     frame.rect(5, 23, 230, 42, INK);
     frame.outline(5, 23, 230, 42, SKY);
-    frame.wrapped_text(11, 30, &question.question, PARCH, 37, 4);
+    frame.wrapped_text(
+        11,
+        30,
+        &question.question,
+        PARCH,
+        QUIZ_QUESTION_COLUMNS,
+        QUIZ_QUESTION_ROWS,
+    );
     for (index, choice) in question.choices.iter().take(4).enumerate() {
         let y = 73 + index as i32 * 20;
         let mut color = PARCH;
@@ -823,7 +849,7 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
                 color = RED;
             }
         }
-        frame.text(21, y, &truncate(choice, 35), color, 1);
+        frame.text(21, y, &truncate(choice, QUIZ_CHOICE_CHARS), color, 1);
     }
     frame.text(5, 151, "A:ANSWER", MIST, 1);
     frame.text(199, 151, "B:BACK", MIST, 1);
