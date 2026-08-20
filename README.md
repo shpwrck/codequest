@@ -38,20 +38,23 @@ requires ejecting first — remove and insert animations included.
 
 **Game modes.** A repo with a `CODEQUEST.md` loads the quest-battle mode;
 without one, it loads the **ENDLESS REPO QUIZ**. Cartridge contents are data
-only: Rust derives a title, mode, quest list, and questions from the repo,
-then gives that data to Bevy. A cartridge cannot add JavaScript or replace
-the game loop.
+only: Rust derives a title, mode, and quest list from the repo, then gives
+that data to Bevy. A cartridge cannot add JavaScript or replace the game
+loop.
 
-Quiz question generation also lives in Rust. A conceptual fallback batch is
-selected fresh for every cartridge insertion, while the `claude` CLI can
-replace it with questions about the project's purpose, architecture,
-responsibilities, interactions, invariants, and tradeoffs. The prompt and
-accepted-output policy live in `src-tauri/src/lib.rs`: file and repository
-trivia is rejected, questions must fit four 37-character lines, and each of
-four distinct choices must fit 35 characters. Set `CQA_NO_AI=1` to keep the
-fallback batch, or `CQA_CLAUDE_MODEL` to select the model. Quest-battle
-commands are selected from the Rust-derived cartridge quest list and are
-started, streamed, and stopped by the Bevy runtime.
+Quiz cartridges contain no preloaded questions. Inserting one makes the Bevy
+engine ask the `claude` CLI for the first batch immediately. Character
+creation, Oracle travel, and level-up screens keep the game moving while
+Claude writes or prefetches the next batch; the Oracle waits and retries if a
+batch fails instead of substituting generic questions. Generated questions
+cover the project's purpose, architecture, responsibilities, interactions,
+invariants, and tradeoffs. The prompt and accepted-output policy live in
+`src-tauri/src/lib.rs`: file and repository trivia is rejected, questions
+must fit four 37-character lines, and each of four distinct choices must fit
+35 characters. Set `CQA_NO_AI=1` to disable generation for diagnostics (the
+Oracle will continue waiting), or `CQA_CLAUDE_MODEL` to select the model.
+Quest-battle commands are selected from the Rust-derived cartridge quest list
+and are started, streamed, and stopped by the Bevy runtime.
 
 ## Architecture
 

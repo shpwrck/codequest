@@ -3,8 +3,7 @@ mod engine;
 mod font5x7;
 
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -319,218 +318,6 @@ fn accepted_question_batch(
     (received_count == expected_count && valid.len() == expected_count).then_some(valid)
 }
 
-fn seeded(n: &mut u64) -> u64 {
-    *n = n
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(1442695040888963407);
-    (*n >> 33) ^ *n
-}
-
-fn pick_idx(rng: &mut u64, len: usize) -> usize {
-    (seeded(rng) as usize) % len.max(1)
-}
-
-fn mk_q(q: &str, correct: String, mut others: Vec<String>, rng: &mut u64) -> QQuestion {
-    others.retain(|o| *o != correct);
-    others.truncate(3);
-    let mut choices = vec![correct.clone()];
-    choices.append(&mut others);
-    // shuffle
-    for i in (1..choices.len()).rev() {
-        let j = pick_idx(rng, i + 1);
-        choices.swap(i, j);
-    }
-    let answer = choices.iter().position(|c| *c == correct).unwrap_or(0);
-    QQuestion {
-        q: q.to_string(),
-        choices,
-        answer,
-    }
-}
-
-static FALLBACK_DECK_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-
-fn conceptual_fallback_questions(count: usize, generation: usize) -> Vec<QQuestion> {
-    const BANK: [(&str, &str, [&str; 3]); 24] = [
-        (
-            "WHY SEPARATE UI FROM GAME LOGIC?",
-            "CLEAR RESPONSIBILITIES",
-            ["HIDDEN FAILURES", "DUPLICATED STATE", "TIGHTER COUPLING"],
-        ),
-        (
-            "WHAT SHOULD A TEST PROTECT?",
-            "OBSERVABLE BEHAVIOR",
-            ["PRIVATE DETAILS", "ACCIDENTAL ORDER", "MANUAL HABITS"],
-        ),
-        (
-            "WHY VALIDATE EXTERNAL INPUT?",
-            "PRESERVE SYSTEM INVARIANTS",
-            [
-                "SKIP ERROR HANDLING",
-                "INCREASE COUPLING",
-                "HIDE INVALID STATE",
-            ],
-        ),
-        (
-            "WHY USE A FIXED UPDATE LOOP?",
-            "CONSISTENT STATE CHANGES",
-            ["RANDOM TIMING", "UNBOUNDED WORK", "IMPLICIT INPUT"],
-        ),
-        (
-            "WHAT MAKES A MODULE EASY TO CHANGE?",
-            "A SMALL STABLE INTERFACE",
-            [
-                "SHARED INTERNAL STATE",
-                "MANY ENTRY POINTS",
-                "HIDDEN SIDE EFFECTS",
-            ],
-        ),
-        (
-            "WHY HANDLE FAILURE EXPLICITLY?",
-            "PREDICTABLE FALLBACKS",
-            ["SILENT CORRUPTION", "UNLIMITED RETRIES", "UNKNOWN STATE"],
-        ),
-        (
-            "WHAT DOES ENCAPSULATION PROTECT?",
-            "INTERNAL IMPLEMENTATION",
-            [
-                "GLOBAL MUTATION",
-                "CALLER ASSUMPTIONS",
-                "DUPLICATE OWNERSHIP",
-            ],
-        ),
-        (
-            "WHY KEEP DOMAIN TERMS CONSISTENT?",
-            "REDUCE AMBIGUITY",
-            [
-                "ADD MORE STATES",
-                "HIDE RESPONSIBILITY",
-                "INCREASE SURPRISE",
-            ],
-        ),
-        (
-            "WHAT MUST A CACHE NOT REPLACE?",
-            "THE SOURCE OF TRUTH",
-            ["FAST LOOKUPS", "TEMPORARY RESULTS", "DERIVED VALUES"],
-        ),
-        (
-            "WHY BOUND TEXT BEFORE RENDERING?",
-            "PROTECT THE LAYOUT",
-            ["CHANGE GAME STATE", "HIDE ALL CONTENT", "REMOVE VALIDATION"],
-        ),
-        (
-            "WHAT SHOULD ASYNC RESULTS CARRY?",
-            "REQUEST IDENTITY",
-            ["GLOBAL OWNERSHIP", "RANDOM ORDER", "SHARED MUTATION"],
-        ),
-        (
-            "WHY APPLY DATA AT SAFE BOUNDARIES?",
-            "AVOID MID-STATE MUTATION",
-            ["DELAY ALL INPUT", "SKIP VALIDATION", "DUPLICATE EVENTS"],
-        ),
-        (
-            "WHY KEEP GAME STATE IN ONE ENGINE?",
-            "ONE AUTHORITATIVE OWNER",
-            [
-                "MORE HIDDEN COUPLING",
-                "DUPLICATED RULES",
-                "UNORDERED EFFECTS",
-            ],
-        ),
-        (
-            "WHAT SHOULD AN ADAPTER TRANSLATE?",
-            "PLATFORM OPERATIONS",
-            ["DOMAIN OWNERSHIP", "GAMEPLAY RULES", "UNRELATED STATE"],
-        ),
-        (
-            "WHY PREFER DETERMINISTIC INPUT?",
-            "REPEATABLE BEHAVIOR",
-            ["RANDOM OUTCOMES", "IMPLICIT COMMANDS", "HIDDEN TIMING"],
-        ),
-        (
-            "WHAT DOES A FALLBACK PRESERVE?",
-            "THE CORE EXPERIENCE",
-            ["THE PRIMARY FAILURE", "INVALID OUTPUT", "UNBOUNDED DELAY"],
-        ),
-        (
-            "WHY USE A FRAMEBUFFER CONTRACT?",
-            "STABLE PRESENTATION",
-            ["VARIABLE DIMENSIONS", "DOM OWNERSHIP", "IMPLICIT SCALING"],
-        ),
-        (
-            "WHAT MAKES AN INTERFACE DEEP?",
-            "SIMPLE USEFUL OPERATIONS",
-            [
-                "EXPOSED INTERNALS",
-                "MANY SPECIAL CASES",
-                "DUPLICATE METHODS",
-            ],
-        ),
-        (
-            "WHAT SHOULD OWN A SYSTEM INVARIANT?",
-            "THE DOMAIN MODEL",
-            ["THE DEVICE SHELL", "EVERY CALLER", "RANDOM EVENTS"],
-        ),
-        (
-            "WHY IS ONE SOURCE OF TRUTH USEFUL?",
-            "PREVENTS STATE DRIFT",
-            ["ADDS MORE OWNERS", "HIDES DATA FLOW", "REMOVES VALIDATION"],
-        ),
-        (
-            "WHAT SHOULD EVENTS DESCRIBE?",
-            "OBSERVED DOMAIN CHANGES",
-            [
-                "PRIVATE MEMORY LAYOUT",
-                "RANDOM TIMING",
-                "UNRELATED DETAILS",
-            ],
-        ),
-        (
-            "WHY MAKE CANCELLATION EXPLICIT?",
-            "CONTROLLED RESOURCE CLEANUP",
-            ["ABANDONED WORK", "HIDDEN SIDE EFFECTS", "ENDLESS RETRIES"],
-        ),
-        (
-            "WHAT MAKES STATE TRANSITIONS SAFE?",
-            "VALID PRECONDITIONS",
-            ["IMPLICIT ORDER", "SHARED MUTATION", "RANDOM DESTINATIONS"],
-        ),
-        (
-            "WHY DECOUPLE INPUT FROM UPDATES?",
-            "STABLE TIMING",
-            [
-                "DUPLICATED COMMANDS",
-                "HIDDEN OWNERSHIP",
-                "UNBOUNDED EVENTS",
-            ],
-        ),
-    ];
-
-    let deck_size = count.min(BANK.len());
-    let rotation_step = deck_size.saturating_sub(1).max(1);
-    let rotation = generation.wrapping_mul(rotation_step) % BANK.len();
-    let mut rng = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| time.as_nanos() as u64)
-        .unwrap_or(42);
-    BANK.iter()
-        .cycle()
-        .skip(rotation)
-        .take(deck_size)
-        .map(|(prompt, correct, distractors)| {
-            mk_q(
-                prompt,
-                (*correct).to_string(),
-                distractors
-                    .iter()
-                    .map(|choice| (*choice).to_string())
-                    .collect(),
-                &mut rng,
-            )
-        })
-        .collect()
-}
-
 fn gather_quiz_data(path: &std::path::Path) -> Result<QuizData, String> {
     quiz_data(path.to_string_lossy().to_string())
 }
@@ -619,19 +406,6 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
     } else {
         engine::CartridgeMode::Quiz
     };
-    let questions = if mode == engine::CartridgeMode::Quiz {
-        let generation = FALLBACK_DECK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        conceptual_fallback_questions(12, generation)
-            .into_iter()
-            .map(|question| engine::QuizQuestion {
-                question: question.q,
-                choices: question.choices,
-                answer: question.answer,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
     engine::CartridgeSpec {
         id: cartridge.path,
         title: cartridge.title,
@@ -645,7 +419,7 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
                 command: quest.command,
             })
             .collect(),
-        questions,
+        questions: Vec::new(),
     }
 }
 
@@ -657,31 +431,9 @@ fn engine_set_cartridge(
     let cartridge = path
         .map(|path| build_cartridge(std::path::Path::new(&path)))
         .transpose()?;
-    let oracle_path = cartridge
-        .as_ref()
-        .filter(|cartridge| cartridge.mode == "quiz")
-        .map(|cartridge| cartridge.path.clone());
     state
         .0
         .set_cartridge(cartridge.clone().map(engine_cartridge))?;
-
-    if let Some(path) = oracle_path.filter(|_| std::env::var("CQA_NO_AI").is_err()) {
-        let runtime = state.0.clone();
-        thread::spawn(move || {
-            let questions = ai_questions(std::path::Path::new(&path), 1, 12)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|question| engine::QuizQuestion {
-                    question: question.q,
-                    choices: question.choices,
-                    answer: question.answer,
-                })
-                .collect::<Vec<_>>();
-            if !questions.is_empty() {
-                let _ = runtime.replace_questions(path, questions);
-            }
-        });
-    }
     Ok(cartridge)
 }
 
@@ -708,9 +460,23 @@ fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let question_loader: engine::QuestionLoader = Arc::new(|path, level, count| {
+        if std::env::var("CQA_NO_AI").is_ok() {
+            return Vec::new();
+        }
+        ai_questions(std::path::Path::new(&path), level, count)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|question| engine::QuizQuestion {
+                question: question.q,
+                choices: question.choices,
+                answer: question.answer,
+            })
+            .collect()
+    });
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(EngineState(engine::EngineRuntime::spawn()))
+        .manage(EngineState(engine::EngineRuntime::spawn(question_loader)))
         .invoke_handler(tauri::generate_handler![
             pick_cartridge,
             engine_set_cartridge,
@@ -784,39 +550,10 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn conceptual_fallback_is_display_safe() {
-        let questions = conceptual_fallback_questions(usize::MAX, 0);
-        assert_eq!(questions.len(), 24);
-        for question in &questions {
-            assert!(
-                question_is_acceptable(question),
-                "fallback question violated policy: {}",
-                question.q
-            );
-        }
-    }
+    fn quiz_cartridges_have_no_preloaded_questions() {
+        let spec = engine_cartridge(cartridge("/tmp/first", "FIRST"));
 
-    #[test]
-    fn replacing_cartridge_builds_a_fresh_immediate_deck() {
-        let first = engine_cartridge(cartridge("/tmp/first", "FIRST"));
-        let second = engine_cartridge(cartridge("/tmp/second", "SECOND"));
-        let prompts = |spec: &engine::CartridgeSpec| {
-            let mut prompts = spec
-                .questions
-                .iter()
-                .map(|question| question.question.clone())
-                .collect::<Vec<_>>();
-            prompts.sort();
-            prompts
-        };
-        let first_prompts = prompts(&first);
-        let second_prompts = prompts(&second);
-        let shared = first_prompts
-            .iter()
-            .filter(|prompt| second_prompts.contains(prompt))
-            .count();
-
-        assert!(shared <= 1, "fresh decks shared {shared} questions");
+        assert!(spec.questions.is_empty());
     }
 
     #[test]
@@ -866,7 +603,7 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn incomplete_claude_batches_do_not_replace_the_fallback() {
+    fn incomplete_claude_batches_are_rejected() {
         let valid = question(
             "WHAT SHOULD OWN GAMEPLAY STATE?",
             &[
