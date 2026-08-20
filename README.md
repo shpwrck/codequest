@@ -63,7 +63,9 @@ quest list and are started, streamed, and stopped by the Bevy runtime.
 
 The framebuffer is always exactly 480×320 (614,400 RGBA bytes). Each pixel is
 32-bit RGBA (8 bits per channel); 64-bit color would increase color precision
-without adding text space. Button
+without adding text space. Body text is rendered at 2× in the engine so the
+2:1 LCD presentation preserves an 8×8-pixel glyph instead of shrinking it to
+an unreadable 4×4 pixels. Button
 presses can change its pixels, but cannot change its dimensions or the CSS
 layout of the device, which prevents the mid-game rasterization shift that
 the DOM-rendered version could trigger.
