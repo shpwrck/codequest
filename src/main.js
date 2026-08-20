@@ -118,6 +118,7 @@
     $("cart-back").classList.toggle("guided", needsCart);
     $("power-switch").classList.toggle("guided", needsPower);
     const switchingOff = powered && !cartridge;
+    powerGuide.classList.toggle("switching-off", switchingOff);
     powerGuide.querySelector(".guide-action").textContent = switchingOff ? "TURN POWER OFF" : "TURN POWER ON";
     powerGuide.querySelector(".guide-detail").textContent = switchingOff ? "TO LOAD A GAME" : "TO START";
     powerGuide.setAttribute("aria-label", switchingOff ? "Turn the power off to load a game" : "Turn the power on to start");
