@@ -339,7 +339,11 @@
   const defeatEl = $('defeat'), fatalLines = $('fatal-lines'), dmRetry = $('dm-retry'), dmFlee = $('dm-flee');
   const lvlHero = $('lvl-hero'), lvlRows = $('lvl-rows');
 
-  const screens = { off: $('scr-off'), boot: $('scr-boot'), contra: $('scr-contra'), title: $('scr-title'), menu: $('scr-menu'), quiz: $('scr-quiz'), select: $('scr-select'), battle: $('scr-battle'), levelup: $('scr-levelup') };
+  const screens = { off: $('scr-off'), boot: $('scr-boot'), contra: $('scr-contra'), title: $('scr-title'), menu: $('scr-menu'), hero: $('scr-hero'), quiz: $('scr-quiz'), select: $('scr-select'), battle: $('scr-battle'), levelup: $('scr-levelup') };
+  // every show() target must have a key here: a missing one silently blanks the
+  // screen (show() deactivates all and activates nothing)
+  for (const k of ['off', 'boot', 'contra', 'title', 'menu', 'hero', 'quiz', 'select', 'battle', 'levelup'])
+    if (!screens[k]) console.error('CQA: screen element missing for', k);
 
   // ---------------------------------------------------------- state
   let state = 'title';          // title | select | battle | levelup
