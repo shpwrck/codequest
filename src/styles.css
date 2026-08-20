@@ -91,8 +91,7 @@ html, body {
 .shoulder-btn { pointer-events: auto; cursor: pointer; transform-box: fill-box; transform-origin: center; }
 .shoulder-btn.pressed {
   fill: #ffffff;
-  filter: drop-shadow(0 0 3px rgba(255,255,255,.8));
-  transform: translateY(2px);   /* the cap tucks into the body like a real press */
+  stroke: #2d2e58;
 }
 
 /* screen bezel */
@@ -113,8 +112,9 @@ html, body {
   /* GBA-logo style wordmark: heavy slanted solid + outlined tail, no spaces */
   /* centered in the gap between screen bottom (237) and lens bottom (295) */
   position: absolute;
-  bottom: 19px;
-  width: 100%;
+  left: 132px;
+  bottom: 50px;
+  width: 315px;
   text-align: center;
   font-size: 15px;
   letter-spacing: 0;
@@ -133,8 +133,8 @@ html, body {
 .power-led {
   /* top-right of the face, right of the lens, with its POWER label */
   position: absolute;
-  left: 337px;
-  top: 18px;
+  left: 469px;
+  top: 48px;
   width: 11px;
   height: 11px;
   border-radius: 50%;
@@ -169,6 +169,8 @@ html, body {
   border: 3px solid #000;
   background: var(--ink);
   overflow: hidden;
+  contain: strict;
+  isolation: isolate;
   image-rendering: pixelated;
 }
 #screen-inner {
@@ -247,7 +249,7 @@ html, body {
   z-index: 2;
   cursor: pointer;
 }
-.dpad-btn.pressed { background: rgba(255,255,255,.3); }
+.dpad-btn.pressed { background: rgba(255,255,255,.45); }
 .dpad-btn::after {
   content: '';
   position: absolute;
@@ -259,7 +261,6 @@ html, body {
 .dpad-down::after  { left: 8px; bottom: 9px; border-top-color: #6e70a0; border-bottom-width: 0; }
 .dpad-left::after  { top: 8px; left: 9px;    border-right-color: #6e70a0; border-left-width: 0; }
 .dpad-right::after { top: 8px; right: 9px;   border-left-color: #6e70a0; border-right-width: 0; }
-.dpad-btn.pressed, .ab.pressed, .pill.pressed { filter: brightness(1.45); }
 .dpad-up    { left: 28px; top: 0;    width: 28px; height: 30px; border-radius: 6px 6px 0 0; }
 .dpad-down  { left: 28px; bottom: 0; width: 28px; height: 30px; border-radius: 0 0 6px 6px; }
 .dpad-left  { left: 0;    top: 28px; width: 30px; height: 28px; border-radius: 6px 0 0 6px; }
@@ -297,7 +298,11 @@ html, body {
   cursor: pointer;
 }
 .ab span { font-size: 15px; color: #7d7fa6; pointer-events: none; text-shadow: 0 1px 0 rgba(255,255,255,.5); }
-.ab.pressed { transform: translateY(2px); box-shadow: inset 0 -2px 0 rgba(0,0,0,.3); }
+.ab.pressed {
+  background: radial-gradient(circle at 38% 30%, #fff, #e2e3ee 55%, #c1c2d3);
+  border-color: #2d2e58;
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,.3), 0 1px 0 rgba(0,0,0,.3);
+}
 #btn-a { right: 19px; top: 103px; }
 #btn-b { right: 73px; top: 122px; }
 .ab-label {
@@ -334,6 +339,11 @@ html, body {
   text-shadow: 0 1px 0 rgba(0,0,0,.4);
   pointer-events: none;
   white-space: nowrap;
+}
+.pill.pressed {
+  background: radial-gradient(circle at 40% 30%, #fff, #d7d8e6);
+  border-color: #2d2e58;
+  box-shadow: inset 0 2px 2px rgba(0,0,0,.18);
 }
 /* stacked below the D-pad: START above SELECT */
 #btn-start  { left: 100px; top: 210px; }
@@ -1337,20 +1347,18 @@ html, body {
 }
 @keyframes travelGround { to { background-position: -28px 0; } }
 #travel-hero {
-  position: absolute; left: 92px; bottom: 40px;
+  position: absolute; left: 92px; bottom: 105px;
   width: 4px; height: 4px;
-  margin-top: -70px;
-  transform: translateY(-65px);
   animation: travelBob .4s steps(2) infinite;
 }
 @keyframes travelBob {
-  0%, 100% { transform: translateY(-65px); }
-  50% { transform: translateY(-67px); }
+  0%, 100% { bottom: 105px; }
+  50% { bottom: 107px; }
 }
 #travel-hero.hop { animation: travelHop .35s ease-out; }
 @keyframes travelHop {
-  0%, 100% { transform: translateY(-65px); }
-  50% { transform: translateY(-80px); }
+  0%, 100% { bottom: 105px; }
+  50% { bottom: 120px; }
 }
 .travel-line {
   position: absolute; bottom: 6px; left: 4px; right: 4px;
