@@ -1,0 +1,106 @@
+# Reproducible release builder for CODE QUEST ADVANCE.
+#
+# The base is Ubuntu 22.04 on purpose. Tauri v2 links webkit2gtk-4.1, and RHEL 9
+# only ever shipped the 4.0 API (libwebkit2gtk-4.0.so.37) -- in BaseOS, AppStream,
+# CRB and EPEL alike -- so an EL9-native build is impossible. Jammy is the oldest
+# distro carrying 4.1, and its glibc (2.35) therefore sets the portability floor
+# for the AppImage produced here. Building on the host distro instead is what
+# produces binaries that need GLIBC_2.39 and die on RHEL 9.
+FROM docker.io/library/ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    APPIMAGE_EXTRACT_AND_RUN=1
+
+# No appindicator: this app declares no tray icon, so the tray deps are dead weight.
+# xdg-utils IS required: tauri-plugin-opener makes the bundler copy xdg-open into the AppDir.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl file git pkg-config \
+      libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev \
+      patchelf desktop-file-utils xz-utils zsync xdg-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node exists here only to run @tauri-apps/cli; jammy's own nodejs is too old.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH=/root/.cargo/bin:$PATH
+
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY src ./src
+COPY src-tauri ./src-tauri
+RUN npm run tauri build -- --bundles appimage
+
+# --- EL9 compatibility pass --------------------------------------------------
+# A stock jammy bundle still will not start on RHEL 9 (glibc 2.34, libstdc++
+# 3.4.29, FreeType 2.10.4). Every item below was found by actually launching the
+# AppImage inside a rockylinux:9 userspace, not by reading symbol tables:
+#
+#   1. glibc 2.35 re-versioned hypot/hypotf (they became correctly rounded), so
+#      webkit, javascriptcore and cairo reference hypot@GLIBC_2.35 -- the ONLY
+#      2.35 symbols in the whole bundle. The older implementation is ABI
+#      compatible, so clearing the version requirement lets them bind to it.
+#   2. patchelf clears the symbol reference but leaves the Verneed entry, and
+#      the loader enforces Verneed whether or not a symbol uses it -- so the
+#      library still refused to load until the dead entry was unlinked too.
+#   3. WebKit is gcc-12 built (needs GLIBCXX_3.4.30) and calls FreeType's COLRv1
+#      API (new in 2.11). linuxdeploy treats libstdc++ and libfreetype as system
+#      libraries and refuses to bundle them, so carry them -- but CONDITIONALLY,
+#      see the hook: forcing them on a newer host breaks its Mesa and the app
+#      renders blank. `ldd -r` on EL9 says these are the only unresolved
+#      symbols; fontconfig, harfbuzz, expat, X11, gbm and drm resolve fine.
+#   4. libwayland-client is dropped outright. It is on the official AppImage
+#      excludelist, every host has it, and jammy's 1.20 shadowing Fedora 43's
+#      1.25 was the second of the two things that broke EGL there.
+#
+# Then repackage the AppDir with the same runtime tauri itself used.
+COPY packaging/strip-verneed.py packaging/apprun-compat-hook.sh ./packaging/
+RUN set -eux; \
+    cd src-tauri/target/release/bundle/appimage; \
+    d=$(echo *.AppDir); \
+    for lib in libwebkit2gtk-4.1.so.0 libjavascriptcoregtk-4.1.so.0 libcairo.so.2; do \
+      patchelf --clear-symbol-version hypot --clear-symbol-version hypotf "$d/usr/lib/$lib"; \
+      python3 /build/packaging/strip-verneed.py "$d/usr/lib/$lib" libm.so.6 GLIBC_2.35; \
+    done; \
+    rm -f "$d/usr/lib/libwayland-client.so.0"; \
+    mkdir -p "$d/usr/optional/libstdc++" "$d/usr/optional/libfreetype"; \
+    cp -L /usr/lib/x86_64-linux-gnu/libstdc++.so.6 "$d/usr/optional/libstdc++/"; \
+    cp -L /usr/lib/x86_64-linux-gnu/libfreetype.so.6 "$d/usr/optional/libfreetype/"; \
+    cp /build/packaging/apprun-compat-hook.sh "$d/apprun-hooks/cqa-compat.sh"; \
+    sed -i 's|^exec "$this_dir"/AppRun.wrapped|source "$this_dir"/apprun-hooks/"cqa-compat.sh"\n\nexec "$this_dir"/AppRun.wrapped|' "$d/AppRun"; \
+    grep -q cqa-compat "$d/AppRun"; \
+    rm -f ./*.AppImage; \
+    OUTPUT=code-quest-advance_0.1.0_amd64.AppImage ARCH=x86_64 \
+      /root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage --appdir "$d"
+
+# --- Portability gate --------------------------------------------------------
+# Fails the build rather than shipping an artifact that dies on the target's
+# dynamic loader. RHEL 9 is the floor we care about: glibc 2.34, GLIBCXX 3.4.29
+# on the host, with the bundled libstdc++ covering up to 3.4.30.
+RUN set -eu; \
+    mkdir -p /out; \
+    cd src-tauri/target/release/bundle/appimage; \
+    d=$(echo *.AppDir); \
+    scan() { find "$d" -type f \( -name '*.so*' -o -perm -u+x \) -exec objdump -p -T {} + 2>/dev/null; }; \
+    maxglibc=$(scan | grep -o 'GLIBC_[0-9][0-9.]*' | sort -uV | tail -1); \
+    maxcxx=$(scan | grep -o 'GLIBCXX_[0-9][0-9.]*' | sort -uV | tail -1); \
+    bundled_cxx=$(objdump -T "$d/usr/optional/libstdc++/libstdc++.so.6" | grep -o 'GLIBCXX_[0-9][0-9.]*' | sort -uV | tail -1); \
+    { echo "built on:            $(. /etc/os-release; echo "$PRETTY_NAME")"; \
+      echo "builder glibc:       $(ldd --version | head -1 | awk '{print $NF}')"; \
+      echo "bundled .so count:   $(find "$d" -name '*.so*' | wc -l)"; \
+      echo "requires host glibc: $maxglibc  (RHEL 9 provides GLIBC_2.34)"; \
+      echo "requires libstdc++:  $maxcxx  (bundled libstdc++ provides $bundled_cxx)"; \
+      echo "compat libs:         libstdc++.so.6, libfreetype.so.6 (injected only if host is older)"; \
+    } > /out/portability.txt; \
+    cat /out/portability.txt; \
+    [ "$(printf '%s\n%s\n' "$maxglibc" GLIBC_2.34 | sort -V | tail -1)" = GLIBC_2.34 ] \
+      || { echo "GATE FAILED: needs $maxglibc, RHEL 9 has GLIBC_2.34" >&2; exit 1; }; \
+    [ "$(printf '%s\n%s\n' "$maxcxx" "$bundled_cxx" | sort -V | tail -1)" = "$bundled_cxx" ] \
+      || { echo "GATE FAILED: needs $maxcxx, bundled libstdc++ has $bundled_cxx" >&2; exit 1; }; \
+    cp ./*.AppImage /out/; \
+    cd /out && sha256sum ./*.AppImage > SHA256SUMS
