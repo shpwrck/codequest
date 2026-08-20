@@ -1,11 +1,11 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+mod engine;
+
+use std::process::{Command, Stdio};
 use std::thread;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::State;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Quest {
@@ -16,19 +16,7 @@ struct Quest {
     command: String,
 }
 
-#[derive(Serialize, Clone)]
-struct OutputPayload {
-    line: String,
-    stream: String,
-}
-
-#[derive(Serialize, Clone)]
-struct DonePayload {
-    code: Option<i32>,
-    success: bool,
-}
-
-struct QuestState(Arc<Mutex<Option<Child>>>);
+struct EngineState(engine::EngineRuntime);
 
 fn quest(id: &str, name: &str, description: &str, boss: &str, command: &str) -> Quest {
     Quest {
@@ -157,7 +145,11 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     let h: usize = p
         .bytes()
         .fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
-    let mode = if canon.join("CODEQUEST.md").exists() { "custom" } else { "quiz" };
+    let mode = if canon.join("CODEQUEST.md").exists() {
+        "custom"
+    } else {
+        "quiz"
+    };
     Ok(Cartridge {
         id: p.clone(),
         title: name,
@@ -195,11 +187,6 @@ async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
     build_cartridge(std::path::Path::new(&path)).map(Some)
 }
 
-#[tauri::command]
-fn load_cartridge(path: String) -> Result<Cartridge, String> {
-    build_cartridge(std::path::Path::new(&path))
-}
-
 #[derive(Serialize, Clone)]
 struct QuizFile {
     path: String,
@@ -234,7 +221,6 @@ fn git_out(path: &std::path::Path, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-#[tauri::command]
 fn quiz_data(path: String) -> Result<QuizData, String> {
     let repo = std::path::Path::new(&path);
     if !is_git_repo(repo) {
@@ -252,27 +238,30 @@ fn quiz_data(path: String) -> Result<QuizData, String> {
         .take(400)
         .map(|f| QuizFile {
             path: f.to_string(),
-            size: std::fs::metadata(repo.join(f)).map(|m| m.len()).unwrap_or(0),
+            size: std::fs::metadata(repo.join(f))
+                .map(|m| m.len())
+                .unwrap_or(0),
         })
         .collect();
     files.retain(|f| !f.path.is_empty());
-    let commits: Vec<QuizCommit> = git_out(repo, &["log", "--pretty=format:%h\x1f%an\x1f%s", "-40"])
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split('\x1f');
-            Some(QuizCommit {
-                hash: it.next()?.to_string(),
-                author: it.next()?.to_string(),
-                msg: it.next()?.to_string(),
+    let commits: Vec<QuizCommit> =
+        git_out(repo, &["log", "--pretty=format:%h\x1f%an\x1f%s", "-40"])
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split('\x1f');
+                Some(QuizCommit {
+                    hash: it.next()?.to_string(),
+                    author: it.next()?.to_string(),
+                    msg: it.next()?.to_string(),
+                })
             })
-        })
-        .collect();
+            .collect();
     let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for a in git_out(repo, &["log", "--pretty=%an", "-500"]).lines() {
         *counts.entry(a.to_string()).or_insert(0) += 1;
     }
     let mut authors: Vec<(String, u64)> = counts.into_iter().collect();
-    authors.sort_by(|a, b| b.1.cmp(&a.1));
+    authors.sort_by_key(|author| std::cmp::Reverse(author.1));
     authors.truncate(8);
     Ok(QuizData {
         branch,
@@ -290,14 +279,10 @@ struct QQuestion {
     answer: usize,
 }
 
-#[derive(Serialize, Clone)]
-struct QuizBatch {
-    questions: Vec<QQuestion>,
-    source: String,
-}
-
 fn seeded(n: &mut u64) -> u64 {
-    *n = n.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *n = n
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     (*n >> 33) ^ *n
 }
 
@@ -343,7 +328,11 @@ fn mk_q(q: &str, correct: String, mut others: Vec<String>, rng: &mut u64) -> QQu
         choices.swap(i, j);
     }
     let answer = choices.iter().position(|c| *c == correct).unwrap_or(0);
-    QQuestion { q: q.to_string(), choices, answer }
+    QQuestion {
+        q: q.to_string(),
+        choices,
+        answer,
+    }
 }
 
 fn procedural_questions(d: &QuizData, level: u32, count: usize) -> Vec<QQuestion> {
@@ -375,7 +364,7 @@ fn procedural_questions(d: &QuizData, level: u32, count: usize) -> Vec<QQuestion
         }
     }
     let mut langs: Vec<(&str, usize)> = lang_counts.into_iter().collect();
-    langs.sort_by(|a, b| b.1.cmp(&a.1));
+    langs.sort_by_key(|language| std::cmp::Reverse(language.1));
     // top-level dirs for structure questions
     let dirs: Vec<String> = {
         let mut set = std::collections::HashSet::new();
@@ -395,44 +384,96 @@ fn procedural_questions(d: &QuizData, level: u32, count: usize) -> Vec<QQuestion
                 let real = d.files[pick_idx(&mut rng, d.files.len())].path.clone();
                 let mut fakes = Vec::new();
                 for _ in 0..8 {
-                    let f = fake_name(&d.files[pick_idx(&mut rng, d.files.len())].path, hard, &mut rng);
+                    let f = fake_name(
+                        &d.files[pick_idx(&mut rng, d.files.len())].path,
+                        hard,
+                        &mut rng,
+                    );
                     if !d.files.iter().any(|g| g.path == f) && !fakes.contains(&f) {
                         fakes.push(f);
                     }
-                    if fakes.len() == 3 { break; }
+                    if fakes.len() == 3 {
+                        break;
+                    }
                 }
-                if fakes.len() < 3 { continue; }
+                if fakes.len() < 3 {
+                    continue;
+                }
                 mk_q("WHICH FILE IS PART OF THIS PROJECT?", real, fakes, &mut rng)
             }
             1 if d.files.len() >= 4 => {
                 let mut idx: Vec<usize> = (0..d.files.len()).collect();
-                for i in (1..idx.len()).rev() { let j = pick_idx(&mut rng, i + 1); idx.swap(i, j); }
-                let three: Vec<String> = idx.iter().take(3).map(|i| d.files[*i].path.clone()).collect();
-                let fake = fake_name(&d.files[pick_idx(&mut rng, d.files.len())].path, true, &mut rng);
-                if d.files.iter().any(|g| g.path == fake) { continue; }
-                mk_q("WHICH FILE IS NOT PART OF THIS PROJECT?", fake, three, &mut rng)
+                for i in (1..idx.len()).rev() {
+                    let j = pick_idx(&mut rng, i + 1);
+                    idx.swap(i, j);
+                }
+                let three: Vec<String> = idx
+                    .iter()
+                    .take(3)
+                    .map(|i| d.files[*i].path.clone())
+                    .collect();
+                let fake = fake_name(
+                    &d.files[pick_idx(&mut rng, d.files.len())].path,
+                    true,
+                    &mut rng,
+                );
+                if d.files.iter().any(|g| g.path == fake) {
+                    continue;
+                }
+                mk_q(
+                    "WHICH FILE IS NOT PART OF THIS PROJECT?",
+                    fake,
+                    three,
+                    &mut rng,
+                )
             }
             2 if !d.commits.is_empty() => {
-                let real: String = d.commits[pick_idx(&mut rng, d.commits.len())].msg.chars().take(34).collect();
-                let fakes: Vec<String> = ["FIX TYPO IN README", "UPDATE DEPENDENCIES", "REFACTOR UTILS", "BUMP VERSION", "REMOVE DEAD CODE"]
-                    .iter().map(|s| s.to_string()).collect();
+                let real: String = d.commits[pick_idx(&mut rng, d.commits.len())]
+                    .msg
+                    .chars()
+                    .take(34)
+                    .collect();
+                let fakes: Vec<String> = [
+                    "FIX TYPO IN README",
+                    "UPDATE DEPENDENCIES",
+                    "REFACTOR UTILS",
+                    "BUMP VERSION",
+                    "REMOVE DEAD CODE",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
                 mk_q("WHICH IS REAL PROJECT HISTORY?", real, fakes, &mut rng)
             }
             3 if dirs.len() >= 2 => {
-                let nested: Vec<&QuizFile> = d.files.iter().filter(|f| f.path.contains('/')).collect();
-                if nested.is_empty() { continue; }
+                let nested: Vec<&QuizFile> =
+                    d.files.iter().filter(|f| f.path.contains('/')).collect();
+                if nested.is_empty() {
+                    continue;
+                }
                 let f = nested[pick_idx(&mut rng, nested.len())];
                 let dir = f.path[..f.path.find('/').unwrap()].to_string();
                 let base = f.path[f.path.rfind('/').unwrap() + 1..].to_string();
                 let others: Vec<String> = dirs.iter().filter(|x| **x != dir).cloned().collect();
-                if others.is_empty() { continue; }
+                if others.is_empty() {
+                    continue;
+                }
                 mk_q(&format!("WHERE DOES {base} LIVE?"), dir, others, &mut rng)
             }
-            4 if langs.len() >= 1 => {
+            4 if !langs.is_empty() => {
                 let top = langs[0].0.to_string();
-                let others: Vec<String> = ["RUST", "JAVASCRIPT", "TYPESCRIPT", "PYTHON", "GO", "RUBY"]
-                    .iter().map(|s| s.to_string()).filter(|l| *l != top).collect();
-                mk_q("WHICH LANGUAGE ANCHORS THIS PROJECT?", top, others, &mut rng)
+                let others: Vec<String> =
+                    ["RUST", "JAVASCRIPT", "TYPESCRIPT", "PYTHON", "GO", "RUBY"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .filter(|l| *l != top)
+                        .collect();
+                mk_q(
+                    "WHICH LANGUAGE ANCHORS THIS PROJECT?",
+                    top,
+                    others,
+                    &mut rng,
+                )
             }
             _ => continue,
         };
@@ -453,26 +494,49 @@ fn text_excerpt(path: &std::path::Path, max_lines: usize) -> String {
         .unwrap_or_default()
 }
 
-fn ai_questions(path: &std::path::Path, level: u32, count: usize) -> Result<Vec<QQuestion>, String> {
+fn ai_questions(
+    path: &std::path::Path,
+    level: u32,
+    count: usize,
+) -> Result<Vec<QQuestion>, String> {
     let d = gather_quiz_data(path)?;
-    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     // context: files, commits, readme + two biggest source files (excerpts)
     let mut files: Vec<&QuizFile> = d.files.iter().collect();
-    files.sort_by(|a, b| b.size.cmp(&a.size));
-    let file_list: String = d.files.iter().take(60)
+    files.sort_by_key(|file| std::cmp::Reverse(file.size));
+    let file_list: String = d
+        .files
+        .iter()
+        .take(60)
         .map(|f| format!("{} ({}b)", f.path, f.size))
-        .collect::<Vec<_>>().join("\n");
-    let commit_list: String = d.commits.iter().take(20)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let commit_list: String = d
+        .commits
+        .iter()
+        .take(20)
         .map(|c| format!("{} {} ({})", c.hash, c.msg, c.author))
-        .collect::<Vec<_>>().join("\n");
+        .collect::<Vec<_>>()
+        .join("\n");
     let readme = text_excerpt(&path.join("README.md"), 40);
-    let src_exts = [".rs", ".js", ".ts", ".py", ".go", ".java", ".c", ".cpp", ".rb", ".sh", ".css", ".html"];
+    let src_exts = [
+        ".rs", ".js", ".ts", ".py", ".go", ".java", ".c", ".cpp", ".rb", ".sh", ".css", ".html",
+    ];
     let mut excerpts = String::new();
     let mut used = 0;
     for f in files.iter() {
-        if used >= 2 || f.size > 200_000 { continue; }
+        if used >= 2 || f.size > 200_000 {
+            continue;
+        }
         if src_exts.iter().any(|e| f.path.ends_with(e)) {
-            excerpts.push_str(&format!("\n--- {} ---\n{}\n", f.path, text_excerpt(&path.join(&f.path), 50)));
+            excerpts.push_str(&format!(
+                "\n--- {} ---\n{}\n",
+                f.path,
+                text_excerpt(&path.join(&f.path), 50)
+            ));
             used += 1;
         }
     }
@@ -489,17 +553,22 @@ fn ai_questions(path: &std::path::Path, level: u32, count: usize) -> Result<Vec<
             cmd.args(["--model", &model]);
         }
     }
-    let out = cmd.output().map_err(|_| "CLAUDE CLI UNAVAILABLE".to_string())?;
+    let out = cmd
+        .output()
+        .map_err(|_| "CLAUDE CLI UNAVAILABLE".to_string())?;
     if !out.status.success() {
         return Err("CLAUDE CALL FAILED".to_string());
     }
     let envelope: serde_json::Value =
         serde_json::from_slice(&out.stdout).map_err(|_| "BAD CLI OUTPUT".to_string())?;
-    let result = envelope.get("result").and_then(|r| r.as_str()).unwrap_or("");
+    let result = envelope
+        .get("result")
+        .and_then(|r| r.as_str())
+        .unwrap_or("");
     let start = result.find('[').ok_or("NO JSON IN RESPONSE")?;
     let end = result.rfind(']').ok_or("NO JSON IN RESPONSE")?;
-    let parsed: Vec<QQuestion> =
-        serde_json::from_str(&result[start..=end]).map_err(|_| "UNPARSEABLE QUESTIONS".to_string())?;
+    let parsed: Vec<QQuestion> = serde_json::from_str(&result[start..=end])
+        .map_err(|_| "UNPARSEABLE QUESTIONS".to_string())?;
     let valid: Vec<QQuestion> = parsed
         .into_iter()
         .filter(|q| q.choices.len() == 4 && q.answer < 4 && !q.q.is_empty())
@@ -517,128 +586,107 @@ fn ai_questions(path: &std::path::Path, level: u32, count: usize) -> Result<Vec<
     Ok(valid)
 }
 
-#[tauri::command]
-async fn quiz_batch(path: String, level: u32, count: usize) -> Result<QuizBatch, String> {
-    let repo = std::path::PathBuf::from(&path);
-    if !is_git_repo(&repo) {
-        return Err("NOT A GIT REPOSITORY".to_string());
+fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
+    let mode = if cartridge.mode == "custom" {
+        engine::CartridgeMode::Custom
+    } else {
+        engine::CartridgeMode::Quiz
+    };
+    let questions = if mode == engine::CartridgeMode::Quiz {
+        let repo = std::path::Path::new(&cartridge.path);
+        gather_quiz_data(repo)
+            .map(|data| procedural_questions(&data, 1, 36))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|question| engine::QuizQuestion {
+                question: question.q,
+                choices: question.choices,
+                answer: question.answer,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    engine::CartridgeSpec {
+        id: cartridge.path,
+        title: cartridge.title,
+        mode,
+        quests: cartridge
+            .quests
+            .into_iter()
+            .map(|quest| engine::QuestSpec {
+                name: quest.name,
+                boss: quest.boss,
+                command: quest.command,
+            })
+            .collect(),
+        questions,
     }
-    let n = count.clamp(1, 12);
-    if std::env::var("CQA_NO_AI").is_err() {
-        if let Ok(questions) = ai_questions(&repo, level, n) {
-            return Ok(QuizBatch { questions, source: "ORACLE".to_string() });
-        }
-    }
-    let d = gather_quiz_data(&repo)?;
-    let questions = procedural_questions(&d, level, n);
-    if questions.is_empty() {
-        return Err("COULD NOT GENERATE QUESTIONS".to_string());
-    }
-    Ok(QuizBatch { questions, source: "ARCHIVE".to_string() })
 }
 
 #[tauri::command]
-fn start_quest(app: AppHandle, state: State<QuestState>, command: String) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|_| "quest state is poisoned".to_string())?;
-    if guard.is_some() {
-        return Err("A quest is already in progress".to_string());
+fn engine_set_cartridge(
+    state: State<EngineState>,
+    path: Option<String>,
+) -> Result<Option<Cartridge>, String> {
+    let cartridge = path
+        .map(|path| build_cartridge(std::path::Path::new(&path)))
+        .transpose()?;
+    let oracle_path = cartridge
+        .as_ref()
+        .filter(|cartridge| cartridge.mode == "quiz")
+        .map(|cartridge| cartridge.path.clone());
+    state
+        .0
+        .set_cartridge(cartridge.clone().map(engine_cartridge))?;
+
+    if let Some(path) = oracle_path.filter(|_| std::env::var("CQA_NO_AI").is_err()) {
+        let runtime = state.0.clone();
+        thread::spawn(move || {
+            let questions = ai_questions(std::path::Path::new(&path), 1, 12)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|question| engine::QuizQuestion {
+                    question: question.q,
+                    choices: question.choices,
+                    answer: question.answer,
+                })
+                .collect::<Vec<_>>();
+            if !questions.is_empty() {
+                let _ = runtime.replace_questions(path, questions);
+            }
+        });
     }
-
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let mut child = Command::new("bash")
-        .arg("-c")
-        .arg(&command)
-        .current_dir(home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start quest: {e}"))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Failed to capture quest stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Failed to capture quest stderr".to_string())?;
-
-    *guard = Some(child);
-    drop(guard);
-
-    let out_app = app.clone();
-    let out_reader = thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = out_app.emit(
-                "quest://output",
-                OutputPayload {
-                    line,
-                    stream: "out".to_string(),
-                },
-            );
-        }
-    });
-
-    let err_app = app.clone();
-    let err_reader = thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            let _ = err_app.emit(
-                "quest://output",
-                OutputPayload {
-                    line,
-                    stream: "err".to_string(),
-                },
-            );
-        }
-    });
-
-    // Supervisor: after both pipes close, reap the child, clear the slot, and
-    // emit "quest://done" exactly once — this is the only place it is emitted,
-    // whether the quest exited on its own or was killed by abort_quest.
-    let slot = Arc::clone(&state.0);
-    thread::spawn(move || {
-        let _ = out_reader.join();
-        let _ = err_reader.join();
-
-        let child = slot
-            .lock()
-            .ok()
-            .and_then(|mut running| running.take());
-        let (code, success) = match child.map(|mut c| c.wait()) {
-            Some(Ok(status)) => (status.code(), status.success()),
-            _ => (None, false),
-        };
-        let _ = app.emit("quest://done", DonePayload { code, success });
-    });
-
-    Ok(())
+    Ok(cartridge)
 }
 
 #[tauri::command]
-fn abort_quest(state: State<QuestState>) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|_| "quest state is poisoned".to_string())?;
-    match guard.as_mut() {
-        Some(child) => {
-            // Kill in place; the supervisor thread reaps the child, clears the
-            // slot, and emits the single "quest://done" (success: false).
-            child.kill().map_err(|e| format!("Failed to abort quest: {e}"))
-        }
-        None => Err("No quest is in progress".to_string()),
-    }
+fn engine_power(state: State<EngineState>, powered: bool) -> Result<(), String> {
+    state.0.set_power(powered)
+}
+
+#[tauri::command]
+fn engine_input(state: State<EngineState>, button: String, pressed: bool) -> Result<(), String> {
+    let button = engine::Button::parse(&button).ok_or_else(|| "UNKNOWN BUTTON".to_string())?;
+    state.0.input(button, pressed)
+}
+
+#[tauri::command]
+fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
+    tauri::ipc::Response::new(state.0.frame())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(QuestState(Arc::new(Mutex::new(None))))
+        .manage(EngineState(engine::EngineRuntime::spawn()))
         .invoke_handler(tauri::generate_handler![
             pick_cartridge,
-            load_cartridge,
-            quiz_data,
-            quiz_batch,
-            start_quest,
-            abort_quest
+            engine_set_cartridge,
+            engine_power,
+            engine_input,
+            engine_frame
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

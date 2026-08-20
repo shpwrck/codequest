@@ -166,7 +166,10 @@ html, body {
   margin-left: -120px;
   width: 240px;
   height: 160px;
-  border: 3px solid #000;
+  /* Keep the LCD content box at a real 240x160. A border would consume six
+     pixels under the global border-box rule and force the canvas to rescale. */
+  border: 0;
+  box-shadow: 0 0 0 3px #000;
   background: var(--ink);
   overflow: hidden;
   contain: strict;
@@ -177,6 +180,12 @@ html, body {
   position: absolute;
   inset: 0;
   background: var(--navy);
+}
+#engine-canvas {
+  display: block;
+  width: 240px;
+  height: 160px;
+  image-rendering: pixelated;
 }
 #screen-inner.shake { animation: innerShake .15s steps(2) 2; }
 @keyframes innerShake {
@@ -1364,7 +1373,7 @@ html, body {
   position: absolute; bottom: 6px; left: 4px; right: 4px;
   text-align: center; font-size: 7px; line-height: 1.6; color: var(--parch);
   text-shadow: 1px 1px 0 rgba(0,0,0,.6);
-=======
+}
 /* ============================ STICK CONTRA (konami secret) ============================ */
 #scr-contra { background: #000; }
 #contra-canvas {

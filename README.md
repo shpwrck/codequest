@@ -8,10 +8,10 @@
 | Input | GBA | Action |
 |-------|-----|--------|
 | Arrow keys | D-pad | Navigate menus |
-| D | A | Confirm / fight / cheer (hold to fast-forward the log) |
+| D | A | Confirm / answer / fight / jump |
 | S | B | Back / abort quest |
-| Enter | START | Start / pause log scroll / rematch |
-| Shift | SELECT | Ward a command / hold to FLEE a battle |
+| Enter | START | Start / confirm |
+| Shift | SELECT | Reserved |
 | A / F | L / R | Page the quest menu |
 | P | POWER | Power on / off (or click the switch on the right edge) |
 | C | SLOT | Open the cartridge tray (power must be off; or click the slot) |
@@ -36,35 +36,35 @@ Lint Gauntlet / Forge / Test Dungeon for `package.json` scripts, a Crate
 Forge when `Cargo.toml` exists, and Make Mines for a `Makefile`. Swapping
 requires ejecting first — remove and insert animations included.
 
-**Game modes.** A repo with a `CODEQUEST.md` loads as a custom game (schema
-TBD — currently the quest-battle mode). Without one, the default game is the
-**ENDLESS REPO QUIZ**: title screen, CONTINUE/NEW GAME menu, a procedural
-hero customizer (reroll names like GREP THE UNSLEEPING, cycle class and
-colors on a generated pixel sprite), then endless multiple-choice questions.
-Question generation lives in Rust: it calls the `claude` CLI headlessly to
-author questions from the repo's actual contents (files, commits, README and
-source excerpts) — the customizer buys time while the oracle writes — and
-falls back to a procedural generator when the CLI is unavailable (or
-`CQA_NO_AI=1`). All questions are thematic — architecture, purpose, and
-design comprehension that stays true as the repo evolves; never counts,
-sizes, dates, or other state-in-time trivia. Generation starts the moment a
-cartridge clicks in and batches prefetch during play, each one harder; if
-the oracle ever falls behind, there is no loading screen — your hero walks a
-scrolling travel scene with story beats until A CHALLENGER APPEARS. Three hearts, score
-scales with level, per-repo auto-save; `CQA_CLAUDE_MODEL` overrides the
-model used for generation.
+**Game modes.** A repo with a `CODEQUEST.md` loads the quest-battle mode;
+without one, it loads the **ENDLESS REPO QUIZ**. Cartridge contents are data
+only: Rust derives a title, mode, quest list, and questions from the repo,
+then gives that data to Bevy. A cartridge cannot add JavaScript or replace
+the game loop.
 
-In quest-battle mode, **CUSTOM QUEST** still accepts any shell command —
-point it at your build, your tests, or your agent CLI.
+Quiz question generation also lives in Rust. A procedural batch is available
+immediately, while the `claude` CLI can replace it with thematic questions
+from the repo's files, commits, README, and source excerpts. Set
+`CQA_NO_AI=1` to keep the procedural batch, or `CQA_CLAUDE_MODEL` to select
+the model. Quest-battle commands are selected from the Rust-derived cartridge
+quest list and are started, streamed, and stopped by the Bevy runtime.
 
 ## Architecture
 
-- `src-tauri/src/lib.rs` — the harness driver: `list_quests`, `start_quest`
-  (spawns `bash -c`, streams each output line as a `quest://output` event,
-  emits `quest://done` exactly once), `abort_quest`.
-- `src/` — the entire game (no bundler, no framework, no network):
-  `index.html`, `styles.css`, `main.js`. GBA shell chrome, 240×160 logical
-  screen, CSS box-shadow pixel sprites, Press Start 2P (bundled), scanlines.
+- `src-tauri/src/engine.rs` — the game. A headless Bevy app owns navigation,
+  input edges, fixed-step timing, quiz/battle state, command execution, and a
+  CPU-rendered 240×160 RGBA framebuffer.
+- `src-tauri/src/lib.rs` — the platform adapter. It validates git-repo
+  cartridges, prepares data, and exposes only power, cartridge, input, and
+  framebuffer operations to the device UI.
+- `src/` — the JavaScript device shell. It owns the physical controls,
+  cartridge tray, window fitting, and copies the fixed-size Rust framebuffer
+  into one canvas. It contains no gameplay state or game rendering.
+
+The framebuffer is always exactly 240×160 (153,600 RGBA bytes). Button
+presses can change its pixels, but cannot change its dimensions or the CSS
+layout of the device, which prevents the mid-game rasterization shift that
+the DOM-rendered version could trigger.
 
 ## Install
 

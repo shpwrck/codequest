@@ -23,204 +23,37 @@
                 fill="url(#shldGrad)" stroke="#101124" stroke-width="3"/>
         </svg>
 
-        <!-- cartridge peeking from the top-back slot; behind the shell by DOM order -->
         <div id="cart-back" class="empty" title="CARTRIDGE SLOT"></div>
 
         <div id="shell">
-        <div id="bezel">
-          <div id="screen">
-            <div id="screen-inner">
-
-              <!-- ================= TITLE ================= -->
-              <!-- ================= POWERED OFF ================= -->
-              <section class="scr active" id="scr-off"></section>
-
-              <!-- ================= BOOT ================= -->
-              <section class="scr" id="scr-boot">
-                <div class="boot-logo">
-                  <div class="boot-word">CODEQUEST<div class="boot-shine"></div></div>
-                  <div class="boot-maker"><span>CQA SYSTEM</span></div>
-                </div>
-              </section>
-
-              <!-- ================= STICK CONTRA (konami secret) ================= -->
-              <section class="scr" id="scr-contra">
-                <canvas id="contra-canvas" width="234" height="154"></canvas>
-              </section>
-
-              <section class="scr" id="scr-title">
-                <div class="starfield" id="starfield"></div>
-                <div class="logotype">
-                  <div class="logo-a">CODE QUEST</div>
-                  <div class="logo-b">ADVANCE</div>
-                  <div class="logo-sub">EVERY COMMAND IS A BOSS</div>
-                </div>
-                <div class="press-start">PRESS START</div>
-                <div class="save-block dialog-thin">
-                  <div id="save-l1">LV 1 SCRIPT SQUIRE</div>
-                  <div id="save-l2">EXP 0/10 STREAK 0</div>
-                </div>
-                <div class="palette-row" id="palette-row"></div>
-              </section>
-
-              <!-- ================= GAME MENU (quiz mode) ================= -->
-              <section class="scr" id="scr-menu">
-                <div class="menu-title" id="menu-title">REPO</div>
-                <div class="menu-sub">ENDLESS REPO QUIZ</div>
-                <div class="dialog menu-box">
-                  <div class="menu-item" id="menu-continue">CONTINUE<span class="menu-cont-info" id="menu-cont-info"></span></div>
-                  <div class="menu-item" id="menu-new">NEW GAME</div>
-                </div>
-              </section>
-
-              <!-- ================= HERO CUSTOMIZATION ================= -->
-              <section class="scr" id="scr-hero">
-                <div class="hero-head">CREATE YOUR HERO</div>
-                <div class="hero-sprite-box"><div id="hero-preview"></div></div>
-                <div class="hero-rows">
-                  <div class="hero-row sel"><span class="hr-label">NAME</span><span class="hr-val" id="hr-name"></span></div>
-                  <div class="hero-row"><span class="hr-label">CLASS</span><span class="hr-val" id="hr-class"></span></div>
-                  <div class="hero-row"><span class="hr-label">COLORS</span><span class="hr-val" id="hr-pal"></span></div>
-                  <div class="hero-row begin"><span class="hr-label">BEGIN QUEST</span></div>
-                </div>
-                <div class="hero-oracle" id="hero-oracle"></div>
-              </section>
-
-              <!-- ================= QUIZ ================= -->
-              <section class="scr" id="scr-quiz">
-                <div class="quiz-hud">
-                  <span id="quiz-lv">LV 1</span>
-                  <span id="quiz-hearts"></span>
-                  <span id="quiz-score">0</span>
-                </div>
-                <div class="quiz-timer"><div id="quiz-timer-fill"></div></div>
-                <div class="dialog quiz-q" id="quiz-q"></div>
-                <div class="quiz-choices" id="quiz-choices"></div>
-                <div class="quiz-wait" id="quiz-wait">
-                  <div class="travel-stars"></div>
-                  <div class="travel-ground"></div>
-                  <div id="travel-hero"></div>
-                  <div class="travel-line" id="travel-line"></div>
-                </div>
-                <div class="quiz-over" id="quiz-over">
-                  <div class="qo-title">GAME OVER</div>
-                  <div id="qo-stats"></div>
-                  <div class="qo-hint">PRESS ANY BUTTON</div>
-                </div>
-              </section>
-
-              <!-- ================= QUEST SELECT ================= -->
-              <section class="scr" id="scr-select">
-                <div class="dialog select-top"><div id="select-msg"></div></div>
-                <div class="name-entry" id="name-entry">
-                  <span class="prompt-ch">&gt;</span>
-                  <input id="cmd-input" spellcheck="false" autocomplete="off" maxlength="400" placeholder="NAME THY QUEST..." />
-                  <span class="blockcur"></span>
-                </div>
-                <div class="select-head">
-                  <span id="select-title">CHOOSE THY QUEST</span>
-                  <span>SEL:WARD B:BACK A:FIGHT</span>
-                </div>
-                <div class="select-clip"><div id="quest-list"></div></div>
-              </section>
-
-              <!-- ================= BATTLE ================= -->
-              <section class="scr" id="scr-battle">
-                <div class="arena" id="arena">
-                  <div class="ground"></div>
-                  <div class="boss-wrap" id="boss-wrap">
-                    <div class="boss-name" id="boss-name"></div>
-                    <div class="boss-sprite" id="boss-sprite"></div>
-                  </div>
-                  <div class="hero-sprite" id="hero-sprite"></div>
-                  <div class="turns" id="turn-counter">TURN 000</div>
-                  <div class="combo" id="combo-counter">x0</div>
-                  <div id="fx-layer"></div>
-                </div>
-
-                <div class="status">
-                  <div class="dialog stat-box left"><span id="player-tag">CODER LV 1</span></div>
-                  <div class="dialog stat-box right">
-                    <div class="hp-row">
-                      <span class="hp-label">HP</span>
-                      <div class="hp-cells" id="hp-cells"></div>
-                    </div>
-                    <div class="xp-bar"><div class="xp-fill" id="xp-fill"></div></div>
-                  </div>
-                </div>
-
-                <div class="dialog logbox" id="logbox">
-                  <div class="flee-meter" id="flee-meter"></div>
-                  <div class="pause-tag">PAUSE</div>
-                  <div class="log-clip"><div id="log-lines"></div></div>
-                  <div class="log-arrow"></div>
-                </div>
-
-                <div class="overlay hurt" id="hurt-overlay"></div>
-                <div class="overlay flash" id="flash-overlay"></div>
-                <div class="laststand" id="laststand"></div>
-
-                <!-- victory overlay -->
-                <div class="victory" id="victory">
-                  <div class="stamp" id="stamp">
-                    <span class="stamp-ring"></span>
-                    <span class="stamp-text">QUEST<br />CLEARED</span>
-                  </div>
-                  <div class="dialog tally" id="tally">
-                    <div id="tally-rows"></div>
-                    <div class="tally-menu" id="tally-menu">A:NEW QUEST&nbsp;&nbsp;START:REMATCH</div>
-                  </div>
-                </div>
-
-                <!-- defeat overlay -->
-                <div class="defeat" id="defeat">
-                  <div class="gameover">GAME OVER</div>
-                  <div class="dialog fatal">
-                    <div class="fatal-title">THE FATAL BLOW:</div>
-                    <div id="fatal-lines"></div>
-                  </div>
-                  <div class="defeat-menu">
-                    <span class="dm-item sel" id="dm-retry">RETRY</span>
-                    <span class="dm-item" id="dm-flee">FLEE</span>
-                  </div>
-                </div>
-              </section>
-
-              <!-- ================= LEVEL UP ================= -->
-              <section class="scr" id="scr-levelup">
-                <div class="lvl-flash"></div>
-                <div class="lvl-title">LEVEL UP!</div>
-                <div class="lvl-hero" id="lvl-hero"></div>
-                <div class="burst"></div>
-                <div class="dialog lvl-panel"><div id="lvl-rows"></div></div>
-                <div class="lvl-hint">PRESS ANY BUTTON</div>
-              </section>
-
+          <div id="bezel">
+            <div id="screen">
+              <div id="screen-inner">
+                <canvas id="engine-canvas" width="240" height="160" aria-label="Bevy game display"></canvas>
+              </div>
+              <div id="scanlines"></div>
+              <div id="screen-shade"></div>
             </div>
-            <div id="scanlines"></div>
-            <div id="screen-shade"></div>
           </div>
-        </div>
-        <div class="bezel-caption"><span class="cap-solid">CODEQUEST</span><span class="cap-outline">ADVANCE</span></div>
-        <div class="power-led off"></div>
+          <div class="bezel-caption"><span class="cap-solid">CODEQUEST</span><span class="cap-outline">ADVANCE</span></div>
+          <div class="power-led off"></div>
 
-        <!-- physical controls -->
-        <div id="dpad">
-          <div class="dpad-btn dpad-up" data-btn="up"></div>
-          <div class="dpad-btn dpad-down" data-btn="down"></div>
-          <div class="dpad-btn dpad-left" data-btn="left"></div>
-          <div class="dpad-btn dpad-right" data-btn="right"></div>
-          <div class="dpad-core"></div>
-        </div>
-        <div class="ab" id="btn-a" data-btn="a"><span>A</span></div>
-        <div class="ab" id="btn-b" data-btn="b"><span>B</span></div>
-        <div class="ab-label" id="lab-a">X KEY</div>
-        <div class="ab-label" id="lab-b">Z KEY</div>
-        <div class="pill" id="btn-select" data-btn="select"><span>SELECT</span></div>
-        <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
-        <div class="speaker"></div>
-        <div id="power-switch" title="POWER"><span class="ps-nub"></span></div>
-        <div class="shell-tag">CQA-001</div>
+          <div id="dpad">
+            <div class="dpad-btn dpad-up" data-btn="up"></div>
+            <div class="dpad-btn dpad-down" data-btn="down"></div>
+            <div class="dpad-btn dpad-left" data-btn="left"></div>
+            <div class="dpad-btn dpad-right" data-btn="right"></div>
+            <div class="dpad-core"></div>
+          </div>
+          <div class="ab" id="btn-a" data-btn="a"><span>A</span></div>
+          <div class="ab" id="btn-b" data-btn="b"><span>B</span></div>
+          <div class="ab-label" id="lab-a">X KEY</div>
+          <div class="ab-label" id="lab-b">Z KEY</div>
+          <div class="pill" id="btn-select" data-btn="select"><span>SELECT</span></div>
+          <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
+          <div class="speaker"></div>
+          <div id="power-switch" title="POWER"><span class="ps-nub"></span></div>
+          <div class="shell-tag">CQA-001</div>
         </div>
       </div>
       <div id="cart-tray" class="hidden">
