@@ -39,6 +39,18 @@ const HERO_CLASSES: [&str; 6] = [
     "SHELL DRUID",
 ];
 const HERO_STYLES: [&str; 5] = ["EMBER", "OCEAN", "FOREST", "GOLD", "VOID"];
+const HERO_ACCESSORIES: [&str; 6] = [
+    "MUSTACHE", "FEDORA", "BOW TIE", "MONOCLE", "CROWN", "SHADES",
+];
+const HERO_WEAPONS: [&str; 6] = [
+    "SWORD",
+    "ORB STAFF",
+    "PIPE",
+    "WARHAMMER",
+    "BOW",
+    "SHELL SHIELD",
+];
+const HERO_STYLE_COLORS: [Color; 5] = [RED, SKY, GREEN, GOLD, PLUM];
 
 #[derive(Clone, Copy)]
 struct Color(u8, u8, u8);
@@ -278,6 +290,7 @@ impl Framebuffer {
 #[derive(Clone, Debug)]
 struct QuizRun {
     question: usize,
+    completed_batches: usize,
     selected: usize,
     hearts: u8,
     score: u32,
@@ -301,6 +314,7 @@ struct GameState {
     hero_style: usize,
     quest_selected: usize,
     quiz: Option<QuizRun>,
+    batch_ends: Vec<usize>,
     pending_questions: Option<(String, Vec<QuizQuestion>)>,
     questions_loading: bool,
     question_retry_ticks: u16,
@@ -324,6 +338,7 @@ impl Default for GameState {
             hero_style: 0,
             quest_selected: 0,
             quiz: None,
+            batch_ends: Vec::new(),
             pending_questions: None,
             questions_loading: false,
             question_retry_ticks: 0,
@@ -387,6 +402,7 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
 fn begin_quiz_run(state: &mut GameState) {
     state.quiz = Some(QuizRun {
         question: 0,
+        completed_batches: 0,
         selected: 0,
         hearts: 3,
         score: 0,
@@ -564,9 +580,16 @@ fn apply_commands(
                 state.quest_selected = 0;
                 state.menu_selected = 0;
                 state.quiz = None;
+                state.batch_ends.clear();
                 state.pending_questions = None;
                 state.questions_loading = false;
                 state.question_retry_ticks = 0;
+                if let Some(batch_end) = state.cartridge.as_ref().and_then(|cartridge| {
+                    (cartridge.mode == CartridgeMode::Quiz && !cartridge.questions.is_empty())
+                        .then_some(cartridge.questions.len())
+                }) {
+                    state.batch_ends.push(batch_end);
+                }
                 if state.cartridge.as_ref().is_some_and(|cartridge| {
                     cartridge.mode == CartridgeMode::Quiz && cartridge.questions.is_empty()
                 }) {
@@ -596,8 +619,12 @@ fn apply_commands(
                     state.pending_questions = Some((cartridge_id, questions));
                     continue;
                 }
-                if let Some(cartridge) = state.cartridge.as_mut() {
+                let batch_end = state.cartridge.as_mut().map(|cartridge| {
                     cartridge.questions.extend(questions);
+                    cartridge.questions.len()
+                });
+                if let Some(batch_end) = batch_end {
+                    state.batch_ends.push(batch_end);
                 }
             }
             EngineCommand::Input { button, pressed } => {
@@ -706,10 +733,6 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                     if correct {
                         run.score += 100;
                         run.streak += 1;
-                        if run.streak.is_multiple_of(4) {
-                            run.level += 1;
-                            run.leveled_up = true;
-                        }
                     } else {
                         run.hearts = run.hearts.saturating_sub(1);
                         run.streak = 0;
@@ -783,10 +806,18 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
     }
     if matches!(state.screen, Screen::Oracle | Screen::LevelUp) {
         if let Some((cartridge_id, questions)) = state.pending_questions.take() {
-            if let Some(cartridge) = state.cartridge.as_mut() {
+            let batch_end = if let Some(cartridge) = state.cartridge.as_mut() {
                 if cartridge.id == cartridge_id && !questions.is_empty() {
                     cartridge.questions.extend(questions);
+                    Some(cartridge.questions.len())
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
+            if let Some(batch_end) = batch_end {
+                state.batch_ends.push(batch_end);
             }
         }
     }
@@ -811,6 +842,10 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
                 request_question_batch(&mut state, &mut effects, level);
             }
             let question_count = state.question_count();
+            let next_batch_end = state
+                .quiz
+                .as_ref()
+                .and_then(|run| state.batch_ends.get(run.completed_batches).copied());
             let mut next_screen = None;
             if let Some(run) = state.quiz.as_mut() {
                 if let Some((correct, ticks)) = run.feedback.as_mut() {
@@ -823,6 +858,11 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
                         } else {
                             run.question += 1;
                             run.selected = 0;
+                            if next_batch_end == Some(run.question) {
+                                run.completed_batches += 1;
+                                run.level += 1;
+                                run.leveled_up = true;
+                            }
                             if run.leveled_up {
                                 run.leveled_up = false;
                                 next_screen = Some(Screen::LevelUp);
@@ -924,7 +964,7 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(NAVY);
     frame.centered_text(9, "CREATE YOUR HERO", GOLD, 1);
     let bob = ((state.screen_ticks / 20) % 2) as i32;
-    draw_crab(frame, 26, 64 - bob, 1);
+    draw_hero(frame, 26, 64 - bob, 1, state);
 
     let rows = [
         format!("NAME   < {} >", HERO_NAMES[state.hero_name]),
@@ -940,6 +980,20 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
         }
         frame.text(81, y, label, PARCH, 1);
     }
+    frame.text(
+        81,
+        39,
+        &format!("GEAR: {}", HERO_ACCESSORIES[state.hero_name]),
+        MIST,
+        1,
+    );
+    frame.text(
+        81,
+        60,
+        &format!("WEAPON: {}", HERO_WEAPONS[state.hero_class]),
+        MIST,
+        1,
+    );
 
     let oracle_status = if state.question_count() > 0 {
         "ORACLE READY"
@@ -970,7 +1024,7 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     } else {
         0
     };
-    draw_crab(frame, 104, 111 - jump, 1);
+    draw_hero(frame, 104, 111 - jump, 1, state);
     frame.centered_text(150, "A:JUMP", PARCH, 1);
 }
 
@@ -1033,10 +1087,15 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
     });
     frame.centered_text(22, "LEVEL UP!", GOLD, 2);
     let rise = (state.screen_ticks.min(45) / 5) as i32;
-    draw_crab(frame, 106, 91 - rise, 1);
+    draw_hero(frame, 106, 91 - rise, 1, state);
     if let Some(run) = state.quiz.as_ref() {
         frame.centered_text(116, &format!("LEVEL {}", run.level), PARCH, 1);
-        frame.centered_text(130, &format!("{} ANSWER STREAK", run.streak), SKY, 1);
+        frame.centered_text(
+            130,
+            &format!("BATCH {} SURVIVED", run.completed_batches),
+            SKY,
+            1,
+        );
     }
     frame.centered_text(149, "A / START:CONTINUE", MIST, 1);
 }
@@ -1125,6 +1184,96 @@ fn draw_crab(frame: &mut Framebuffer, x: i32, y: i32, scale: i32) {
     frame.rect(x + 20 * scale, y + 13 * scale, 5 * scale, 4 * scale, CRAB);
     frame.rect(x + 7 * scale, y + 3 * scale, 3 * scale, 3 * scale, INK);
     frame.rect(x + 18 * scale, y + 3 * scale, 3 * scale, 3 * scale, INK);
+}
+
+fn draw_hero(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, state: &GameState) {
+    let accent = HERO_STYLE_COLORS[state.hero_style];
+    draw_weapon(frame, x, y, scale, state.hero_class, accent);
+    draw_crab(frame, x, y, scale);
+    frame.rect(x + 8 * scale, y + 8 * scale, 12 * scale, 3 * scale, accent);
+    draw_accessory(frame, x, y, scale, state.hero_name, accent);
+}
+
+fn draw_weapon(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, weapon: usize, accent: Color) {
+    match weapon {
+        0 => {
+            frame.rect(x + 31 * scale, y - 6 * scale, 2 * scale, 17 * scale, PARCH);
+            frame.rect(x + 29 * scale, y - 8 * scale, 6 * scale, 3 * scale, PARCH);
+            frame.rect(x + 28 * scale, y + 8 * scale, 7 * scale, 2 * scale, GOLD);
+            frame.rect(x + 31 * scale, y + 10 * scale, 2 * scale, 6 * scale, accent);
+        }
+        1 => {
+            frame.rect(x + 31 * scale, y - 3 * scale, 2 * scale, 20 * scale, GOLD);
+            frame.rect(x + 28 * scale, y - 9 * scale, 8 * scale, 7 * scale, accent);
+            frame.rect(x + 30 * scale, y - 7 * scale, 4 * scale, 3 * scale, PARCH);
+        }
+        2 => {
+            frame.rect(x - 7 * scale, y + 2 * scale, 10 * scale, 3 * scale, accent);
+            frame.rect(x - 7 * scale, y + 4 * scale, 3 * scale, 8 * scale, accent);
+            frame.rect(x - 4 * scale, y + 9 * scale, 7 * scale, 3 * scale, accent);
+            frame.rect(x - 9 * scale, y, 3 * scale, 3 * scale, MIST);
+        }
+        3 => {
+            frame.rect(x + 31 * scale, y + scale, 3 * scale, 17 * scale, GOLD);
+            frame.rect(x + 27 * scale, y - 5 * scale, 11 * scale, 7 * scale, accent);
+            frame.rect(x + 29 * scale, y - 7 * scale, 7 * scale, 2 * scale, PARCH);
+        }
+        4 => {
+            frame.rect(x + 31 * scale, y - 6 * scale, 2 * scale, 23 * scale, GOLD);
+            frame.rect(x + 28 * scale, y - 4 * scale, 3 * scale, 5 * scale, accent);
+            frame.rect(x + 27 * scale, y + scale, 3 * scale, 8 * scale, accent);
+            frame.rect(x + 28 * scale, y + 9 * scale, 3 * scale, 5 * scale, accent);
+            frame.rect(x + 26 * scale, y + 4 * scale, 9 * scale, scale, PARCH);
+        }
+        _ => {
+            frame.rect(x - 8 * scale, y + 2 * scale, 11 * scale, 13 * scale, accent);
+            frame.rect(x - 6 * scale, y + 4 * scale, 7 * scale, 9 * scale, GOLD);
+            frame.rect(x - 4 * scale, y + 6 * scale, 3 * scale, 5 * scale, accent);
+        }
+    }
+}
+
+fn draw_accessory(
+    frame: &mut Framebuffer,
+    x: i32,
+    y: i32,
+    scale: i32,
+    accessory: usize,
+    accent: Color,
+) {
+    match accessory {
+        0 => {
+            frame.rect(x + 8 * scale, y + 7 * scale, 5 * scale, 3 * scale, INK);
+            frame.rect(x + 15 * scale, y + 7 * scale, 5 * scale, 3 * scale, INK);
+            frame.rect(x + 12 * scale, y + 8 * scale, 4 * scale, 2 * scale, INK);
+        }
+        1 => {
+            frame.rect(x + 3 * scale, y - 4 * scale, 22 * scale, 3 * scale, INK);
+            frame.rect(x + 8 * scale, y - 10 * scale, 14 * scale, 7 * scale, accent);
+            frame.rect(x + 8 * scale, y - 4 * scale, 14 * scale, 2 * scale, GOLD);
+        }
+        2 => {
+            frame.rect(x + 8 * scale, y + 9 * scale, 5 * scale, 5 * scale, accent);
+            frame.rect(x + 15 * scale, y + 9 * scale, 5 * scale, 5 * scale, accent);
+            frame.rect(x + 13 * scale, y + 10 * scale, 2 * scale, 3 * scale, GOLD);
+        }
+        3 => {
+            frame.outline(x + 16 * scale, y + scale, 7 * scale, 7 * scale, GOLD);
+            frame.rect(x + 22 * scale, y + 7 * scale, 2 * scale, 8 * scale, GOLD);
+        }
+        4 => {
+            frame.rect(x + 5 * scale, y - 4 * scale, 18 * scale, 4 * scale, GOLD);
+            frame.rect(x + 5 * scale, y - 8 * scale, 4 * scale, 5 * scale, GOLD);
+            frame.rect(x + 12 * scale, y - 10 * scale, 4 * scale, 7 * scale, accent);
+            frame.rect(x + 19 * scale, y - 8 * scale, 4 * scale, 5 * scale, GOLD);
+        }
+        _ => {
+            frame.rect(x + 5 * scale, y + 2 * scale, 18 * scale, 5 * scale, INK);
+            frame.rect(x + 7 * scale, y + 3 * scale, 5 * scale, 2 * scale, accent);
+            frame.rect(x + 16 * scale, y + 3 * scale, 5 * scale, 2 * scale, accent);
+            frame.rect(x + 12 * scale, y + 3 * scale, 4 * scale, 2 * scale, GOLD);
+        }
+    }
 }
 
 fn draw_boss(frame: &mut Framebuffer, x: i32, y: i32, tick: u64, scale: i32) {
@@ -1342,6 +1491,18 @@ mod tests {
     fn issue(engine: &mut GameEngine, command: EngineCommand) {
         engine.command(command);
         engine.update();
+    }
+
+    fn hero_pixels(engine: &GameEngine) -> Vec<u8> {
+        let frame = engine.frame();
+        (40..92)
+            .flat_map(|y| {
+                (8..64).flat_map(move |x| {
+                    let offset = (y * WIDTH + x) * 4;
+                    frame[offset..offset + 4].iter().copied()
+                })
+            })
+            .collect()
     }
 
     #[test]
@@ -1577,6 +1738,7 @@ mod tests {
             state.powered = true;
             state.quiz = Some(QuizRun {
                 question: 1,
+                completed_batches: 1,
                 selected: 0,
                 hearts: 3,
                 score: 100,
@@ -1665,6 +1827,106 @@ mod tests {
                 .any(|(after, before)| after != before),
             "character selection did not change the framebuffer"
         );
+    }
+
+    #[test]
+    fn character_choices_change_accessory_weapon_and_style_pixels() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        for button in [Button::Start, Button::A] {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: false,
+                },
+            );
+        }
+        assert_eq!(engine.screen(), Screen::CharacterCreation);
+
+        let default_accessory = hero_pixels(&engine);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        assert_ne!(hero_pixels(&engine), default_accessory);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: false,
+            },
+        );
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Down,
+                pressed: true,
+            },
+        );
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Down,
+                pressed: false,
+            },
+        );
+        let default_weapon = hero_pixels(&engine);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        assert_ne!(hero_pixels(&engine), default_weapon);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: false,
+            },
+        );
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Down,
+                pressed: true,
+            },
+        );
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Down,
+                pressed: false,
+            },
+        );
+        let default_style = hero_pixels(&engine);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        assert_ne!(hero_pixels(&engine), default_style);
     }
 
     #[test]
@@ -1827,7 +2089,165 @@ mod tests {
     }
 
     #[test]
-    fn four_correct_answers_enter_the_level_up_stall() {
+    fn surviving_a_complete_claude_batch_levels_up() {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        let question = cartridge.questions[0].clone();
+        cartridge.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        let _ = engine.take_effects();
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        for button in [Button::Start, Button::A, Button::Start] {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: false,
+                },
+            );
+        }
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                questions: vec![question; QUESTION_BATCH_SIZE],
+            },
+        );
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+
+        for (index, wrong) in [true, false, false, true, false, false]
+            .into_iter()
+            .enumerate()
+        {
+            if wrong {
+                issue(
+                    &mut engine,
+                    EngineCommand::Input {
+                        button: Button::Down,
+                        pressed: true,
+                    },
+                );
+                issue(
+                    &mut engine,
+                    EngineCommand::Input {
+                        button: Button::Down,
+                        pressed: false,
+                    },
+                );
+            }
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button: Button::A,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button: Button::A,
+                    pressed: false,
+                },
+            );
+            for _ in 0..45 {
+                engine.update();
+            }
+            if index + 1 < QUESTION_BATCH_SIZE {
+                assert_eq!(engine.screen(), Screen::Quiz);
+            }
+        }
+
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let run = engine
+            .app
+            .world()
+            .resource::<GameState>()
+            .quiz
+            .as_ref()
+            .unwrap();
+        assert_eq!(run.level, 2);
+        assert_eq!(run.hearts, 1);
+    }
+
+    #[test]
+    fn losing_the_last_heart_at_a_batch_boundary_does_not_level_up() {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        let question = cartridge.questions[0].clone();
+        cartridge.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        let _ = engine.take_effects();
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        for button in [Button::Start, Button::A, Button::Start] {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: false,
+                },
+            );
+        }
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                questions: vec![question; 3],
+            },
+        );
+        for _ in 0..75 {
+            engine.update();
+        }
+
+        for _ in 0..3 {
+            for button in [Button::Down, Button::A] {
+                issue(
+                    &mut engine,
+                    EngineCommand::Input {
+                        button,
+                        pressed: true,
+                    },
+                );
+                issue(
+                    &mut engine,
+                    EngineCommand::Input {
+                        button,
+                        pressed: false,
+                    },
+                );
+            }
+            for _ in 0..45 {
+                engine.update();
+            }
+        }
+
+        assert_eq!(engine.screen(), Screen::GameOver);
+        let state = engine.app.world().resource::<GameState>();
+        let run = state.quiz.as_ref().unwrap();
+        assert_eq!(run.level, 1);
+        assert_eq!(run.completed_batches, 0);
+    }
+
+    #[test]
+    fn four_correct_answers_do_not_level_up_before_the_batch_ends() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
         cartridge.questions = vec![cartridge.questions[0].clone(); 6];
@@ -1875,7 +2295,11 @@ mod tests {
             }
         }
 
-        assert_eq!(engine.screen(), Screen::LevelUp);
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let state = engine.app.world().resource::<GameState>();
+        let run = state.quiz.as_ref().unwrap();
+        assert_eq!(run.level, 1);
+        assert_eq!(run.completed_batches, 0);
         assert!(engine.take_effects().iter().any(|effect| matches!(
             effect,
             EngineEffect::RequestQuestions {
