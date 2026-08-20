@@ -25,6 +25,16 @@
 
         <div id="cart-back" class="empty" title="CARTRIDGE SLOT"></div>
 
+        <button id="cart-guide" class="control-guide hidden" type="button" aria-label="Open the cartridge tray">
+          <span class="guide-action">CLICK SLOT</span>
+          <span class="guide-detail">TO LOAD A GAME</span>
+        </button>
+
+        <button id="power-guide" class="control-guide hidden" type="button" aria-label="Turn the power on">
+          <span class="guide-action">TURN POWER ON</span>
+          <span class="guide-detail">TO START</span>
+        </button>
+
         <div id="shell">
           <div id="bezel">
             <div id="screen">
@@ -58,7 +68,7 @@
           <div class="pill" id="btn-select" data-btn="select"><span>SELECT</span></div>
           <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
           <div class="speaker"></div>
-          <div id="power-switch" title="POWER"><span class="ps-nub"></span></div>
+          <div id="power-switch" title="POWER" role="button" aria-label="Power switch" tabindex="0"><span class="ps-nub"></span></div>
           <div class="shell-tag">CQA-001</div>
         </div>
       </div>

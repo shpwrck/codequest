@@ -1223,6 +1223,68 @@ html, body {
 #power-switch.on { top: 70px; }
 .ps-nub { display: none; }
 
+/* Contextual first-run guidance: point at the physical control that can
+   advance the console's current state, then get out of the way. */
+.control-guide {
+  appearance: none;
+  position: absolute;
+  z-index: 12;
+  padding: 7px 9px 6px;
+  font: inherit;
+  text-align: center;
+  color: var(--parch);
+  background: var(--ink);
+  border: 2px solid var(--gold);
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 rgba(16,17,36,.55);
+  cursor: pointer;
+  animation: guideBob 1s steps(2, end) infinite;
+}
+.control-guide.hidden { display: none; }
+.control-guide:hover, .control-guide:focus-visible {
+  color: var(--ink);
+  background: var(--gold);
+  outline: none;
+}
+.guide-action { display: block; font-size: 8px; line-height: 1.4; white-space: nowrap; }
+.guide-detail { display: block; margin-top: 3px; font-size: 5px; color: var(--sky); white-space: nowrap; }
+.control-guide:hover .guide-detail, .control-guide:focus-visible .guide-detail { color: var(--navy); }
+#cart-guide {
+  left: 50%;
+  top: 44px;
+  transform: translateX(-50%);
+}
+#cart-guide::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  margin-left: -6px;
+  border: 6px solid transparent;
+  border-bottom-color: var(--gold);
+  border-top: 0;
+}
+#power-guide {
+  right: 37px;
+  top: 79px;
+}
+#power-guide::after {
+  content: '';
+  position: absolute;
+  right: -11px;
+  top: 50%;
+  margin-top: -6px;
+  border: 6px solid transparent;
+  border-left-color: var(--gold);
+  border-right: 0;
+}
+#cart-back.guided { animation: targetGlow 1s steps(2, end) infinite; }
+#power-switch.guided { animation: targetGlow 1s steps(2, end) infinite; }
+@keyframes guideBob { 50% { margin-top: -3px; } }
+@keyframes targetGlow {
+  50% { filter: brightness(1.5) drop-shadow(0 0 5px var(--gold)); }
+}
+
 /* ============================ CARTRIDGE ============================ */
 #cart-back {
   /* peeks above the top-back slot; behind the shell by DOM order */

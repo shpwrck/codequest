@@ -20,11 +20,14 @@
   const scaleEl = $("shell-scale");
   const canvas = $("engine-canvas");
   const bootOverlay = $("device-boot");
+  const cartGuide = $("cart-guide");
+  const powerGuide = $("power-guide");
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
   const image = context.createImageData(WIDTH, HEIGHT);
 
   let powered = false;
+  let ready = false;
   let cartridge = null;
   let cartridges = [];
   let trayOpen = false;
@@ -107,6 +110,19 @@
     }
   }
 
+  function updateControlGuides() {
+    const needsCart = ready && !trayOpen && !cartridge && !powered;
+    const needsPower = ready && !trayOpen && (Boolean(cartridge) !== powered);
+    cartGuide.classList.toggle("hidden", !needsCart);
+    powerGuide.classList.toggle("hidden", !needsPower);
+    $("cart-back").classList.toggle("guided", needsCart);
+    $("power-switch").classList.toggle("guided", needsPower);
+    const switchingOff = powered && !cartridge;
+    powerGuide.querySelector(".guide-action").textContent = switchingOff ? "TURN POWER OFF" : "TURN POWER ON";
+    powerGuide.querySelector(".guide-detail").textContent = switchingOff ? "TO LOAD A GAME" : "TO START";
+    powerGuide.setAttribute("aria-label", switchingOff ? "Turn the power off to load a game" : "Turn the power on to start");
+  }
+
   async function setPower(on) {
     if (powered === on) return;
     powered = on;
@@ -115,6 +131,7 @@
     if (on && trayOpen) closeTray();
     if (on) showDeviceBoot();
     else hideDeviceBoot();
+    updateControlGuides();
     try {
       await invoke("engine_power", { powered: on });
     } catch (error) {
@@ -122,6 +139,7 @@
       $("power-switch").classList.toggle("on", powered);
       document.querySelector(".power-led").classList.toggle("off", !powered);
       if (on) hideDeviceBoot();
+      updateControlGuides();
       showTrayError(error);
     }
   }
@@ -137,6 +155,7 @@
       slot.style.removeProperty("--cart-color");
       slot.title = "CARTRIDGE SLOT (EMPTY)";
     }
+    updateControlGuides();
   }
 
   function persistCartridges() {
@@ -265,11 +284,13 @@
     buildTray();
     $("cart-tray").classList.remove("hidden");
     trayOpen = true;
+    updateControlGuides();
   }
 
   function closeTray() {
     $("cart-tray").classList.add("hidden");
     trayOpen = false;
+    updateControlGuides();
   }
 
   function sendButton(button, pressed) {
@@ -362,9 +383,22 @@
     event.stopPropagation();
     setPower(!powered);
   });
+  $("power-switch").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    setPower(!powered);
+  });
   $("cart-back").addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     trayOpen ? closeTray() : openTray();
+  });
+  cartGuide.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openTray();
+  });
+  powerGuide.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setPower(!powered);
   });
   $("cart-tray").addEventListener("pointerdown", (event) => {
     if (event.target === $("cart-tray")) closeTray();
@@ -392,6 +426,8 @@
     }
     renderCartridge();
     await invoke("engine_power", { powered: false });
+    ready = true;
+    updateControlGuides();
     window.requestAnimationFrame(drawFrame);
   }
 
