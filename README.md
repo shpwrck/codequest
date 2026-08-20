@@ -1,7 +1,5 @@
 # CODE QUEST ADVANCE
 
-*Every command is a boss.*
-
 A retro Game Boy Advance-themed, gamified desktop frontend for a coding
 harness, built with Tauri v2 (Rust backend + vanilla JS webview frontend).
 A **quest** is a real shell command: its stdout/stderr streams live into the
