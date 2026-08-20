@@ -313,9 +313,11 @@ fn accepted_question_batch(
     questions: Vec<QQuestion>,
     expected_count: usize,
 ) -> Option<Vec<QQuestion>> {
-    let received_count = questions.len();
-    let valid = retain_acceptable_questions(questions);
-    (received_count == expected_count && valid.len() == expected_count).then_some(valid)
+    let valid = retain_acceptable_questions(questions)
+        .into_iter()
+        .take(expected_count)
+        .collect::<Vec<_>>();
+    (!valid.is_empty()).then_some(valid)
 }
 
 fn gather_quiz_data(path: &std::path::Path) -> Result<QuizData, String> {
@@ -603,7 +605,7 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn incomplete_claude_batches_are_rejected() {
+    fn valid_questions_survive_a_mixed_claude_batch() {
         let valid = question(
             "WHAT SHOULD OWN GAMEPLAY STATE?",
             &[
@@ -618,8 +620,11 @@ mod question_policy_tests {
             &["engine.rs", "main.js", "styles.css", "README.md"],
         );
 
-        assert!(accepted_question_batch(vec![valid.clone(), file_trivia.clone()], 2).is_none());
-        assert!(accepted_question_batch(vec![valid, file_trivia], 1).is_none());
+        let accepted = accepted_question_batch(vec![valid.clone(), file_trivia.clone()], 2)
+            .expect("the valid question should remain playable");
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].q, valid.q);
+        assert!(accepted_question_batch(vec![file_trivia], 1).is_none());
     }
 
     #[test]
