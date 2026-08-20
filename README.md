@@ -66,6 +66,30 @@ point it at your build, your tests, or your agent CLI.
   `index.html`, `styles.css`, `main.js`. GBA shell chrome, 240×160 logical
   screen, CSS box-shadow pixel sprites, Press Start 2P (bundled), scanlines.
 
+## Install
+
+Grab the AppImage, make it executable, run it — there is nothing to install and
+no toolchain required:
+
+```bash
+chmod +x code-quest-advance_0.1.0_amd64.AppImage
+./code-quest-advance_0.1.0_amd64.AppImage
+```
+
+It carries GTK3 and WebKitGTK 4.1 inside it (~200 libraries), which matters most
+on RHEL 9: that distro ships only the webkit2gtk **4.0** API, in BaseOS,
+AppStream, CRB and EPEL alike, so Tauri v2 cannot be built or installed there at
+all from stock packages. The AppImage sidesteps that entirely. Verified to boot
+and render on RHEL 9 (glibc 2.34) and Fedora 43 (glibc 2.42).
+
+The host supplies only its own graphics stack and fonts. On a machine with a
+desktop session those are already present; on a bare/minimal host you need
+`libGLESv2.so.2` (`libglvnd-gles`) and some fonts. If the host has no FUSE, run
+it as `./code-quest-advance_0.1.0_amd64.AppImage --appimage-extract-and-run`.
+
+At runtime the app shells out, so `git` — and `claude`, for AI question
+generation — must be on `PATH`. Those are the only other requirements.
+
 ## Build & run
 
 ```bash
@@ -74,8 +98,25 @@ npm run tauri dev     # dev window
 npm run tauri build   # deb / rpm / AppImage under src-tauri/target/release/bundle/
 ```
 
-Host prerequisites and this machine's build quirks are documented in
-`docs/runbooks/` (see also the headless smoke-test runbook used to verify the
-gameplay loop without touching the desktop).
+This builds against the host's libraries and is the right thing for development.
+It is NOT what you ship: a binary built on Fedora needs GLIBC_2.39 and will not
+start on RHEL 9, which has 2.34.
+
+## Packaging a release
+
+```bash
+./packaging/build-appimage.sh    # -> dist/*.AppImage + SHA256SUMS + portability.txt
+```
+
+That builds inside an Ubuntu 22.04 container — the oldest base carrying
+webkit2gtk-4.1, which pins the portability floor at glibc 2.35 — then patches
+the bundle down to RHEL 9's glibc 2.34 and repackages it. `packaging/Containerfile`
+is the authoritative list of build dependencies and documents each compatibility
+fix and why it exists. The build fails rather than emitting an artifact that
+would die on a RHEL 9 loader.
+
+Verify a change by rebuilding and re-running the smoke test in
+`docs/runbooks/headless-gui-smoke-test/`, which drives the gameplay loop without
+touching the desktop.
 
 Prototype status: built as a design prototype — expect rough edges.
