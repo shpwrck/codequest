@@ -7,6 +7,8 @@
   const WIDTH = 240;
   const HEIGHT = 160;
   const FRAME_BYTES = WIDTH * HEIGHT * 4;
+  const DEVICE_WIDTH = 618;
+  const DEVICE_HEIGHT = 368;
   const BOOT_DURATION_MS = 2600;
   const BOOT_SKIP_DELAY_MS = 650;
   const $ = (id) => document.getElementById(id);
@@ -36,7 +38,10 @@
   const swallowedByBoot = Object.create(null);
 
   function fit() {
-    const available = Math.min(window.innerWidth / 584, window.innerHeight / 352);
+    const available = Math.min(
+      window.innerWidth / DEVICE_WIDTH,
+      window.innerHeight / DEVICE_HEIGHT,
+    );
     const snapped = available >= 1 ? Math.floor(available * 2) / 2 : Math.max(0.35, available);
     scaleEl.style.zoom = snapped;
   }

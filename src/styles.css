@@ -53,7 +53,9 @@ html, body {
 /* True AGB-001 mapping at 4px/mm: body 144.5x82mm -> 578x328px,
    screen active area 60x40mm -> the 240x160 canvas exactly. */
 #shell {
-  position: relative;
+  position: absolute;
+  left: 17px;
+  top: 17px;
   width: 578px;
   height: 328px;
   flex: none;
@@ -73,16 +75,16 @@ html, body {
 /* light-gray shoulder caps wrapping the top corners, like the real unit */
 #shell-scale {
   position: relative;
-  width: 584px;
-  height: 334px;
+  width: 618px;
+  height: 368px;
   flex: none;
 }
 #shoulders {
   /* traced bezier caps: arc over each corner, tapering down the side.
      Sibling BEFORE #shell so it paints behind the body by DOM order. */
   position: absolute;
-  left: -17px;
-  top: -17px;
+  left: 0;
+  top: 0;
   width: 618px;
   height: 368px;
   pointer-events: none;
@@ -1231,14 +1233,14 @@ html, body {
   cursor: pointer;
 }
 #cart-back.empty {
-  top: -4px;
+  top: 13px;
   height: 22px;
   background: #191a30;
   border: 3px solid #101124;
   border-radius: 6px 6px 0 0;
 }
 #cart-back.loaded {
-  top: -14px;
+  top: 3px;
   height: 42px;
   width: 228px;
   background: linear-gradient(#cdcedd, #aaabbf);
