@@ -1,13 +1,5 @@
 # CODE QUEST ADVANCE
 
-A retro Game Boy Advance-themed, gamified desktop frontend for a coding
-harness, built with Tauri v2 (Rust backend + vanilla JS webview frontend).
-A **quest** is a real shell command: its stdout/stderr streams live into the
-game as an RPG battle — output lines land as attack narration and XP, stderr
-wounds your hero, exit 0 stamps QUEST CLEARED, and a nonzero exit means GAME
-OVER (retry?). XP, levels, titles, streaks, and a procedural nemesis bestiary
-persist between sessions.
-
 ![Title screen](docs/screenshots/shot1-title.png)
 ![Battle](docs/screenshots/shot3-battle.png)
 
