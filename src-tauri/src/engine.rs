@@ -15,6 +15,7 @@ pub const FRAME_BYTES: usize = WIDTH * HEIGHT * 4;
 pub const QUIZ_QUESTION_COLUMNS: usize = 37;
 pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 35;
+const QUESTION_BATCH_SIZE: usize = 6;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
 
 const INK: Color = Color::rgb(26, 28, 44);
@@ -371,7 +372,7 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
     effects.0.push_back(EngineEffect::RequestQuestions {
         cartridge_id: cartridge.id.clone(),
         level,
-        count: 6,
+        count: QUESTION_BATCH_SIZE,
     });
     state.questions_loading = true;
 }
@@ -796,8 +797,10 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
         Screen::Quiz => {
             let prefetch_level = state.quiz.as_ref().and_then(|run| {
                 let remaining = state.question_count().saturating_sub(run.question);
-                (remaining <= 3 && !state.questions_loading && state.pending_questions.is_none())
-                    .then_some(run.level + 1)
+                (remaining <= QUESTION_BATCH_SIZE
+                    && !state.questions_loading
+                    && state.pending_questions.is_none())
+                .then_some(run.level + 1)
             });
             if let Some(level) = prefetch_level {
                 request_question_batch(&mut state, &mut effects, level);
@@ -1685,6 +1688,7 @@ mod tests {
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         issue(&mut engine, EngineCommand::Power(true));
         issue(&mut engine, EngineCommand::BootComplete);
+        let _ = engine.take_effects();
         for button in [Button::Start, Button::A, Button::Start] {
             issue(
                 &mut engine,
@@ -1704,19 +1708,10 @@ mod tests {
         for _ in 0..75 {
             engine.update();
         }
-        let _ = engine.take_effects();
-        engine.app.world_mut().resource_mut::<GameState>().quiz = Some(QuizRun {
-            question: 1,
-            selected: 0,
-            hearts: 3,
-            score: 0,
-            level: 1,
-            streak: 0,
-            leveled_up: false,
-            feedback: None,
-        });
-        engine.update();
-        assert_eq!(engine.take_effects().len(), 1);
+        assert!(matches!(
+            engine.take_effects().as_slice(),
+            [EngineEffect::RequestQuestions { level: 2, .. }]
+        ));
 
         issue(
             &mut engine,
@@ -1735,6 +1730,45 @@ mod tests {
         assert!(matches!(
             engine.take_effects().as_slice(),
             [EngineEffect::RequestQuestions { level: 2, .. }]
+        ));
+    }
+
+    #[test]
+    fn next_batch_prefetch_starts_when_the_first_batch_becomes_playable() {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = vec![cartridge.questions[0].clone(); 6];
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        let _ = engine.take_effects();
+        for button in [Button::Start, Button::A, Button::Start] {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: false,
+                },
+            );
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+
+        assert!(matches!(
+            engine.take_effects().as_slice(),
+            [EngineEffect::RequestQuestions {
+                level: 2,
+                count: 6,
+                ..
+            }]
         ));
     }
 
