@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 
-pub const WIDTH: usize = 240;
-pub const HEIGHT: usize = 160;
+pub const WIDTH: usize = 480;
+pub const HEIGHT: usize = 320;
 pub const FRAME_BYTES: usize = WIDTH * HEIGHT * 4;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
 
@@ -487,10 +487,10 @@ fn apply_commands(
             }
             EngineCommand::QuestOutput { line, stderr } => {
                 if state.screen == Screen::Battle {
-                    for wrapped in wrap_text(&line, 27).into_iter().take(3) {
+                    for wrapped in wrap_text(&line, 54).into_iter().take(3) {
                         state.logs.push_back((wrapped, stderr));
                     }
-                    while state.logs.len() > 8 {
+                    while state.logs.len() > 14 {
                         state.logs.pop_front();
                     }
                 }
@@ -706,11 +706,11 @@ fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
 
 fn render_boot(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(PARCH);
-    frame.centered_text(54, "CODEQUEST", NAVY, 2);
-    frame.centered_text(73, "ADVANCE", ROYAL, 2);
-    frame.rect(68, 96, 104, 2, MIST);
+    frame.centered_text(108, "CODEQUEST", NAVY, 2);
+    frame.centered_text(138, "ADVANCE", ROYAL, 2);
+    frame.rect(136, 190, 208, 3, MIST);
     if !state.has_game() && state.screen_ticks > 50 && (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(115, "INSERT CARTRIDGE", RED, 1);
+        frame.centered_text(230, "INSERT CARTRIDGE", RED, 1);
     }
 }
 
@@ -726,55 +726,55 @@ fn render_title(frame: &mut Framebuffer, state: &GameState) {
         .as_ref()
         .map_or("NO CARTRIDGE", |cart| cart.title.as_str());
     let lines = title_lines(title);
-    frame.centered_text(42, &lines[0], PARCH, 2);
+    frame.centered_text(84, &lines[0], PARCH, 2);
     if let Some(line) = lines.get(1) {
-        frame.centered_text(61, line, GOLD, 2);
+        frame.centered_text(116, line, GOLD, 2);
     }
     let subtitle = match state.cartridge_mode() {
         Some(CartridgeMode::Quiz) => "ENDLESS REPO QUIZ",
         Some(CartridgeMode::Custom) => "EVERY COMMAND IS A BOSS",
         None => "POWER OFF TO LOAD A GAME",
     };
-    frame.centered_text(91, subtitle, SKY, 1);
+    frame.centered_text(174, subtitle, SKY, 1);
     if state.has_game() && (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(126, "PRESS START", PARCH, 1);
+        frame.centered_text(252, "PRESS START", PARCH, 1);
     }
 }
 
 fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(NAVY);
-    frame.centered_text(20, "REPO QUIZ", GOLD, 2);
-    frame.outline(34, 58, 172, 62, SKY);
+    frame.centered_text(40, "REPO QUIZ", GOLD, 2);
+    frame.outline(68, 110, 344, 120, SKY);
     for (index, label) in ["BEGIN RUN", "RETURN TO TITLE"].iter().enumerate() {
-        let y = 74 + index as i32 * 24;
+        let y = 145 + index as i32 * 42;
         if state.menu_selected == index {
-            frame.rect(43, y - 3, 154, 14, ROYAL);
-            frame.text(47, y, ">", GOLD, 1);
+            frame.rect(86, y - 6, 308, 20, ROYAL);
+            frame.text(94, y, ">", GOLD, 1);
         }
-        frame.text(59, y, label, PARCH, 1);
+        frame.text(118, y, label, PARCH, 1);
     }
-    frame.centered_text(140, "A:CHOOSE  B:BACK", MIST, 1);
+    frame.centered_text(290, "A:CHOOSE  B:BACK", MIST, 1);
 }
 
 fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(INK);
-    for index in 0..30 {
+    for index in 0..60 {
         let x = ((index * 71 + state.screen_ticks as usize * 2) % WIDTH) as i32;
-        frame.pixel(x, 28 + (index * 29 % 82) as i32, MIST);
+        frame.pixel(x, 54 + (index * 29 % 170) as i32, MIST);
     }
-    frame.centered_text(20, "ORACLE LOADING", SKY, 1);
+    frame.centered_text(40, "ORACLE LOADING", SKY, 1);
     let phase = (state.screen_ticks % 60) / 15;
-    frame.centered_text(34, &".".repeat(phase as usize + 1), GOLD, 1);
-    frame.rect(0, 132, WIDTH as i32, 28, PLUM);
-    frame.rect(0, 128, WIDTH as i32, 4, GREEN);
+    frame.centered_text(62, &".".repeat(phase as usize + 1), GOLD, 1);
+    frame.rect(0, 264, WIDTH as i32, 56, PLUM);
+    frame.rect(0, 256, WIDTH as i32, 8, GREEN);
     let jump = if state.oracle_jump > 0 {
         let t = state.oracle_jump as i32 - 12;
         12 - (t.abs() / 2)
     } else {
         0
     };
-    draw_crab(frame, 104, 111 - jump);
-    frame.centered_text(148, "A:JUMP", PARCH, 1);
+    draw_crab(frame, 212, 220 - jump * 2, 2);
+    frame.centered_text(296, "A:JUMP", PARCH, 1);
 }
 
 fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
@@ -782,16 +782,16 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
     let Some(run) = state.quiz.as_ref() else {
         return;
     };
-    frame.rect(0, 0, WIDTH as i32, 16, INK);
-    frame.text(5, 4, &format!("Q{:02}", run.question + 1), SKY, 1);
+    frame.rect(0, 0, WIDTH as i32, 28, INK);
+    frame.text(10, 10, &format!("Q{:02}", run.question + 1), SKY, 1);
     frame.text(
-        84,
-        4,
+        170,
+        10,
         &format!("HP {}", "*".repeat(run.hearts as usize)),
         RED,
         1,
     );
-    frame.text(176, 4, &format!("{:04}", run.score), GOLD, 1);
+    frame.text(400, 10, &format!("{:04}", run.score), GOLD, 1);
     let Some(cart) = state.cartridge.as_ref() else {
         return;
     };
@@ -801,15 +801,15 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
     else {
         return;
     };
-    frame.rect(5, 23, 230, 42, INK);
-    frame.outline(5, 23, 230, 42, SKY);
-    frame.wrapped_text(11, 30, &question.question, PARCH, 27, 3);
+    frame.rect(10, 40, 460, 82, INK);
+    frame.outline(10, 40, 460, 82, SKY);
+    frame.wrapped_text(20, 50, &question.question, PARCH, 54, 7);
     for (index, choice) in question.choices.iter().take(4).enumerate() {
-        let y = 73 + index as i32 * 20;
+        let y = 140 + index as i32 * 36;
         let mut color = PARCH;
         if run.selected == index {
-            frame.rect(5, y - 3, 230, 16, ROYAL);
-            frame.text(9, y, ">", GOLD, 1);
+            frame.rect(10, y - 6, 460, 24, ROYAL);
+            frame.text(18, y, ">", GOLD, 1);
         }
         if let Some((correct, _)) = run.feedback {
             if index == question.answer {
@@ -818,105 +818,129 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
                 color = RED;
             }
         }
-        frame.text(21, y, &truncate(choice, 25), color, 1);
+        frame.text(42, y, &truncate(choice, 50), color, 1);
     }
-    frame.text(5, 151, "A:ANSWER", MIST, 1);
-    frame.text(163, 151, "B:BACK", MIST, 1);
+    frame.text(10, 303, "A:ANSWER", MIST, 1);
+    frame.text(392, 303, "B:BACK", MIST, 1);
 }
 
 fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(INK);
-    frame.centered_text(43, "GAME OVER", RED, 2);
+    frame.centered_text(86, "GAME OVER", RED, 2);
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text(81, &format!("SCORE {:04}", run.score), GOLD, 1);
+        frame.centered_text(162, &format!("SCORE {:04}", run.score), GOLD, 1);
     } else {
-        frame.centered_text(81, "NO QUESTIONS FOUND", GOLD, 1);
+        frame.centered_text(162, "NO QUESTIONS FOUND", GOLD, 1);
     }
     if (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(124, "PRESS A", PARCH, 1);
+        frame.centered_text(248, "PRESS A", PARCH, 1);
     }
 }
 
 fn render_quest_select(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(NAVY);
-    frame.rect(0, 0, WIDTH as i32, 22, INK);
-    frame.centered_text(7, "CHOOSE THY QUEST", GOLD, 1);
+    frame.rect(0, 0, WIDTH as i32, 32, INK);
+    frame.centered_text(11, "CHOOSE THY QUEST", GOLD, 1);
     let Some(cart) = state.cartridge.as_ref() else {
         return;
     };
     if cart.quests.is_empty() {
-        frame.centered_text(70, "NO QUESTS ON CARTRIDGE", RED, 1);
+        frame.centered_text(140, "NO QUESTS ON CARTRIDGE", RED, 1);
         return;
     }
-    let start = state.quest_selected.saturating_sub(2);
-    for (row, quest) in cart.quests.iter().skip(start).take(5).enumerate() {
+    let start = state.quest_selected.saturating_sub(5);
+    for (row, quest) in cart.quests.iter().skip(start).take(10).enumerate() {
         let index = start + row;
-        let y = 31 + row as i32 * 22;
+        let y = 44 + row as i32 * 24;
         if index == state.quest_selected {
-            frame.rect(4, y - 3, 232, 18, ROYAL);
-            frame.text(8, y, ">", GOLD, 1);
+            frame.rect(8, y - 4, 464, 20, ROYAL);
+            frame.text(16, y, ">", GOLD, 1);
         }
-        frame.text(20, y, &truncate(&quest.name, 25), PARCH, 1);
-        frame.text(20, y + 9, &truncate(&quest.boss, 25), MIST, 1);
+        frame.text(40, y, &truncate(&quest.name, 50), PARCH, 1);
+        frame.text(40, y + 9, &truncate(&quest.boss, 50), MIST, 1);
     }
-    frame.centered_text(147, "A:FIGHT  B:BACK", MIST, 1);
+    frame.centered_text(303, "A:FIGHT  B:BACK", MIST, 1);
 }
 
 fn render_battle(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(NAVY);
-    frame.rect(0, 0, WIDTH as i32, 69, INK);
-    frame.text(6, 5, &truncate(&state.active_boss, 27), RED, 1);
-    draw_crab(frame, 34, 45);
-    draw_boss(frame, 183, 29, state.screen_ticks);
-    frame.rect(0, 68, WIDTH as i32, 2, SKY);
-    frame.outline(4, 75, 232, 68, MIST);
-    for (index, (line, stderr)) in state.logs.iter().rev().take(7).rev().enumerate() {
+    frame.rect(0, 0, WIDTH as i32, 138, INK);
+    frame.text(12, 10, &truncate(&state.active_boss, 54), RED, 1);
+    draw_crab(frame, 68, 88, 2);
+    draw_boss(frame, 366, 56, state.screen_ticks, 2);
+    frame.rect(0, 136, WIDTH as i32, 4, SKY);
+    frame.outline(8, 150, 464, 132, MIST);
+    for (index, (line, stderr)) in state.logs.iter().rev().take(13).rev().enumerate() {
         frame.text(
-            9,
-            80 + index as i32 * 9,
-            &truncate(line, 27),
+            18,
+            158 + index as i32 * 9,
+            &truncate(line, 54),
             if *stderr { RED } else { PARCH },
             1,
         );
     }
-    frame.text(5, 150, "B:ABORT", GOLD, 1);
-    frame.text(143, 150, "RUST PROCESS", GREEN, 1);
+    frame.text(10, 303, "B:ABORT", GOLD, 1);
+    frame.text(374, 303, "RUST PROCESS", GREEN, 1);
 }
 
 fn render_result(frame: &mut Framebuffer, success: bool) {
     frame.clear(if success { NAVY } else { INK });
     frame.centered_text(
-        39,
+        78,
         if success { "QUEST" } else { "GAME" },
         if success { GOLD } else { RED },
         2,
     );
     frame.centered_text(
-        60,
+        120,
         if success { "CLEARED" } else { "OVER" },
         if success { GREEN } else { RED },
         2,
     );
-    frame.outline(31, 91, 178, 33, if success { SKY } else { PLUM });
-    frame.centered_text(103, "A:QUEST LIST", PARCH, 1);
+    frame.outline(62, 182, 356, 66, if success { SKY } else { PLUM });
+    frame.centered_text(210, "A:QUEST LIST", PARCH, 1);
 }
 
-fn draw_crab(frame: &mut Framebuffer, x: i32, y: i32) {
-    frame.rect(x + 4, y, 20, 10, CRAB);
-    frame.rect(x, y + 5, 28, 8, CRAB);
-    frame.rect(x + 3, y + 13, 5, 4, CRAB);
-    frame.rect(x + 20, y + 13, 5, 4, CRAB);
-    frame.rect(x + 7, y + 3, 3, 3, INK);
-    frame.rect(x + 18, y + 3, 3, 3, INK);
+fn draw_crab(frame: &mut Framebuffer, x: i32, y: i32, scale: i32) {
+    frame.rect(x + 4 * scale, y, 20 * scale, 10 * scale, CRAB);
+    frame.rect(x, y + 5 * scale, 28 * scale, 8 * scale, CRAB);
+    frame.rect(x + 3 * scale, y + 13 * scale, 5 * scale, 4 * scale, CRAB);
+    frame.rect(x + 20 * scale, y + 13 * scale, 5 * scale, 4 * scale, CRAB);
+    frame.rect(x + 7 * scale, y + 3 * scale, 3 * scale, 3 * scale, INK);
+    frame.rect(x + 18 * scale, y + 3 * scale, 3 * scale, 3 * scale, INK);
 }
 
-fn draw_boss(frame: &mut Framebuffer, x: i32, y: i32, tick: u64) {
-    let bob = ((tick / 15) % 2) as i32;
-    frame.rect(x, y + bob, 30, 27, PLUM);
-    frame.rect(x - 4, y + 7 + bob, 38, 13, PLUM);
-    frame.rect(x + 5, y + 7 + bob, 5, 5, GOLD);
-    frame.rect(x + 20, y + 7 + bob, 5, 5, GOLD);
-    frame.rect(x + 8, y + 20 + bob, 14, 3, RED);
+fn draw_boss(frame: &mut Framebuffer, x: i32, y: i32, tick: u64, scale: i32) {
+    let bob = ((tick / 15) % 2) as i32 * scale;
+    frame.rect(x, y + bob, 30 * scale, 27 * scale, PLUM);
+    frame.rect(
+        x - 4 * scale,
+        y + 7 * scale + bob,
+        38 * scale,
+        13 * scale,
+        PLUM,
+    );
+    frame.rect(
+        x + 5 * scale,
+        y + 7 * scale + bob,
+        5 * scale,
+        5 * scale,
+        GOLD,
+    );
+    frame.rect(
+        x + 20 * scale,
+        y + 7 * scale + bob,
+        5 * scale,
+        5 * scale,
+        GOLD,
+    );
+    frame.rect(
+        x + 8 * scale,
+        y + 20 * scale + bob,
+        14 * scale,
+        3 * scale,
+        RED,
+    );
 }
 
 fn handle_effect(
@@ -1052,14 +1076,14 @@ fn title_lines(title: &str) -> Vec<String> {
         } else {
             format!("{} {word}", lines.last().unwrap())
         };
-        if candidate.chars().count() <= 13 {
+        if candidate.chars().count() <= 26 {
             *lines.last_mut().unwrap() = candidate;
         } else if lines.len() == 1 {
-            lines.push(truncate(word, 13));
+            lines.push(truncate(word, 26));
         }
     }
     if lines[0].is_empty() {
-        lines[0] = truncate(title, 13);
+        lines[0] = truncate(title, 26);
     }
     lines
 }
@@ -1090,7 +1114,10 @@ mod tests {
     #[test]
     fn framebuffer_is_always_fixed_resolution() {
         let mut engine = GameEngine::new();
+        assert_eq!((WIDTH, HEIGHT), (480, 320));
+        assert_eq!(FRAME_BYTES, 614_400);
         assert_eq!(engine.frame().len(), FRAME_BYTES);
+        assert!(engine.frame().chunks_exact(4).all(|pixel| pixel[3] == 255));
         issue(
             &mut engine,
             EngineCommand::Cartridge(Some(quiz_cartridge())),

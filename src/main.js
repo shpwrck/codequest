@@ -1,11 +1,11 @@
 /* CODE QUEST ADVANCE device adapter.
  * The browser owns only the shell. Bevy owns game state, timing, process
- * execution, and the fixed 240x160 RGBA framebuffer exposed by Rust. */
+ * execution, and the fixed 480x320 RGBA framebuffer exposed by Rust. */
 "use strict";
 
 (() => {
-  const WIDTH = 240;
-  const HEIGHT = 160;
+  const WIDTH = 480;
+  const HEIGHT = 320;
   const FRAME_BYTES = WIDTH * HEIGHT * 4;
   const $ = (id) => document.getElementById(id);
   const tauri = window.__TAURI__;

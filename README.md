@@ -53,7 +53,7 @@ quest list and are started, streamed, and stopped by the Bevy runtime.
 
 - `src-tauri/src/engine.rs` — the game. A headless Bevy app owns navigation,
   input edges, fixed-step timing, quiz/battle state, command execution, and a
-  CPU-rendered 240×160 RGBA framebuffer.
+  CPU-rendered 480×320 RGBA framebuffer.
 - `src-tauri/src/lib.rs` — the platform adapter. It validates git-repo
   cartridges, prepares data, and exposes only power, cartridge, input, and
   framebuffer operations to the device UI.
@@ -61,7 +61,9 @@ quest list and are started, streamed, and stopped by the Bevy runtime.
   cartridge tray, window fitting, and copies the fixed-size Rust framebuffer
   into one canvas. It contains no gameplay state or game rendering.
 
-The framebuffer is always exactly 240×160 (153,600 RGBA bytes). Button
+The framebuffer is always exactly 480×320 (614,400 RGBA bytes). Each pixel is
+32-bit RGBA (8 bits per channel); 64-bit color would increase color precision
+without adding text space. Button
 presses can change its pixels, but cannot change its dimensions or the CSS
 layout of the device, which prevents the mid-game rasterization shift that
 the DOM-rendered version could trigger.

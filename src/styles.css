@@ -1,5 +1,5 @@
 /* ============================================================
-   CODE QUEST ADVANCE — GBA shell + 240x160 game screen
+   CODE QUEST ADVANCE — GBA shell + 480x320 engine framebuffer
    Palette: GBA Indigo #4A4A9C / Indigo Shadow #31316B / Night Ink #1A1C2C
    Dusk Navy #29366F / Royal Blue #3B5DC9 / UI Sky #41A6F6 / Parchment #F4F4F4
    Steel Mist #94B0C2 / XP Gold #FFCD75 / HP Green #38B764 / Wound Red #B13E53
@@ -50,8 +50,8 @@ html, body {
 
 /* ============================ THE SHELL ============================ */
 
-/* True AGB-001 mapping at 4px/mm: body 144.5x82mm -> 578x328px,
-   screen active area 60x40mm -> the 240x160 canvas exactly. */
+/* True AGB-001 mapping at 4px/mm: body 144.5x82mm -> 578x328px.
+   The 480x320 framebuffer is presented 2:1 in the 240x160 LCD viewport. */
 #shell {
   position: relative;
   width: 578px;
@@ -155,8 +155,8 @@ html, body {
 /* ============================ THE SCREEN ============================ */
 
 #screen {
-  /* logical canvas stays 240x160; scaled up to the reference's LCD size
-     (~273 shell px wide) and centered on the lens center */
+  /* physical LCD viewport stays 240x160 and is centered on the lens;
+     the engine canvas is downsampled by an exact 2:1 CSS ratio. */
   /* bottom edge aligned to the START/SELECT midpoint (shell y=237) */
   position: absolute;
   left: 50%;
@@ -183,6 +183,8 @@ html, body {
 }
 #engine-canvas {
   display: block;
+  /* The backing store is 480x320; this exact 2:1 presentation keeps its
+     pixels stable while preserving the shell's physical proportions. */
   width: 240px;
   height: 160px;
   image-rendering: pixelated;
