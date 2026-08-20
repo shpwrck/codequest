@@ -114,6 +114,7 @@ enum Screen {
 #[derive(Clone, Debug)]
 enum EngineCommand {
     Power(bool),
+    BootComplete,
     Cartridge(Option<CartridgeSpec>),
     Questions {
         cartridge_id: String,
@@ -401,6 +402,10 @@ impl EngineRuntime {
         self.send(EngineCommand::Power(powered))
     }
 
+    pub fn finish_boot(&self) -> Result<(), String> {
+        self.send(EngineCommand::BootComplete)
+    }
+
     pub fn set_cartridge(&self, cartridge: Option<CartridgeSpec>) -> Result<(), String> {
         self.send(EngineCommand::Cartridge(cartridge))
     }
@@ -448,6 +453,11 @@ fn apply_commands(
                 state.logs.clear();
                 effects.0.push_back(EngineEffect::AbortQuest);
                 state.transition(if powered { Screen::Boot } else { Screen::Off });
+            }
+            EngineCommand::BootComplete => {
+                if state.screen == Screen::Boot && state.has_game() {
+                    state.transition(Screen::Title);
+                }
             }
             EngineCommand::Cartridge(cartridge) => {
                 state.cartridge = cartridge;
@@ -516,11 +526,7 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
     }
     match state.screen {
         Screen::Off => {}
-        Screen::Boot => {
-            if state.has_game() && state.screen_ticks >= 10 {
-                state.transition(Screen::Title);
-            }
-        }
+        Screen::Boot => {}
         Screen::Title => {
             if matches!(button, Button::A | Button::Start) {
                 match state.cartridge_mode() {
@@ -652,9 +658,6 @@ fn advance_game(mut state: ResMut<GameState>) {
         }
     }
     match state.screen {
-        Screen::Boot if state.has_game() && state.screen_ticks >= 90 => {
-            state.transition(Screen::Title)
-        }
         Screen::Oracle if state.screen_ticks >= 75 => {
             if state.question_count() == 0 {
                 state.transition(Screen::GameOver);
@@ -1172,9 +1175,7 @@ mod tests {
             EngineCommand::Cartridge(Some(quiz_cartridge())),
         );
         issue(&mut engine, EngineCommand::Power(true));
-        for _ in 0..90 {
-            engine.update();
-        }
+        issue(&mut engine, EngineCommand::BootComplete);
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -1275,9 +1276,7 @@ mod tests {
         );
         issue(&mut engine, EngineCommand::Power(true));
         assert_eq!(engine.screen(), Screen::Boot);
-        for _ in 0..90 {
-            engine.update();
-        }
+        issue(&mut engine, EngineCommand::BootComplete);
         assert_eq!(engine.screen(), Screen::Title);
         issue(
             &mut engine,
@@ -1290,6 +1289,28 @@ mod tests {
     }
 
     #[test]
+    fn boot_waits_for_device_firmware() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        for _ in 0..180 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Boot);
+    }
+
+    #[test]
+    fn boot_cannot_finish_without_a_cartridge() {
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        assert_eq!(engine.screen(), Screen::Boot);
+    }
+
+    #[test]
     fn held_button_only_generates_one_edge() {
         let mut engine = GameEngine::new();
         issue(
@@ -1297,9 +1318,7 @@ mod tests {
             EngineCommand::Cartridge(Some(quiz_cartridge())),
         );
         issue(&mut engine, EngineCommand::Power(true));
-        for _ in 0..90 {
-            engine.update();
-        }
+        issue(&mut engine, EngineCommand::BootComplete);
         issue(
             &mut engine,
             EngineCommand::Input {

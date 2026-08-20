@@ -55,11 +55,13 @@ quest list and are started, streamed, and stopped by the Bevy runtime.
   input edges, fixed-step timing, quiz/battle state, command execution, and a
   CPU-rendered 240×160 RGBA framebuffer.
 - `src-tauri/src/lib.rs` — the platform adapter. It validates git-repo
-  cartridges, prepares data, and exposes only power, cartridge, input, and
-  framebuffer operations to the device UI.
+  cartridges, prepares data, and exposes only power, boot completion,
+  cartridge, input, and framebuffer operations to the device UI.
 - `src/` — the JavaScript device shell. It owns the physical controls,
-  cartridge tray, window fitting, and copies the fixed-size Rust framebuffer
-  into one canvas. It contains no gameplay state or game rendering.
+  cartridge tray, window fitting, the fixed device-firmware boot overlay, and
+  copies the fixed-size Rust framebuffer into one canvas. It contains no
+  gameplay state or game rendering. Bevy remains at its boot boundary until
+  the device animation explicitly completes.
 
 The framebuffer is always exactly 240×160 (153,600 RGBA bytes). Each pixel is
 32-bit RGBA (8 bits per channel). Game text uses a purpose-built 5×7 glyph in

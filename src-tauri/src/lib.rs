@@ -667,6 +667,11 @@ fn engine_power(state: State<EngineState>, powered: bool) -> Result<(), String> 
 }
 
 #[tauri::command]
+fn engine_finish_boot(state: State<EngineState>) -> Result<(), String> {
+    state.0.finish_boot()
+}
+
+#[tauri::command]
 fn engine_input(state: State<EngineState>, button: String, pressed: bool) -> Result<(), String> {
     let button = engine::Button::parse(&button).ok_or_else(|| "UNKNOWN BUTTON".to_string())?;
     state.0.input(button, pressed)
@@ -686,6 +691,7 @@ pub fn run() {
             pick_cartridge,
             engine_set_cartridge,
             engine_power,
+            engine_finish_boot,
             engine_input,
             engine_frame
         ])

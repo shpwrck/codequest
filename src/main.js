@@ -7,6 +7,8 @@
   const WIDTH = 240;
   const HEIGHT = 160;
   const FRAME_BYTES = WIDTH * HEIGHT * 4;
+  const BOOT_DURATION_MS = 2600;
+  const BOOT_SKIP_DELAY_MS = 650;
   const $ = (id) => document.getElementById(id);
   const tauri = window.__TAURI__;
   const invoke = tauri?.core?.invoke
@@ -15,6 +17,7 @@
 
   const scaleEl = $("shell-scale");
   const canvas = $("engine-canvas");
+  const bootOverlay = $("device-boot");
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
   const image = context.createImageData(WIDTH, HEIGHT);
@@ -25,7 +28,12 @@
   let trayOpen = false;
   let picking = false;
   let framePending = false;
+  let bootTimer = null;
+  let bootStartedAt = 0;
+  let bootFinishing = false;
+  let bootGeneration = 0;
   const held = Object.create(null);
+  const swallowedByBoot = Object.create(null);
 
   function fit() {
     const available = Math.min(window.innerWidth / 584, window.innerHeight / 352);
@@ -54,18 +62,61 @@
     window.requestAnimationFrame(drawFrame);
   }
 
+  function clearBootTimer() {
+    if (bootTimer !== null) {
+      window.clearTimeout(bootTimer);
+      bootTimer = null;
+    }
+  }
+
+  function hideDeviceBoot() {
+    clearBootTimer();
+    bootGeneration += 1;
+    bootFinishing = false;
+    bootOverlay.classList.remove("active");
+  }
+
+  async function finishDeviceBoot(generation = bootGeneration) {
+    if (!powered || !cartridge || bootFinishing || generation !== bootGeneration) return;
+    bootFinishing = true;
+    clearBootTimer();
+    try {
+      await invoke("engine_finish_boot");
+      if (powered && generation === bootGeneration) hideDeviceBoot();
+    } catch (error) {
+      if (generation === bootGeneration) bootFinishing = false;
+      showTrayError(error);
+    }
+  }
+
+  function showDeviceBoot() {
+    clearBootTimer();
+    const generation = ++bootGeneration;
+    bootStartedAt = performance.now();
+    bootFinishing = false;
+    bootOverlay.classList.remove("active");
+    void bootOverlay.offsetWidth;
+    bootOverlay.classList.add("active");
+    if (cartridge) {
+      bootTimer = window.setTimeout(() => finishDeviceBoot(generation), BOOT_DURATION_MS);
+    }
+  }
+
   async function setPower(on) {
     if (powered === on) return;
     powered = on;
     $("power-switch").classList.toggle("on", on);
     document.querySelector(".power-led").classList.toggle("off", !on);
     if (on && trayOpen) closeTray();
+    if (on) showDeviceBoot();
+    else hideDeviceBoot();
     try {
       await invoke("engine_power", { powered: on });
     } catch (error) {
       powered = !on;
       $("power-switch").classList.toggle("on", powered);
       document.querySelector(".power-led").classList.toggle("off", !powered);
+      if (on) hideDeviceBoot();
       showTrayError(error);
     }
   }
@@ -220,6 +271,21 @@
     document.querySelectorAll(`[data-btn="${button}"]`).forEach((element) => {
       element.classList.toggle("pressed", pressed);
     });
+    if (bootOverlay.classList.contains("active")) {
+      if (pressed) {
+        swallowedByBoot[button] = true;
+        if (cartridge && performance.now() - bootStartedAt >= BOOT_SKIP_DELAY_MS) {
+          finishDeviceBoot();
+        }
+      } else {
+        delete swallowedByBoot[button];
+      }
+      return;
+    }
+    if (!pressed && swallowedByBoot[button]) {
+      delete swallowedByBoot[button];
+      return;
+    }
     invoke("engine_input", { button, pressed }).catch((error) => {
       console.error("CQA: input rejected", error);
     });
@@ -333,7 +399,7 @@
     }
     return async (command, args) => {
       if (command === "engine_frame") return frame.buffer;
-      if (["engine_power", "engine_input"].includes(command)) return null;
+      if (["engine_power", "engine_finish_boot", "engine_input"].includes(command)) return null;
       if (command === "engine_set_cartridge" && args?.path == null) return null;
       if (command === "engine_set_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");
       if (command === "pick_cartridge") return null;
