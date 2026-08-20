@@ -353,6 +353,13 @@ impl GameState {
             .as_ref()
             .map_or(0, |cart| cart.questions.len())
     }
+
+    fn has_unanswered_question(&self) -> bool {
+        let question = self.quiz.as_ref().map_or(0, |run| run.question);
+        self.cartridge
+            .as_ref()
+            .is_some_and(|cartridge| cartridge.questions.get(question).is_some())
+    }
 }
 
 fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u32) {
@@ -714,10 +721,7 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
         }
         Screen::LevelUp => {
             if matches!(button, Button::A | Button::Start) {
-                let questions_ready = state
-                    .quiz
-                    .as_ref()
-                    .is_some_and(|run| run.question < state.question_count());
+                let questions_ready = state.has_unanswered_question();
                 state.transition(if questions_ready {
                     Screen::Quiz
                 } else {
@@ -787,13 +791,14 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
         }
     }
     match state.screen {
-        Screen::Oracle if state.question_count() == 0 && !state.questions_loading => {
+        Screen::Oracle if !state.has_unanswered_question() && !state.questions_loading => {
             let level = state.quiz.as_ref().map_or(1, |run| run.level);
             request_question_batch(&mut state, &mut effects, level);
         }
-        Screen::Oracle if state.screen_ticks >= 75 && state.question_count() > 0 => {
+        Screen::Oracle if state.screen_ticks >= 75 && state.has_unanswered_question() => {
             state.transition(Screen::Quiz);
         }
+        Screen::Quiz if !state.has_unanswered_question() => state.transition(Screen::Oracle),
         Screen::Quiz => {
             let prefetch_level = state.quiz.as_ref().and_then(|run| {
                 let remaining = state.question_count().saturating_sub(run.question);
@@ -833,10 +838,7 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
             }
         }
         Screen::LevelUp if state.screen_ticks >= 180 => {
-            let questions_ready = state
-                .quiz
-                .as_ref()
-                .is_some_and(|run| run.question < state.question_count());
+            let questions_ready = state.has_unanswered_question();
             state.transition(if questions_ready {
                 Screen::Quiz
             } else {
@@ -1561,6 +1563,58 @@ mod tests {
             },
         );
         assert_eq!(engine.screen(), Screen::Quiz);
+    }
+
+    #[test]
+    fn exhausted_deck_waits_for_a_new_question_instead_of_rendering_blank_quiz() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        {
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            state.powered = true;
+            state.quiz = Some(QuizRun {
+                question: 1,
+                selected: 0,
+                hearts: 3,
+                score: 100,
+                level: 1,
+                streak: 1,
+                leveled_up: false,
+                feedback: None,
+            });
+            state.transition(Screen::Oracle);
+        }
+
+        engine.update();
+        assert!(matches!(
+            engine.take_effects().as_slice(),
+            [EngineEffect::RequestQuestions { level: 1, .. }]
+        ));
+        for _ in 1..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Oracle);
+
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                questions: vec![QuizQuestion {
+                    question: "WHAT ARRIVED NEXT?".into(),
+                    choices: vec!["A NEW QUESTION".into(), "NOTHING".into()],
+                    answer: 0,
+                }],
+            },
+        );
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let state = engine.app.world().resource::<GameState>();
+        assert_eq!(
+            state.cartridge.as_ref().unwrap().questions[1].question,
+            "WHAT ARRIVED NEXT?"
+        );
     }
 
     #[test]
