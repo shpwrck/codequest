@@ -1,5 +1,5 @@
 /* ============================================================
-   CODE QUEST ADVANCE — GBA shell + 240x160 game screen
+   CODE QUEST ADVANCE — GBA shell + 240x160 engine framebuffer
    Palette: GBA Indigo #4A4A9C / Indigo Shadow #31316B / Night Ink #1A1C2C
    Dusk Navy #29366F / Royal Blue #3B5DC9 / UI Sky #41A6F6 / Parchment #F4F4F4
    Steel Mist #94B0C2 / XP Gold #FFCD75 / HP Green #38B764 / Wound Red #B13E53
@@ -53,7 +53,9 @@ html, body {
 /* True AGB-001 mapping at 4px/mm: body 144.5x82mm -> 578x328px,
    screen active area 60x40mm -> the 240x160 canvas exactly. */
 #shell {
-  position: relative;
+  position: absolute;
+  left: 17px;
+  top: 17px;
   width: 578px;
   height: 328px;
   flex: none;
@@ -73,16 +75,16 @@ html, body {
 /* light-gray shoulder caps wrapping the top corners, like the real unit */
 #shell-scale {
   position: relative;
-  width: 584px;
-  height: 334px;
+  width: 618px;
+  height: 368px;
   flex: none;
 }
 #shoulders {
   /* traced bezier caps: arc over each corner, tapering down the side.
      Sibling BEFORE #shell so it paints behind the body by DOM order. */
   position: absolute;
-  left: -17px;
-  top: -17px;
+  left: 0;
+  top: 0;
   width: 618px;
   height: 368px;
   pointer-events: none;
@@ -155,8 +157,7 @@ html, body {
 /* ============================ THE SCREEN ============================ */
 
 #screen {
-  /* logical canvas stays 240x160; scaled up to the reference's LCD size
-     (~273 shell px wide) and centered on the lens center */
+  /* The logical 240x160 canvas is centered on the physical LCD viewport. */
   /* bottom edge aligned to the START/SELECT midpoint (shell y=237) */
   position: absolute;
   left: 50%;
@@ -166,7 +167,10 @@ html, body {
   margin-left: -120px;
   width: 240px;
   height: 160px;
-  border: 3px solid #000;
+  /* Keep the LCD content box at a real 240x160. A border would consume six
+     pixels under the global border-box rule and force the canvas to rescale. */
+  border: 0;
+  box-shadow: 0 0 0 3px #000;
   background: var(--ink);
   overflow: hidden;
   contain: strict;
@@ -178,6 +182,78 @@ html, body {
   inset: 0;
   background: var(--navy);
 }
+#engine-canvas {
+  display: block;
+  /* The backing store and LCD content box are both exactly 240x160. */
+  width: 240px;
+  height: 160px;
+  image-rendering: pixelated;
+}
+
+/* Device firmware boot. This is a fixed overlay on the LCD, never a layout
+   participant, and the Bevy framebuffer remains mounted beneath it. */
+#device-boot {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: none;
+  overflow: hidden;
+  pointer-events: none;
+  background: #f4f4f8;
+}
+#device-boot.active { display: block; }
+#device-boot .boot-logo {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 54px;
+  text-align: center;
+}
+#device-boot.active .boot-logo {
+  animation: bootDrop .65s cubic-bezier(.22,1.6,.36,1) both;
+}
+#device-boot .boot-word {
+  position: relative;
+  display: inline-block;
+  color: #3d4192;
+  font-size: 20px;
+  -webkit-text-stroke: 1px #3d4192;
+  transform: skewX(-8deg);
+}
+#device-boot .boot-shine {
+  position: absolute;
+  inset: -4px -8px;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,.95) 48%, transparent 62%);
+  transform: translateX(-110%);
+}
+#device-boot.active .boot-shine {
+  animation: bootShine .5s ease-out .8s forwards;
+}
+#device-boot .boot-maker {
+  margin-top: 16px;
+  opacity: 0;
+}
+#device-boot.active .boot-maker {
+  animation: bootSub .3s ease-out 1.1s forwards;
+}
+#device-boot .boot-maker span {
+  display: inline-block;
+  padding: 4px 12px 3px;
+  border: 2px solid #3d4192;
+  border-radius: 999px;
+  color: #3d4192;
+  font-size: 7px;
+  letter-spacing: 2px;
+}
+@keyframes bootDrop {
+  0% { transform: translateY(-90px); opacity: 0; }
+  55% { opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes bootShine { to { transform: translateX(110%); } }
+@keyframes bootSub { to { opacity: 1; } }
+
 #screen-inner.shake { animation: innerShake .15s steps(2) 2; }
 @keyframes innerShake {
   0%   { transform: translate(0,0); }
@@ -1147,6 +1223,75 @@ html, body {
 #power-switch.on { top: 70px; }
 .ps-nub { display: none; }
 
+/* Contextual first-run guidance: point at the physical control that can
+   advance the console's current state, then get out of the way. */
+.control-guide {
+  --guide-x: 0px;
+  appearance: none;
+  position: absolute;
+  z-index: 12;
+  padding: 7px 9px 6px;
+  font: inherit;
+  text-align: center;
+  color: var(--parch);
+  background: var(--ink);
+  border: 2px solid var(--gold);
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 rgba(16,17,36,.55);
+  cursor: pointer;
+  transform: translate(var(--guide-x), 0);
+  animation: guideBob 1.4s ease-in-out infinite;
+  will-change: transform;
+}
+.control-guide.hidden { display: none; }
+.control-guide:hover, .control-guide:focus-visible {
+  color: var(--ink);
+  background: var(--gold);
+  outline: none;
+}
+.guide-action { display: block; font-size: 8px; line-height: 1.4; white-space: nowrap; }
+.guide-detail { display: block; margin-top: 3px; font-size: 5px; color: var(--sky); white-space: nowrap; }
+.control-guide:hover .guide-detail, .control-guide:focus-visible .guide-detail { color: var(--navy); }
+#cart-guide {
+  --guide-x: -50%;
+  left: 50%;
+  top: 44px;
+}
+#cart-guide::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  margin-left: -6px;
+  border: 6px solid transparent;
+  border-bottom-color: var(--gold);
+  border-top: 0;
+}
+#power-guide {
+  right: 37px;
+  top: 105px;
+}
+#power-guide.switching-off { top: 79px; }
+#power-guide::after {
+  content: '';
+  position: absolute;
+  right: -11px;
+  top: 50%;
+  margin-top: -6px;
+  border: 6px solid transparent;
+  border-left-color: var(--gold);
+  border-right: 0;
+}
+#cart-back.guided { animation: targetGlow 1.4s ease-in-out infinite; }
+#power-switch.guided { animation: targetGlow 1.4s ease-in-out infinite; }
+@keyframes guideBob {
+  0%, 100% { transform: translate(var(--guide-x), 0); }
+  50% { transform: translate(var(--guide-x), -3px); }
+}
+@keyframes targetGlow {
+  50% { filter: brightness(1.5) drop-shadow(0 0 5px var(--gold)); }
+}
+
 /* ============================ CARTRIDGE ============================ */
 #cart-back {
   /* peeks above the top-back slot; behind the shell by DOM order */
@@ -1157,14 +1302,14 @@ html, body {
   cursor: pointer;
 }
 #cart-back.empty {
-  top: -4px;
+  top: 13px;
   height: 22px;
   background: #191a30;
   border: 3px solid #101124;
   border-radius: 6px 6px 0 0;
 }
 #cart-back.loaded {
-  top: -14px;
+  top: 3px;
   height: 42px;
   width: 228px;
   background: linear-gradient(#cdcedd, #aaabbf);
@@ -1364,7 +1509,7 @@ html, body {
   position: absolute; bottom: 6px; left: 4px; right: 4px;
   text-align: center; font-size: 7px; line-height: 1.6; color: var(--parch);
   text-shadow: 1px 1px 0 rgba(0,0,0,.6);
-=======
+}
 /* ============================ STICK CONTRA (konami secret) ============================ */
 #scr-contra { background: #000; }
 #contra-canvas {
