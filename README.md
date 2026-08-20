@@ -43,15 +43,15 @@ then gives that data to Bevy. A cartridge cannot add JavaScript or replace
 the game loop.
 
 Quiz question generation also lives in Rust. A conceptual fallback batch is
-available immediately, while the `claude` CLI can replace it with questions
-about the project's purpose, architecture, responsibilities, interactions,
-invariants, and tradeoffs. The prompt and accepted-output policy live in
-`src-tauri/src/lib.rs`: file and repository trivia is rejected, questions must
-fit four 37-character lines, and each of four distinct choices must fit 35
-characters. Set `CQA_NO_AI=1` to keep the fallback batch, or
-`CQA_CLAUDE_MODEL` to select the model. Quest-battle commands are selected from
-the Rust-derived cartridge quest list and are started, streamed, and stopped
-by the Bevy runtime.
+selected fresh for every cartridge insertion, while the `claude` CLI can
+replace it with questions about the project's purpose, architecture,
+responsibilities, interactions, invariants, and tradeoffs. The prompt and
+accepted-output policy live in `src-tauri/src/lib.rs`: file and repository
+trivia is rejected, questions must fit four 37-character lines, and each of
+four distinct choices must fit 35 characters. Set `CQA_NO_AI=1` to keep the
+fallback batch, or `CQA_CLAUDE_MODEL` to select the model. Quest-battle
+commands are selected from the Rust-derived cartridge quest list and are
+started, streamed, and stopped by the Bevy runtime.
 
 ## Architecture
 

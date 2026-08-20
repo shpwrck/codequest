@@ -3,6 +3,7 @@ mod engine;
 mod font5x7;
 
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use serde::{Deserialize, Serialize};
@@ -347,8 +348,10 @@ fn mk_q(q: &str, correct: String, mut others: Vec<String>, rng: &mut u64) -> QQu
     }
 }
 
-fn conceptual_fallback_questions(count: usize) -> Vec<QQuestion> {
-    const BANK: [(&str, &str, [&str; 3]); 18] = [
+static FALLBACK_DECK_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+fn conceptual_fallback_questions(count: usize, generation: usize) -> Vec<QQuestion> {
+    const BANK: [(&str, &str, [&str; 3]); 24] = [
         (
             "WHY SEPARATE UI FROM GAME LOGIC?",
             "CLEAR RESPONSIBILITIES",
@@ -463,14 +466,57 @@ fn conceptual_fallback_questions(count: usize) -> Vec<QQuestion> {
                 "DUPLICATE METHODS",
             ],
         ),
+        (
+            "WHAT SHOULD OWN A SYSTEM INVARIANT?",
+            "THE DOMAIN MODEL",
+            ["THE DEVICE SHELL", "EVERY CALLER", "RANDOM EVENTS"],
+        ),
+        (
+            "WHY IS ONE SOURCE OF TRUTH USEFUL?",
+            "PREVENTS STATE DRIFT",
+            ["ADDS MORE OWNERS", "HIDES DATA FLOW", "REMOVES VALIDATION"],
+        ),
+        (
+            "WHAT SHOULD EVENTS DESCRIBE?",
+            "OBSERVED DOMAIN CHANGES",
+            [
+                "PRIVATE MEMORY LAYOUT",
+                "RANDOM TIMING",
+                "UNRELATED DETAILS",
+            ],
+        ),
+        (
+            "WHY MAKE CANCELLATION EXPLICIT?",
+            "CONTROLLED RESOURCE CLEANUP",
+            ["ABANDONED WORK", "HIDDEN SIDE EFFECTS", "ENDLESS RETRIES"],
+        ),
+        (
+            "WHAT MAKES STATE TRANSITIONS SAFE?",
+            "VALID PRECONDITIONS",
+            ["IMPLICIT ORDER", "SHARED MUTATION", "RANDOM DESTINATIONS"],
+        ),
+        (
+            "WHY DECOUPLE INPUT FROM UPDATES?",
+            "STABLE TIMING",
+            [
+                "DUPLICATED COMMANDS",
+                "HIDDEN OWNERSHIP",
+                "UNBOUNDED EVENTS",
+            ],
+        ),
     ];
 
+    let deck_size = count.min(BANK.len());
+    let rotation_step = deck_size.saturating_sub(1).max(1);
+    let rotation = generation.wrapping_mul(rotation_step) % BANK.len();
     let mut rng = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|time| time.as_nanos() as u64)
         .unwrap_or(42);
     BANK.iter()
-        .take(count)
+        .cycle()
+        .skip(rotation)
+        .take(deck_size)
         .map(|(prompt, correct, distractors)| {
             mk_q(
                 prompt,
@@ -574,7 +620,8 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
         engine::CartridgeMode::Quiz
     };
     let questions = if mode == engine::CartridgeMode::Quiz {
-        conceptual_fallback_questions(18)
+        let generation = FALLBACK_DECK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        conceptual_fallback_questions(12, generation)
             .into_iter()
             .map(|question| engine::QuizQuestion {
                 question: question.q,
@@ -680,6 +727,17 @@ pub fn run() {
 mod question_policy_tests {
     use super::*;
 
+    fn cartridge(path: &str, title: &str) -> Cartridge {
+        Cartridge {
+            id: path.to_string(),
+            title: title.to_string(),
+            color: "#000000".to_string(),
+            path: path.to_string(),
+            mode: "quiz".to_string(),
+            quests: Vec::new(),
+        }
+    }
+
     fn question(text: &str, choices: &[&str]) -> QQuestion {
         QQuestion {
             q: text.to_string(),
@@ -727,8 +785,8 @@ mod question_policy_tests {
 
     #[test]
     fn conceptual_fallback_is_display_safe() {
-        let questions = conceptual_fallback_questions(18);
-        assert_eq!(questions.len(), 18);
+        let questions = conceptual_fallback_questions(usize::MAX, 0);
+        assert_eq!(questions.len(), 24);
         for question in &questions {
             assert!(
                 question_is_acceptable(question),
@@ -736,6 +794,29 @@ mod question_policy_tests {
                 question.q
             );
         }
+    }
+
+    #[test]
+    fn replacing_cartridge_builds_a_fresh_immediate_deck() {
+        let first = engine_cartridge(cartridge("/tmp/first", "FIRST"));
+        let second = engine_cartridge(cartridge("/tmp/second", "SECOND"));
+        let prompts = |spec: &engine::CartridgeSpec| {
+            let mut prompts = spec
+                .questions
+                .iter()
+                .map(|question| question.question.clone())
+                .collect::<Vec<_>>();
+            prompts.sort();
+            prompts
+        };
+        let first_prompts = prompts(&first);
+        let second_prompts = prompts(&second);
+        let shared = first_prompts
+            .iter()
+            .filter(|prompt| second_prompts.contains(prompt))
+            .count();
+
+        assert!(shared <= 1, "fresh decks shared {shared} questions");
     }
 
     #[test]

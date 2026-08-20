@@ -1258,6 +1258,28 @@ mod tests {
     }
 
     #[test]
+    fn powered_off_cartridge_switch_replaces_the_question_deck() {
+        let mut engine = GameEngine::new();
+        let first = quiz_cartridge();
+        let mut second = quiz_cartridge();
+        second.id = "/tmp/second".into();
+        second.questions[0].question = "FRESH QUESTIONS".into();
+
+        issue(&mut engine, EngineCommand::Cartridge(Some(first)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::Power(false));
+        issue(&mut engine, EngineCommand::Cartridge(Some(second)));
+
+        let state = engine.app.world().resource::<GameState>();
+        let cartridge = state.cartridge.as_ref().unwrap();
+        assert_eq!(state.screen, Screen::Off);
+        assert_eq!(cartridge.id, "/tmp/second");
+        assert_eq!(cartridge.questions[0].question, "FRESH QUESTIONS");
+        assert!(state.quiz.is_none());
+        assert!(state.pending_questions.is_none());
+    }
+
+    #[test]
     fn oracle_result_waits_for_a_safe_screen_boundary() {
         let mut engine = GameEngine::new();
         issue(
