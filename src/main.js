@@ -368,7 +368,8 @@
   function fit() {
     const s = Math.min(window.innerWidth / 584, window.innerHeight / 352);
     const snapped = s >= 1 ? Math.floor(s * 2) / 2 : Math.max(0.35, s); // half-integer steps, integer look
-    scaleEl.style.transform = `scale(${snapped})`;
+    // Zoom lays out at the final size; transform scaling makes WebKit re-rasterize shell text during repaints.
+    scaleEl.style.zoom = snapped;
   }
   window.addEventListener('resize', fit);
 
