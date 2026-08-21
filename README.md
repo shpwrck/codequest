@@ -37,16 +37,16 @@ Forge when `Cargo.toml` exists, and Make Mines for a `Makefile`. Swapping
 requires ejecting first — remove and insert animations included.
 
 **Game modes.** A repo may declare a versioned `CODEQUEST.toml` to select
-`quiz` or `quest` mode, override its cartridge title, and carry a connected
-storyboard of scenes, mechanics, and art requirements into the engine. See
-the [v1 contract](docs/reference/codequest-toml.md) and its
-[complete example](docs/examples/CODEQUEST.toml), plus the
-[Oracle quiz storyboard](docs/game-design/oracle-quiz.md). Today the storyboard is
-validated design metadata; title and mode are the fields that change runtime
-behavior. Without the manifest, a repo with `CODEQUEST.md` loads the legacy
-quest-battle mode and any other repo loads the **ENDLESS REPO QUIZ**.
-Cartridge contents are data only: a cartridge cannot add JavaScript or
-replace the game loop.
+`quiz` or `quest` mode, override its cartridge title, and define the finite-state
+scene graph that the Bevy engine executes. Each scene chooses a trusted built-in
+handler and routes its semantic events to other scenes; mechanics and art remain
+linked design requirements. See the [v2 contract](docs/reference/codequest-toml.md),
+its [complete example](docs/examples/CODEQUEST.toml), and the
+[Oracle quiz storyboard](docs/game-design/oracle-quiz.md). Schema v1 manifests
+still load as metadata and receive the built-in flow. Without a manifest, a repo
+with `CODEQUEST.md` loads the legacy quest-battle mode and any other repo loads
+the **ENDLESS REPO QUIZ**. Cartridge contents are data only: a cartridge cannot
+add JavaScript, arbitrary conditions, or replace the game loop.
 
 Quiz cartridges contain no preloaded questions. Inserting one makes the Bevy
 engine ask the `claude` CLI for the first batch immediately. Character
@@ -69,6 +69,8 @@ and are started, streamed, and stopped by the Bevy runtime.
   CPU-rendered 240×160 RGBA framebuffer.
 - `src-tauri/src/codequest.rs` — the versioned `CODEQUEST.toml` data contract,
   parser, and cross-reference validation.
+- `src-tauri/src/scene_machine.rs` — compilation and execution of cartridge
+  scene graphs plus the built-in quiz and quest templates.
 - `src-tauri/src/lib.rs` — the platform adapter. It validates git-repo
   cartridges, prepares data, and exposes only power, boot completion,
   cartridge, input, and framebuffer operations to the device UI.
@@ -139,4 +141,5 @@ Verify a change by rebuilding and re-running the smoke test in
 `docs/runbooks/headless-gui-smoke-test/`, which drives the gameplay loop without
 touching the desktop.
 
-Prototype status: built as a design prototype — expect rough edges.
+Engine status: playable end to end, with deliberately minimal procedural art
+and room for production polish.

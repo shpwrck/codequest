@@ -2,73 +2,132 @@
 
 `CODEQUEST.toml` is an optional, versioned cartridge manifest at the root of a
 git repository. The application reads and validates it when the repository is
-inserted, then passes the typed configuration to the Bevy engine. Invalid
-configuration refuses the cartridge with an `INVALID CODEQUEST.toml` error;
-unknown fields are rejected so misspellings cannot silently change a design.
+inserted, compiles its scene graph, and passes the resulting finite-state
+machine to the Bevy engine. Invalid configuration refuses the cartridge with an
+`INVALID CODEQUEST.toml` error. Unknown fields are rejected so misspellings
+cannot silently change a game.
 
-The complete v1 example is [`docs/examples/CODEQUEST.toml`](../examples/CODEQUEST.toml).
-It is parsed by the Rust test suite, so the example and loader cannot drift
-without failing CI.
+The complete executable v2 example is
+[`docs/examples/CODEQUEST.toml`](../examples/CODEQUEST.toml). The Rust tests and
+the game-designer validator both parse it, so the example and engine contract
+cannot drift without failing verification.
 
-## Runtime support in schema version 1
+## Runtime support
 
-| Field | Runtime behavior today |
+| Field | Runtime behavior |
 |---|---|
-| `schema_version` | Must be `1`. Other versions are rejected. |
-| `game.type` | Selects `quiz` or `quest` mode. |
+| `schema_version` | `2` enables executable scenes and transitions. Legacy schema `1` remains readable as metadata. |
+| `game.type` | Selects the trusted `quiz` or `quest` gameplay systems and limits which scene handlers are valid. |
 | `game.title` | Overrides the repository-directory cartridge title when present. |
 | `game.summary` | Validated and retained as design metadata. |
-| `game.start_scene` | Validated against `scenes` and retained as design metadata. |
-| `scenes`, `mechanics`, `art` | Validated as a connected storyboard and passed to the engine, but do not construct screens dynamically yet. The current copyright/fanfare sequence is implemented as hard-coded engine states. |
+| `game.start_scene` | Names the first scene in the executable v2 machine. |
+| `scenes[].handler` | Selects a trusted Rust scene implementation. It does not load code from the cartridge. |
+| `scenes[].transitions` | Routes semantic engine signals to target scenes, with optional timing gates. |
+| `mechanics`, `art` | Validated design and production requirements referenced by scenes; they do not dynamically create code or assets. |
 
-Without `CODEQUEST.toml`, existing behavior remains unchanged: a repository
-with `CODEQUEST.md` uses quest-battle mode and any other repository uses quiz
-mode. A manifest takes precedence over that legacy detection.
+Without `CODEQUEST.toml`, the engine builds the same finite-state machine from
+its quiz or quest template. A repository with `CODEQUEST.md` uses the legacy
+quest-battle detection; any other repository uses quiz mode. A manifest takes
+precedence over that detection.
 
 The manifest is data only. It cannot provide JavaScript, load engine plugins,
-or replace the game loop. Quest commands continue to come from the engine's
-existing repository inspection.
+replace the game loop, or execute arbitrary conditions. Quest commands continue
+to come from the engine's existing repository inspection.
 
 ## Top-level contract
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [game]
 type = "quiz"                 # required: "quiz" or "quest"
 title = "MY CODE QUEST"       # optional
 summary = "What players do."  # optional
-start_scene = "title"         # required when [[scenes]] exist
+start_scene = "title"         # required in v2
 ```
 
-The remaining top-level arrays are optional. IDs must be non-empty and unique
-within their array. Every reference must resolve.
+Scenes, mechanics, and art are arrays of tables. IDs must be non-empty and
+unique within their array. Every reference must resolve.
 
-## Scenes
+## Executable scenes
 
-A scene describes one player-facing beat and links the storyboard together.
-`kind` is an author-defined classification such as `title`, `menu`,
-`character-creation`, `interstitial`, `challenge`, `reward`, or `result`.
+A v2 scene separates three concerns:
+
+- `kind` is author-facing classification such as `title`, `challenge`, or
+  `reward`.
+- `handler` chooses a built-in renderer and gameplay behavior.
+- `transitions` say where the machine goes when that handler emits a semantic
+  signal.
+
+This means a designer can reorder scenes, create loops, insert another instance
+of a handler, or change timing without adding another hard-coded screen enum.
 
 ```toml
 [[scenes]]
 id = "quiz"
 title = "Quiz"
 kind = "challenge"
-summary = "Test one durable concept about the project." # optional
-mechanics = ["answer-question"] # optional references
-art = ["quiz-frame"]            # optional references
-next = ["oracle", "game-over"] # optional scene references
+handler = "concept-quiz"
+summary = "Test one durable concept about the project."
+mechanics = ["answer-question"]
+art = ["quiz-frame"]
+
+[[scenes.transitions]]
+signal = "needs-question"
+target = "oracle"
+
+[[scenes.transitions]]
+signal = "hearts-empty"
+target = "game-over"
 ```
 
-When at least one scene exists, `game.start_scene` is required and must name a
-scene. Cycles and branches are allowed because games commonly revisit a scene
-or have success and failure paths.
+Each signal may appear at most once per scene. A transition may set
+`after_ticks` to prevent that signal from advancing until the scene has been
+active for the given number of 60 fps ticks. The `elapsed` signal is generated
+by the scene clock and always requires `after_ticks`:
+
+```toml
+[[scenes.transitions]]
+signal = "continue"
+target = "title"
+after_ticks = 90
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "title"
+after_ticks = 330
+```
+
+Cycles and branches are allowed. Every declared scene must be reachable from
+`game.start_scene`; terminal scenes may omit transitions.
+
+### Handlers and signals
+
+| Handler | Game family | Signals it can emit |
+|---|---|---|
+| `repository-credits` | shared | `continue`, `elapsed` |
+| `opening-fanfare` | shared | `continue`, `elapsed` |
+| `title` | shared | `continue` |
+| `quiz-menu` | quiz | `new-run`, `back` |
+| `character-creation` | quiz | `hero-ready`, `back` |
+| `oracle` | quiz | `questions-ready`, `back` |
+| `concept-quiz` | quiz | `needs-question`, `batch-complete`, `hearts-empty`, `back` |
+| `level-up` | quiz | `questions-ready`, `needs-question` |
+| `game-over` | quiz | `replay` |
+| `quest-select` | quest | `quest-selected`, `back` |
+| `battle` | quest | `victory`, `defeat` |
+| `victory` | quest | `continue` |
+| `defeat` | quest | `continue` |
+
+A transition using a signal that its handler cannot emit is rejected at
+cartridge load time. Quiz-only handlers are rejected in quest games and vice
+versa.
 
 ## Mechanics
 
-A mechanic captures the reusable rules and feedback that make a scene
-playable. `inputs`, `rules`, and `feedback` default to empty lists.
+A mechanic captures reusable rules and feedback. These fields are currently
+validated design metadata; `inputs`, `rules`, and `feedback` default to empty
+lists.
 
 ```toml
 [[mechanics]]
@@ -81,29 +140,38 @@ feedback = ["Reveal correctness immediately."]
 
 ## Art requirements
 
-Art entries name the assets a design needs without coupling the contract to a
-particular image-generation or asset pipeline. `kind` is author-defined;
-`requirements` defaults to an empty list.
+Art entries name production needs without coupling the contract to a particular
+generation or asset pipeline. `kind` is author-defined and `requirements`
+defaults to an empty list.
 
 ```toml
 [[art]]
 id = "quiz-frame"
 kind = "ui"
 summary = "Question, answer, score, streak, and heart presentation."
-requirements = ["Fits 240x160.", "Keeps keyboard focus visible."]
+requirements = ["Fits 240x160.", "Keeps focus visible."]
 ```
+
+## Schema v1 compatibility
+
+Schema v1 remains supported so existing cartridges continue to load. In v1,
+scenes use `next = ["scene-id"]`; the graph, mechanics, and art are validated
+and retained as metadata, while the engine uses its built-in machine template.
+V1 cannot use `handler` or `transitions`. V2 cannot use `next`.
 
 ## Validation rules
 
-- `schema_version` must equal `1`.
+- `schema_version` must be `1` or `2`.
 - `game.type` must be `quiz` or `quest`.
 - IDs cannot be blank or duplicated within their category.
-- `game.start_scene`, scene transitions, mechanic references, and art
-  references must point to declared IDs.
-- Optional title/summary text cannot be blank when present. Scene titles and
-  kinds, mechanic summaries, and art kinds/summaries cannot be blank.
+- All scene, mechanic, and art references must resolve.
+- Every v2 scene must be reachable from `game.start_scene`.
+- V2 handlers must belong to the selected game family, transitions must use a
+  signal their handler emits, and duplicate signal routes are rejected.
+- `elapsed` transitions require `after_ticks`.
+- Optional title/summary text cannot be blank when present. Required display
+  and summary fields cannot be blank.
 - Unknown keys at every level are errors.
 
-These rules define the authoring contract. Adding a new field or game type is
-a schema-version decision and should arrive with engine behavior, an updated
-example, and parser tests.
+Adding a new field, handler, signal, or game type is a contract decision and
+must arrive with engine behavior, an updated example, and parser tests.

@@ -97,12 +97,15 @@ and update the ledger with the actual output path and status.
 Classify each important element as:
 
 - Implemented: verified in current code or behavior
-- Configured: represented in `CODEQUEST.toml` but not dynamically executed
+- Configured/executable: a schema-v2 scene handler or transition the engine runs
+- Configured/metadata: a mechanic or art requirement retained for production
 - Proposed: requires engine/schema/art work
 
-Schema v1 currently executes the game title and `quiz`/`quest` type. Scene,
-mechanic, and art tables are validated design metadata. Never imply that adding
-a scene table creates a Bevy screen.
+Schema v2 compiles `game.start_scene`, scene handlers, and semantic transitions
+into the Bevy engine's finite-state machine. Handlers are trusted built-in
+behaviors; the manifest can reorder or reuse them but cannot define arbitrary
+code or create a new renderer. Mechanic and art tables remain validated design
+metadata. Schema v1 remains compatible metadata and uses the built-in flow.
 
 When the desired game type is unsupported, finish the design brief but do not
 put an invalid type in `CODEQUEST.toml`. Explain the runtime gap and propose the
@@ -139,7 +142,8 @@ cargo test codequest --lib
 
 Then perform a traceability pass:
 
-- Every start/next scene reference resolves.
+- Every start/transition target resolves and every scene is reachable.
+- Every transition signal is emitted by its scene's handler.
 - Every scene mechanic and art reference resolves.
 - Every mechanic is used or explicitly marked future work.
 - Every art item names at least one player-facing need.

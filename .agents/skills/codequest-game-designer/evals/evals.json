@@ -3,11 +3,11 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "Storyboard a stronger version of the current CODE QUEST quiz. Keep the Oracle instead of a town, make the wait for generated questions feel intentional, and give me a design brief plus a CODEQUEST.toml. Do not claim the scene metadata is already implemented.",
-      "expected_output": "A linked quiz storyboard and valid schema-v1 manifest using the Oracle flow, with mechanics, art requirements, and explicit implemented/configured/proposed status.",
+      "prompt": "Storyboard a stronger version of the current CODE QUEST quiz. Keep the Oracle instead of a town, make the wait for generated questions feel intentional, and give me a design brief plus an executable CODEQUEST.toml.",
+      "expected_output": "A linked quiz storyboard and valid schema-v2 manifest using trusted Oracle and quiz handlers, with mechanics, art requirements, and explicit implementation status.",
       "expectations": [
         "Produces both a human-readable design brief and a CODEQUEST.toml manifest.",
-        "The manifest passes the bundled schema-v1 validator with game.type set to quiz and no town scene.",
+        "The manifest passes the bundled schema-v2 validator with game.type set to quiz and no town scene.",
         "The storyboard links Oracle latency to explicit mechanics, feedback, and art requirements.",
         "The brief clearly distinguishes implemented, configured, and proposed behavior."
       ],

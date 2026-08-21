@@ -9,6 +9,9 @@ use bevy::prelude::*;
 
 use crate::codequest::{CodeQuestConfig, GameType};
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
+use crate::scene_machine::{
+    SceneEvent, SceneHandler, SceneMachine, SceneMachineDefinition, SceneSignal,
+};
 
 pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
@@ -18,10 +21,6 @@ pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 35;
 const QUESTION_BATCH_SIZE: usize = 6;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
-const COPYRIGHT_MIN_TICKS: u64 = 60;
-const COPYRIGHT_AUTO_TICKS: u64 = 180;
-const FANFARE_MIN_SKIP_TICKS: u64 = 90;
-const FANFARE_AUTO_TICKS: u64 = 330;
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -120,6 +119,7 @@ pub struct CartridgeSpec {
     pub mode: CartridgeMode,
     pub provenance: RepositoryProvenance,
     pub codequest: Option<Box<CodeQuestConfig>>,
+    pub machine: SceneMachineDefinition,
     pub quests: Vec<QuestSpec>,
     pub questions: Vec<QuizQuestion>,
 }
@@ -183,6 +183,26 @@ enum Screen {
     Battle,
     Victory,
     Defeat,
+}
+
+impl From<SceneHandler> for Screen {
+    fn from(handler: SceneHandler) -> Self {
+        match handler {
+            SceneHandler::RepositoryCredits => Self::Copyright,
+            SceneHandler::OpeningFanfare => Self::OpeningFanfare,
+            SceneHandler::Title => Self::Title,
+            SceneHandler::QuizMenu => Self::QuizMenu,
+            SceneHandler::CharacterCreation => Self::CharacterCreation,
+            SceneHandler::Oracle => Self::Oracle,
+            SceneHandler::ConceptQuiz => Self::Quiz,
+            SceneHandler::LevelUp => Self::LevelUp,
+            SceneHandler::GameOver => Self::GameOver,
+            SceneHandler::QuestSelect => Self::QuestSelect,
+            SceneHandler::Battle => Self::Battle,
+            SceneHandler::Victory => Self::Victory,
+            SceneHandler::Defeat => Self::Defeat,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -354,6 +374,7 @@ struct QuizRun {
 struct GameState {
     powered: bool,
     cartridge: Option<CartridgeSpec>,
+    machine: Option<SceneMachine>,
     screen: Screen,
     screen_ticks: u64,
     held: HashSet<Button>,
@@ -378,6 +399,7 @@ impl Default for GameState {
         Self {
             powered: false,
             cartridge: None,
+            machine: None,
             screen: Screen::Off,
             screen_ticks: 0,
             held: HashSet::new(),
@@ -403,6 +425,48 @@ impl GameState {
     fn transition(&mut self, screen: Screen) {
         self.screen = screen;
         self.screen_ticks = 0;
+    }
+
+    fn start_machine(&mut self) {
+        let handler = self.machine.as_mut().map(|machine| {
+            machine.reset();
+            machine.current_handler()
+        });
+        if let Some(handler) = handler {
+            self.transition(handler.into());
+        }
+    }
+
+    fn signal(&mut self, signal: SceneSignal) -> bool {
+        let change = self
+            .machine
+            .as_mut()
+            .and_then(|machine| machine.handle(SceneEvent::Signal(signal)));
+        if let Some(change) = change {
+            self.transition(change.handler.into());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn tick_machine(&mut self) -> bool {
+        let change = self
+            .machine
+            .as_mut()
+            .and_then(|machine| machine.handle(SceneEvent::Tick));
+        if let Some(change) = change {
+            self.transition(change.handler.into());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn can_signal(&self, signal: SceneSignal) -> bool {
+        self.machine
+            .as_ref()
+            .is_some_and(|machine| machine.can_handle(signal))
     }
 
     fn has_game(&self) -> bool {
@@ -461,7 +525,7 @@ fn begin_quiz_run(state: &mut GameState) {
         leveled_up: false,
         feedback: None,
     });
-    state.transition(Screen::Oracle);
+    state.signal(SceneSignal::HeroReady);
 }
 
 fn cycle_index(index: &mut usize, count: usize, direction: isize) {
@@ -622,10 +686,13 @@ fn apply_commands(
             }
             EngineCommand::BootComplete => {
                 if state.screen == Screen::Boot && state.has_game() {
-                    state.transition(Screen::Copyright);
+                    state.start_machine();
                 }
             }
             EngineCommand::Cartridge(cartridge) => {
+                state.machine = cartridge
+                    .as_ref()
+                    .map(|cartridge| SceneMachine::new(cartridge.machine.clone()));
                 state.cartridge = cartridge;
                 state.quest_selected = 0;
                 state.menu_selected = 0;
@@ -700,10 +767,10 @@ fn apply_commands(
             }
             EngineCommand::QuestDone { success } => {
                 if state.screen == Screen::Battle {
-                    state.transition(if success {
-                        Screen::Victory
+                    state.signal(if success {
+                        SceneSignal::Victory
                     } else {
-                        Screen::Defeat
+                        SceneSignal::Defeat
                     });
                 }
             }
@@ -719,37 +786,31 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
         Screen::Off => {}
         Screen::Boot => {}
         Screen::Copyright => {
-            if state.screen_ticks >= COPYRIGHT_MIN_TICKS
-                && matches!(button, Button::A | Button::Start)
-            {
-                state.transition(Screen::OpeningFanfare);
+            if matches!(button, Button::A | Button::Start) {
+                state.signal(SceneSignal::Continue);
             }
         }
         Screen::OpeningFanfare => {
-            if state.screen_ticks >= FANFARE_MIN_SKIP_TICKS
-                && matches!(button, Button::A | Button::Start)
-            {
-                state.transition(Screen::Title);
+            if matches!(button, Button::A | Button::Start) {
+                state.signal(SceneSignal::Continue);
             }
         }
         Screen::Title => {
             if matches!(button, Button::A | Button::Start) {
-                match state.cartridge_mode() {
-                    Some(CartridgeMode::Quiz) => state.transition(Screen::QuizMenu),
-                    Some(CartridgeMode::Custom) => state.transition(Screen::QuestSelect),
-                    None => {}
-                }
+                state.signal(SceneSignal::Continue);
             }
         }
         Screen::QuizMenu => match button {
             Button::Up | Button::Down => state.menu_selected = 1 - state.menu_selected,
-            Button::B => state.transition(Screen::Title),
+            Button::B => {
+                state.signal(SceneSignal::Back);
+            }
             Button::A | Button::Start => {
                 if state.menu_selected == 1 {
-                    state.transition(Screen::Title);
+                    state.signal(SceneSignal::Back);
                 } else {
                     state.hero_row = 0;
-                    state.transition(Screen::CharacterCreation);
+                    state.signal(SceneSignal::NewRun);
                 }
             }
             _ => {}
@@ -759,7 +820,9 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             Button::Down => state.hero_row = (state.hero_row + 1) % 4,
             Button::Left => adjust_hero(state, -1),
             Button::Right => adjust_hero(state, 1),
-            Button::B => state.transition(Screen::QuizMenu),
+            Button::B => {
+                state.signal(SceneSignal::Back);
+            }
             Button::A if state.hero_row < 3 => adjust_hero(state, 1),
             Button::A | Button::Start => begin_quiz_run(state),
             _ => {}
@@ -768,7 +831,7 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             if button == Button::A {
                 state.oracle_jump = 25;
             } else if button == Button::B {
-                state.transition(Screen::QuizMenu);
+                state.signal(SceneSignal::Back);
             }
         }
         Screen::Quiz => {
@@ -786,7 +849,9 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             match button {
                 Button::Up => run.selected = (run.selected + choice_count - 1) % choice_count,
                 Button::Down => run.selected = (run.selected + 1) % choice_count,
-                Button::B => state.transition(Screen::QuizMenu),
+                Button::B => {
+                    state.signal(SceneSignal::Back);
+                }
                 Button::A => {
                     let answer = state
                         .cartridge
@@ -808,17 +873,17 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
         }
         Screen::LevelUp => {
             if matches!(button, Button::A | Button::Start) {
-                let questions_ready = state.has_unanswered_question();
-                state.transition(if questions_ready {
-                    Screen::Quiz
+                let signal = if state.has_unanswered_question() {
+                    SceneSignal::QuestionsReady
                 } else {
-                    Screen::Oracle
-                });
+                    SceneSignal::NeedsQuestion
+                };
+                state.signal(signal);
             }
         }
         Screen::GameOver => {
             if matches!(button, Button::A | Button::B | Button::Start) {
-                state.transition(Screen::QuizMenu);
+                state.signal(SceneSignal::Replay);
             }
         }
         Screen::QuestSelect => {
@@ -836,15 +901,18 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                 Button::R if count > 0 => {
                     state.quest_selected = (state.quest_selected + 4).min(count - 1)
                 }
-                Button::B => state.transition(Screen::Title),
+                Button::B => {
+                    state.signal(SceneSignal::Back);
+                }
                 Button::A | Button::Start if count > 0 => {
                     let quest =
                         state.cartridge.as_ref().unwrap().quests[state.quest_selected].clone();
                     state.active_boss = quest.boss;
                     state.logs.clear();
                     state.logs.push_back((format!("> {}", quest.name), false));
-                    state.transition(Screen::Battle);
-                    effects.0.push_back(EngineEffect::RunQuest(quest.command));
+                    if state.signal(SceneSignal::QuestSelected) && state.screen == Screen::Battle {
+                        effects.0.push_back(EngineEffect::RunQuest(quest.command));
+                    }
                 }
                 _ => {}
             }
@@ -856,8 +924,9 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             }
         }
         Screen::Victory | Screen::Defeat => match button {
-            Button::A | Button::B => state.transition(Screen::QuestSelect),
-            Button::Start => state.transition(Screen::QuestSelect),
+            Button::A | Button::B | Button::Start => {
+                state.signal(SceneSignal::Continue);
+            }
             _ => {}
         },
     }
@@ -865,6 +934,9 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
 
 fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
     state.screen_ticks = state.screen_ticks.saturating_add(1);
+    if !matches!(state.screen, Screen::Off | Screen::Boot) {
+        state.tick_machine();
+    }
     if state.oracle_jump > 0 {
         state.oracle_jump -= 1;
     }
@@ -886,20 +958,16 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
         }
     }
     match state.screen {
-        Screen::Copyright if state.screen_ticks >= COPYRIGHT_AUTO_TICKS => {
-            state.transition(Screen::OpeningFanfare);
-        }
-        Screen::OpeningFanfare if state.screen_ticks >= FANFARE_AUTO_TICKS => {
-            state.transition(Screen::Title);
-        }
         Screen::Oracle if !state.has_unanswered_question() && !state.questions_loading => {
             let level = state.quiz.as_ref().map_or(1, |run| run.level);
             request_question_batch(&mut state, &mut effects, level);
         }
         Screen::Oracle if state.screen_ticks >= 75 && state.has_unanswered_question() => {
-            state.transition(Screen::Quiz);
+            state.signal(SceneSignal::QuestionsReady);
         }
-        Screen::Quiz if !state.has_unanswered_question() => state.transition(Screen::Oracle),
+        Screen::Quiz if !state.has_unanswered_question() => {
+            state.signal(SceneSignal::NeedsQuestion);
+        }
         Screen::Quiz => {
             let prefetch_level = state.quiz.as_ref().and_then(|run| {
                 let remaining = state.question_count().saturating_sub(run.question);
@@ -916,7 +984,7 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
                 .quiz
                 .as_ref()
                 .and_then(|run| state.batch_ends.get(run.completed_batches).copied());
-            let mut next_screen = None;
+            let mut next_signal = None;
             if let Some(run) = state.quiz.as_mut() {
                 if let Some((correct, ticks)) = run.feedback.as_mut() {
                     let _ = correct;
@@ -924,7 +992,7 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
                     if *ticks == 0 {
                         run.feedback = None;
                         if run.hearts == 0 {
-                            next_screen = Some(Screen::GameOver);
+                            next_signal = Some(SceneSignal::HeartsEmpty);
                         } else {
                             run.question += 1;
                             run.selected = 0;
@@ -935,25 +1003,25 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
                             }
                             if run.leveled_up {
                                 run.leveled_up = false;
-                                next_screen = Some(Screen::LevelUp);
+                                next_signal = Some(SceneSignal::BatchComplete);
                             } else if run.question >= question_count {
-                                next_screen = Some(Screen::Oracle);
+                                next_signal = Some(SceneSignal::NeedsQuestion);
                             }
                         }
                     }
                 }
             }
-            if let Some(screen) = next_screen {
-                state.transition(screen);
+            if let Some(signal) = next_signal {
+                state.signal(signal);
             }
         }
         Screen::LevelUp if state.screen_ticks >= 180 => {
-            let questions_ready = state.has_unanswered_question();
-            state.transition(if questions_ready {
-                Screen::Quiz
+            let signal = if state.has_unanswered_question() {
+                SceneSignal::QuestionsReady
             } else {
-                Screen::Oracle
-            });
+                SceneSignal::NeedsQuestion
+            };
+            state.signal(signal);
         }
         _ => {}
     }
@@ -1035,7 +1103,7 @@ fn render_copyright(frame: &mut Framebuffer, state: &GameState) {
         };
         frame.centered_text(129, &history, GOLD, 1);
     }
-    if state.screen_ticks >= COPYRIGHT_MIN_TICKS && (state.screen_ticks / 20).is_multiple_of(2) {
+    if state.can_signal(SceneSignal::Continue) && (state.screen_ticks / 20).is_multiple_of(2) {
         frame.centered_text(141, "START:SKIP", PARCH, 1);
     }
 }
@@ -1107,7 +1175,7 @@ fn render_opening_fanfare(frame: &mut Framebuffer, state: &GameState) {
         frame.centered_text(135, "THE ORACLE OPENS", PARCH, 1);
     }
 
-    if ticks >= FANFARE_MIN_SKIP_TICKS {
+    if state.can_signal(SceneSignal::Continue) {
         frame.text(176, 149, "START:SKIP", MIST, 1);
     }
 }
@@ -1667,6 +1735,10 @@ fn title_lines(title: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene_machine::{
+        SceneHandler, SceneMachineDefinition, SceneMachineTemplate, SceneSignal, SceneSpec,
+        SceneTransition,
+    };
 
     fn quiz_cartridge() -> CartridgeSpec {
         CartridgeSpec {
@@ -1680,6 +1752,7 @@ mod tests {
                 copyright: Some("Copyright (c) 2020-2024 Ada Lovelace".into()),
             },
             codequest: None,
+            machine: SceneMachineDefinition::template(SceneMachineTemplate::Quiz),
             quests: vec![],
             questions: vec![QuizQuestion {
                 question: "WHO OWNS THE GAME LOOP?".into(),
@@ -1994,6 +2067,32 @@ mod tests {
         {
             let mut state = engine.app.world_mut().resource_mut::<GameState>();
             state.powered = true;
+            state.machine = Some(SceneMachine::new(
+                SceneMachineDefinition::compile(
+                    "oracle",
+                    vec![
+                        SceneSpec {
+                            id: "oracle".into(),
+                            handler: SceneHandler::Oracle,
+                            transitions: vec![SceneTransition {
+                                signal: SceneSignal::QuestionsReady,
+                                target: "quiz".into(),
+                                after_ticks: None,
+                            }],
+                        },
+                        SceneSpec {
+                            id: "quiz".into(),
+                            handler: SceneHandler::ConceptQuiz,
+                            transitions: vec![SceneTransition {
+                                signal: SceneSignal::NeedsQuestion,
+                                target: "oracle".into(),
+                                after_ticks: None,
+                            }],
+                        },
+                    ],
+                )
+                .unwrap(),
+            ));
             state.quiz = Some(QuizRun {
                 question: 1,
                 completed_batches: 1,
@@ -2675,6 +2774,94 @@ mod tests {
             },
         );
         assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn cartridge_machine_controls_runtime_scene_order() {
+        let machine = SceneMachineDefinition::compile(
+            "title",
+            vec![
+                SceneSpec {
+                    id: "title".into(),
+                    handler: SceneHandler::Title,
+                    transitions: vec![SceneTransition {
+                        signal: SceneSignal::Continue,
+                        target: "game-over".into(),
+                        after_ticks: None,
+                    }],
+                },
+                SceneSpec {
+                    id: "game-over".into(),
+                    handler: SceneHandler::GameOver,
+                    transitions: vec![],
+                },
+            ],
+        )
+        .unwrap();
+        let mut cartridge = quiz_cartridge();
+        cartridge.machine = machine;
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        assert_eq!(engine.screen(), Screen::Title);
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::GameOver);
+    }
+
+    #[test]
+    fn quest_command_only_starts_when_the_graph_enters_battle() {
+        let machine = SceneMachineDefinition::compile(
+            "quest-select",
+            vec![
+                SceneSpec {
+                    id: "quest-select".into(),
+                    handler: SceneHandler::QuestSelect,
+                    transitions: vec![SceneTransition {
+                        signal: SceneSignal::QuestSelected,
+                        target: "title".into(),
+                        after_ticks: None,
+                    }],
+                },
+                SceneSpec {
+                    id: "title".into(),
+                    handler: SceneHandler::Title,
+                    transitions: vec![],
+                },
+            ],
+        )
+        .unwrap();
+        let mut cartridge = quiz_cartridge();
+        cartridge.mode = CartridgeMode::Custom;
+        cartridge.machine = machine;
+        cartridge.quests = vec![QuestSpec {
+            name: "SAFE ROUTE".into(),
+            boss: "NONE".into(),
+            command: "should-not-run".into(),
+        }];
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        engine.take_effects();
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+
+        assert_eq!(engine.screen(), Screen::Title);
+        assert!(engine.take_effects().is_empty());
     }
 
     #[test]

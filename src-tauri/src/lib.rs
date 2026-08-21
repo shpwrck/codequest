@@ -2,6 +2,7 @@
 mod codequest;
 mod engine;
 mod font5x7;
+pub mod scene_machine;
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use codequest::{CodeQuestConfig, GameType};
+use scene_machine::{SceneMachineDefinition, SceneMachineTemplate};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Quest {
@@ -507,18 +509,31 @@ fn ai_questions(
         .ok_or_else(|| "INCOMPLETE OR INVALID QUESTIONS".to_string())
 }
 
-fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
+fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, String> {
     let mode = if cartridge.mode == "custom" {
         engine::CartridgeMode::Custom
     } else {
         engine::CartridgeMode::Quiz
     };
-    engine::CartridgeSpec {
+    let template = match mode {
+        engine::CartridgeMode::Quiz => SceneMachineTemplate::Quiz,
+        engine::CartridgeMode::Custom => SceneMachineTemplate::Quest,
+    };
+    let machine = cartridge
+        .codequest
+        .as_ref()
+        .map(CodeQuestConfig::runtime_machine)
+        .transpose()?
+        .flatten()
+        .unwrap_or_else(|| SceneMachineDefinition::template(template));
+
+    Ok(engine::CartridgeSpec {
         id: cartridge.path,
         title: cartridge.title,
         mode,
         provenance: cartridge.provenance,
         codequest: cartridge.codequest.map(Box::new),
+        machine,
         quests: cartridge
             .quests
             .into_iter()
@@ -529,7 +544,7 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
             })
             .collect(),
         questions: Vec::new(),
-    }
+    })
 }
 
 #[tauri::command]
@@ -542,7 +557,7 @@ fn engine_set_cartridge(
         .transpose()?;
     state
         .0
-        .set_cartridge(cartridge.clone().map(engine_cartridge))?;
+        .set_cartridge(cartridge.clone().map(engine_cartridge).transpose()?)?;
     Ok(cartridge)
 }
 
@@ -694,10 +709,58 @@ mod question_policy_tests {
         assert_eq!(cartridge.mode, "custom");
         assert!(cartridge.codequest.is_some());
 
-        let spec = engine_cartridge(cartridge);
+        let spec = engine_cartridge(cartridge).unwrap();
         assert_eq!(spec.title, "CONFIGURED ADVENTURE");
         assert_eq!(spec.mode, engine::CartridgeMode::Custom);
         assert!(spec.codequest.is_some());
+
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_compiles_schema_v2_storyboard_for_the_engine() {
+        let repo = temporary_git_repo();
+        std::fs::write(
+            repo.join(codequest::FILE_NAME),
+            r#"
+                schema_version = 2
+
+                [game]
+                type = "quiz"
+                start_scene = "title"
+
+                [[scenes]]
+                id = "title"
+                title = "Title"
+                kind = "title"
+                handler = "title"
+
+                [[scenes.transitions]]
+                signal = "continue"
+                target = "game-over"
+
+                [[scenes]]
+                id = "game-over"
+                title = "Game Over"
+                kind = "result"
+                handler = "game-over"
+            "#,
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        let spec = engine_cartridge(cartridge).unwrap();
+        let mut machine = scene_machine::SceneMachine::new(spec.machine);
+        assert_eq!(machine.current_scene(), "title");
+        assert_eq!(
+            machine
+                .handle(scene_machine::SceneEvent::Signal(
+                    scene_machine::SceneSignal::Continue,
+                ))
+                .unwrap()
+                .target,
+            "game-over"
+        );
 
         std::fs::remove_dir_all(repo).unwrap();
     }
@@ -744,7 +807,7 @@ mod question_policy_tests {
             Some("Copyright (c) 2020-2024 Ada Lovelace")
         );
 
-        let spec = engine_cartridge(cartridge);
+        let spec = engine_cartridge(cartridge).unwrap();
         assert_eq!(spec.provenance.authors[0], "Ada Lovelace");
         std::fs::remove_dir_all(repo).unwrap();
     }
@@ -822,7 +885,7 @@ mod question_policy_tests {
 
     #[test]
     fn quiz_cartridges_have_no_preloaded_questions() {
-        let spec = engine_cartridge(cartridge("/tmp/first", "FIRST"));
+        let spec = engine_cartridge(cartridge("/tmp/first", "FIRST")).unwrap();
 
         assert!(spec.questions.is_empty());
     }

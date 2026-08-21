@@ -1,5 +1,5 @@
-# CODEQUEST.toml schema version 1
-schema_version = 1
+# CODEQUEST.toml schema version 2
+schema_version = 2
 
 [game]
 type = "quiz"
@@ -89,79 +89,155 @@ requirements = ["Supports four 35-character choices.", "Keeps focus visible in e
 id = "copyright"
 title = "Repository Copyright"
 kind = "credits"
+handler = "repository-credits"
 summary = "Credit the people and timeline behind the inserted repository while the first question request begins."
 mechanics = ["present-copyright"]
 art = ["copyright-card"]
-next = ["opening-fanfare"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "opening-fanfare"
+after_ticks = 60
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "opening-fanfare"
+after_ticks = 180
 
 [[scenes]]
 id = "opening-fanfare"
 title = "Opening Fanfare"
 kind = "cinematic"
+handler = "opening-fanfare"
 summary = "Complete a short original repository spectacle, then hand off cleanly while question generation continues."
 mechanics = ["play-opening-fanfare"]
 art = ["opening-fanfare"]
-next = ["title"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "title"
+after_ticks = 90
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "title"
+after_ticks = 330
 
 [[scenes]]
 id = "title"
 title = "Title"
 kind = "title"
+handler = "title"
 summary = "Resolve the fanfare into the cartridge title and invite the player to begin."
 mechanics = ["navigate-menu"]
 art = ["title-mark"]
-next = ["quiz-menu"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "quiz-menu"
 
 [[scenes]]
 id = "quiz-menu"
 title = "Quiz Menu"
 kind = "menu"
+handler = "quiz-menu"
 summary = "Explain the run at a glance and offer start or return."
 mechanics = ["navigate-menu"]
 art = []
-next = ["character-creation", "title"]
+
+[[scenes.transitions]]
+signal = "new-run"
+target = "character-creation"
+
+[[scenes.transitions]]
+signal = "back"
+target = "title"
 
 [[scenes]]
 id = "character-creation"
 title = "Create Hero"
 kind = "character-creation"
+handler = "character-creation"
 summary = "Let the player establish a small identity before the first question."
 mechanics = ["customize-hero"]
 art = ["hero-set"]
-next = ["oracle"]
+
+[[scenes.transitions]]
+signal = "hero-ready"
+target = "oracle"
+
+[[scenes.transitions]]
+signal = "back"
+target = "quiz-menu"
 
 [[scenes]]
 id = "oracle"
 title = "Oracle"
 kind = "interstitial"
+handler = "oracle"
 summary = "Turn question-generation latency into anticipation between challenges."
 mechanics = ["consult-oracle"]
 art = ["hero-set", "oracle-sanctum"]
-next = ["quiz"]
+
+[[scenes.transitions]]
+signal = "questions-ready"
+target = "quiz"
+
+[[scenes.transitions]]
+signal = "back"
+target = "quiz-menu"
 
 [[scenes]]
 id = "quiz"
 title = "Quiz"
 kind = "challenge"
+handler = "concept-quiz"
 summary = "Test one durable concept about the project."
 mechanics = ["answer-question"]
 art = ["hero-set", "quiz-frame"]
-next = ["oracle", "level-up", "game-over"]
+
+[[scenes.transitions]]
+signal = "needs-question"
+target = "oracle"
+
+[[scenes.transitions]]
+signal = "batch-complete"
+target = "level-up"
+
+[[scenes.transitions]]
+signal = "hearts-empty"
+target = "game-over"
+
+[[scenes.transitions]]
+signal = "back"
+target = "quiz-menu"
 
 [[scenes]]
 id = "level-up"
 title = "Level Up"
 kind = "reward"
+handler = "level-up"
 summary = "Mark mastery and raise the next question batch's difficulty."
 mechanics = ["navigate-menu"]
 art = ["hero-set"]
-next = ["oracle"]
+
+[[scenes.transitions]]
+signal = "questions-ready"
+target = "quiz"
+
+[[scenes.transitions]]
+signal = "needs-question"
+target = "oracle"
 
 [[scenes]]
 id = "game-over"
 title = "Game Over"
 kind = "result"
+handler = "game-over"
 summary = "Close the run with the final score and a replay path."
 mechanics = ["navigate-menu"]
 art = ["hero-set"]
-next = ["quiz-menu"]
+
+[[scenes.transitions]]
+signal = "replay"
+target = "quiz-menu"

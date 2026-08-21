@@ -3,8 +3,8 @@
 This is the human design brief for the quiz flow represented by
 [`docs/examples/CODEQUEST.toml`](../examples/CODEQUEST.toml). The brief explains
 intent and implementation status; the manifest supplies stable scene,
-mechanic, and art IDs. Schema-v1 storyboard metadata is validated and carried
-into the engine, but it does not dynamically create these screens.
+mechanic, and art IDs. Its schema-v2 handlers and transitions compile into the
+engine's scene machine; mechanics and art remain linked production metadata.
 
 ## Experience frame
 
@@ -31,7 +31,7 @@ names or repository trivia.
 **Non-goals:** No town or overworld layer, inventory economy, timed-answer
 pressure, generated filler questions, borrowed characters or compositions,
 unsupported copyright claims, or claim that manifest metadata already
-implements Bevy screens.
+creates new renderer code.
 
 ## Session and loops
 
@@ -175,11 +175,12 @@ model, or hides a failed request behind invented progress.
 | Element | Status | Evidence or required work |
 |---|---|---|
 | Manifest title and `quiz`/`quest` type | Implemented | Parsed at cartridge load and used by the engine. |
-| Scene, mechanic, and art graph | Configured | Parsed, cross-reference validated, and retained; not executed dynamically in schema v1. |
+| Scene graph | Configured/executable | Schema-v2 handlers and semantic transitions are validated, compiled, and executed by the engine. |
+| Mechanic and art graph | Configured/metadata | Parsed, cross-reference validated, and retained as design and production requirements. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
 | Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
-| Copyright and opening-fanfare screens | Implemented in basic form | Hard-coded Bevy states render before `Title`, enforce minimum skip times, auto-advance, remain independent of question readiness, and keep fanfare/title frame composition separate. |
-| Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Hard-coded `Screen` states, input handling, advancement, and render functions. |
+| Copyright and opening-fanfare screens | Implemented in basic form | Trusted Bevy handlers render before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
+| Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Trusted handlers own input and rendering while the manifest routes their semantic events. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
 | Truthful multi-state Oracle presentation | Proposed | Add distinct in-flight/retry/ready/AI-disabled UI and tests to the existing Oracle state. |
 | Non-color-only result labels and reduced motion | Proposed | Extend quiz/Oracle rendering and verify at native scale. |
@@ -190,10 +191,10 @@ model, or hides a failed request behind invented progress.
 1. **Completed — Repository provenance pass:** Derive bounded author credits,
    earliest/latest commit dates, and any explicit copyright notice during
    cartridge preparation; add parser/sanitization tests.
-2. **Completed — Opening state pass:** Add hard-coded `Copyright` and `OpeningFanfare`
-   screens before `Title`, preserve the already-early question request, and
+2. **Completed — Opening state pass:** Add trusted `Copyright` and `OpeningFanfare`
+   handlers before `Title`, preserve the already-early question request, and
    test minimum dwell, auto-advance, skip, and distinct rendered phases.
-3. **Oracle state pass:** Keep the hard-coded Oracle screen; add distinct
+3. **Oracle state pass:** Extend the trusted Oracle handler with distinct
    in-flight, retry, ready, and AI-disabled presentation using actual engine
    state and retain the B exit.
 4. **Feedback/accessibility pass:** Add correctness labels, reduced-motion
@@ -203,8 +204,9 @@ model, or hides a failed request behind invented progress.
 6. **Art pass:** Produce and verify `copyright-card`, `opening-fanfare`,
    `title-mark`, `oracle-sanctum`, and remaining `hero-set` states against the
    240×160 ledger.
-7. **Future dynamic-scenes decision:** Only version the schema if cartridges
-   truly need to drive scene execution; do not reinterpret v1 metadata.
+7. **Completed — Executable scene graph:** Add schema v2 handlers, semantic
+   transitions, timing gates, reachability validation, built-in quiz/quest
+   templates, and schema-v1 compatibility.
 
 ## Open decisions
 
