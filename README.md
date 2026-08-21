@@ -44,15 +44,20 @@ loop.
 
 Quiz cartridges contain no preloaded questions. Inserting one makes the Bevy
 engine ask the `claude` CLI for the first batch immediately. Character
-creation, Oracle travel, and level-up screens keep the game moving while
-Claude writes or prefetches the next batch; the Oracle waits and retries if a
-batch fails instead of substituting generic questions. Generated questions
+creation, walks through the repository town, and level-up screens keep the
+game moving while Claude writes or prefetches the next batch; the town waits
+and retries if a batch fails instead of substituting generic questions. The
+town is generated deterministically from the cartridge filesystem: top-level
+directories become themed landmarks, busier directories receive plots first,
+and root files form the town hall. Before every quiz, the player's customized
+character follows the roads from the previous landmark to the next one.
+Generated questions
 cover the project's purpose, architecture, responsibilities, interactions,
 invariants, and tradeoffs. The prompt and accepted-output policy live in
 `src-tauri/src/lib.rs`: file and repository trivia is rejected, questions
 must fit four 37-character lines, and each of four distinct choices must fit
 35 characters. Set `CQA_NO_AI=1` to disable generation for diagnostics (the
-Oracle will continue waiting), or `CQA_CLAUDE_MODEL` to select the model.
+town will continue waiting), or `CQA_CLAUDE_MODEL` to select the model.
 Quest-battle commands are selected from the Rust-derived cartridge quest list
 and are started, streamed, and stopped by the Bevy runtime.
 

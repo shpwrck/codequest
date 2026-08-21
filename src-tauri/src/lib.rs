@@ -408,6 +408,10 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
     } else {
         engine::CartridgeMode::Quiz
     };
+    let files: Vec<String> = quiz_data(cartridge.path.clone())
+        .map(|data| data.files.into_iter().map(|file| file.path).collect())
+        .unwrap_or_default();
+    let town = engine::filesystem_town(&cartridge.title, &files);
     engine::CartridgeSpec {
         id: cartridge.path,
         title: cartridge.title,
@@ -422,6 +426,7 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
             })
             .collect(),
         questions: Vec::new(),
+        town,
     }
 }
 
