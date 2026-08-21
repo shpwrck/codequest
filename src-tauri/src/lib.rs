@@ -3,7 +3,7 @@ mod engine;
 mod font5x7;
 
 use std::process::{Command, Stdio};
-use std::thread;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -188,26 +188,13 @@ async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
     build_cartridge(std::path::Path::new(&path)).map(Some)
 }
 
-#[derive(Serialize, Clone)]
 struct QuizFile {
     path: String,
     size: u64,
 }
 
-#[derive(Serialize, Clone)]
-struct QuizCommit {
-    hash: String,
-    author: String,
-    msg: String,
-}
-
-#[derive(Serialize, Clone)]
 struct QuizData {
-    branch: String,
-    total_commits: u64,
     files: Vec<QuizFile>,
-    commits: Vec<QuizCommit>,
-    authors: Vec<(String, u64)>,
 }
 
 fn git_out(path: &std::path::Path, args: &[&str]) -> String {
@@ -227,13 +214,6 @@ fn quiz_data(path: String) -> Result<QuizData, String> {
     if !is_git_repo(repo) {
         return Err("NOT A GIT REPOSITORY".to_string());
     }
-    let branch = git_out(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .trim()
-        .to_string();
-    let total_commits = git_out(repo, &["rev-list", "--count", "HEAD"])
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(0);
     let mut files: Vec<QuizFile> = git_out(repo, &["ls-files"])
         .lines()
         .take(400)
@@ -245,32 +225,7 @@ fn quiz_data(path: String) -> Result<QuizData, String> {
         })
         .collect();
     files.retain(|f| !f.path.is_empty());
-    let commits: Vec<QuizCommit> =
-        git_out(repo, &["log", "--pretty=format:%h\x1f%an\x1f%s", "-40"])
-            .lines()
-            .filter_map(|l| {
-                let mut it = l.split('\x1f');
-                Some(QuizCommit {
-                    hash: it.next()?.to_string(),
-                    author: it.next()?.to_string(),
-                    msg: it.next()?.to_string(),
-                })
-            })
-            .collect();
-    let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    for a in git_out(repo, &["log", "--pretty=%an", "-500"]).lines() {
-        *counts.entry(a.to_string()).or_insert(0) += 1;
-    }
-    let mut authors: Vec<(String, u64)> = counts.into_iter().collect();
-    authors.sort_by_key(|author| std::cmp::Reverse(author.1));
-    authors.truncate(8);
-    Ok(QuizData {
-        branch,
-        total_commits,
-        files,
-        commits,
-        authors,
-    })
+    Ok(QuizData { files })
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -280,209 +235,89 @@ struct QQuestion {
     answer: usize,
 }
 
-fn seeded(n: &mut u64) -> u64 {
-    *n = n
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(1442695040888963407);
-    (*n >> 33) ^ *n
+fn question_is_acceptable(question: &QQuestion) -> bool {
+    const FACT_TRIVIA_MARKERS: [&str; 27] = [
+        "WHICH FILE",
+        "WHAT FILE",
+        "WHERE DOES",
+        "HOW MANY",
+        "FILE NAME",
+        "FILENAME",
+        "FILE",
+        "FILES",
+        "DIRECTORY",
+        "DIRECTORIES",
+        "FOLDER",
+        "FOLDERS",
+        "PATH",
+        "PATHS",
+        "EXTENSION",
+        "EXTENSIONS",
+        "README",
+        "COMMIT",
+        "COMMITS",
+        "BRANCH",
+        "AUTHOR",
+        "AUTHORS",
+        "CONTRIBUTOR",
+        "CONTRIBUTORS",
+        "LATEST",
+        "MOST RECENT",
+        "BYTES",
+    ];
+    const FILE_EXTENSIONS: [&str; 14] = [
+        ".RS", ".JS", ".MJS", ".TS", ".TSX", ".PY", ".GO", ".RB", ".JAVA", ".C", ".CPP", ".SH",
+        ".CSS", ".HTML",
+    ];
+
+    if !engine::quiz_question_fits(&question.q, &question.choices, question.answer) {
+        return false;
+    }
+    let content = std::iter::once(question.q.as_str())
+        .chain(question.choices.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    let normalized = content
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let padded = format!(" {normalized} ");
+    !FACT_TRIVIA_MARKERS
+        .iter()
+        .any(|marker| padded.contains(&format!(" {marker} ")))
+        && !FILE_EXTENSIONS
+            .iter()
+            .any(|extension| content.contains(extension))
+        && !content.contains('/')
+        && !content.contains('\\')
 }
 
-fn pick_idx(rng: &mut u64, len: usize) -> usize {
-    (seeded(rng) as usize) % len.max(1)
+fn retain_acceptable_questions(questions: Vec<QQuestion>) -> Vec<QQuestion> {
+    questions
+        .into_iter()
+        .filter(question_is_acceptable)
+        .collect()
 }
 
-fn fake_name(real: &str, hard: bool, rng: &mut u64) -> String {
-    let (dir, base) = match real.rfind('/') {
-        Some(i) => (&real[..=i], &real[i + 1..]),
-        None => ("", real),
-    };
-    let (stem, ext) = match base.rfind('.') {
-        Some(i) if i > 0 => (&base[..i], &base[i..]),
-        _ => (base, ""),
-    };
-    let variants: Vec<String> = if hard {
-        vec![
-            format!("{stem}s{ext}"),
-            format!("{}{ext}", &stem[..stem.len().saturating_sub(1).max(1)]),
-            format!("{stem}{}", if ext == ".js" { ".mjs" } else { ".js" }),
-            format!("{stem}-v2{ext}"),
-        ]
-    } else {
-        vec![
-            format!("{stem}-old{ext}"),
-            format!("my-{stem}{ext}"),
-            format!("{stem}.bak"),
-            format!("{stem}2{ext}"),
-        ]
-    };
-    format!("{dir}{}", variants[pick_idx(rng, variants.len())])
-}
-
-fn mk_q(q: &str, correct: String, mut others: Vec<String>, rng: &mut u64) -> QQuestion {
-    others.retain(|o| *o != correct);
-    others.truncate(3);
-    let mut choices = vec![correct.clone()];
-    choices.append(&mut others);
-    // shuffle
-    for i in (1..choices.len()).rev() {
-        let j = pick_idx(rng, i + 1);
-        choices.swap(i, j);
-    }
-    let answer = choices.iter().position(|c| *c == correct).unwrap_or(0);
-    QQuestion {
-        q: q.to_string(),
-        choices,
-        answer,
-    }
-}
-
-fn procedural_questions(d: &QuizData, level: u32, count: usize) -> Vec<QQuestion> {
-    let mut rng: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|t| t.as_nanos() as u64)
-        .unwrap_or(42);
-    let hard = level >= 3;
-    let mut out = Vec::new();
-    // dominant language by extension (stable stack identity, asked thematically)
-    let lang_of = |ext: &str| match ext {
-        ".rs" => Some("RUST"),
-        ".js" | ".mjs" => Some("JAVASCRIPT"),
-        ".ts" | ".tsx" => Some("TYPESCRIPT"),
-        ".py" => Some("PYTHON"),
-        ".go" => Some("GO"),
-        ".rb" => Some("RUBY"),
-        ".java" | ".kt" => Some("JAVA/KOTLIN"),
-        ".c" | ".h" | ".cpp" => Some("C/C++"),
-        ".sh" => Some("SHELL"),
-        _ => None,
-    };
-    let mut lang_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for f in &d.files {
-        if let Some(i) = f.path.rfind('.') {
-            if let Some(l) = lang_of(&f.path[i..]) {
-                *lang_counts.entry(l).or_insert(0) += 1;
-            }
-        }
-    }
-    let mut langs: Vec<(&str, usize)> = lang_counts.into_iter().collect();
-    langs.sort_by_key(|language| std::cmp::Reverse(language.1));
-    // top-level dirs for structure questions
-    let dirs: Vec<String> = {
-        let mut set = std::collections::HashSet::new();
-        for f in &d.files {
-            if let Some(i) = f.path.find('/') {
-                set.insert(f.path[..i].to_string());
-            }
-        }
-        set.into_iter().collect()
-    };
-    for _ in 0..count * 4 {
-        if out.len() >= count {
-            break;
-        }
-        let q = match pick_idx(&mut rng, 5) {
-            0 if d.files.len() >= 4 => {
-                let real = d.files[pick_idx(&mut rng, d.files.len())].path.clone();
-                let mut fakes = Vec::new();
-                for _ in 0..8 {
-                    let f = fake_name(
-                        &d.files[pick_idx(&mut rng, d.files.len())].path,
-                        hard,
-                        &mut rng,
-                    );
-                    if !d.files.iter().any(|g| g.path == f) && !fakes.contains(&f) {
-                        fakes.push(f);
-                    }
-                    if fakes.len() == 3 {
-                        break;
-                    }
-                }
-                if fakes.len() < 3 {
-                    continue;
-                }
-                mk_q("WHICH FILE IS PART OF THIS PROJECT?", real, fakes, &mut rng)
-            }
-            1 if d.files.len() >= 4 => {
-                let mut idx: Vec<usize> = (0..d.files.len()).collect();
-                for i in (1..idx.len()).rev() {
-                    let j = pick_idx(&mut rng, i + 1);
-                    idx.swap(i, j);
-                }
-                let three: Vec<String> = idx
-                    .iter()
-                    .take(3)
-                    .map(|i| d.files[*i].path.clone())
-                    .collect();
-                let fake = fake_name(
-                    &d.files[pick_idx(&mut rng, d.files.len())].path,
-                    true,
-                    &mut rng,
-                );
-                if d.files.iter().any(|g| g.path == fake) {
-                    continue;
-                }
-                mk_q(
-                    "WHICH FILE IS NOT PART OF THIS PROJECT?",
-                    fake,
-                    three,
-                    &mut rng,
-                )
-            }
-            2 if !d.commits.is_empty() => {
-                let real: String = d.commits[pick_idx(&mut rng, d.commits.len())]
-                    .msg
-                    .chars()
-                    .take(34)
-                    .collect();
-                let fakes: Vec<String> = [
-                    "FIX TYPO IN README",
-                    "UPDATE DEPENDENCIES",
-                    "REFACTOR UTILS",
-                    "BUMP VERSION",
-                    "REMOVE DEAD CODE",
-                ]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-                mk_q("WHICH IS REAL PROJECT HISTORY?", real, fakes, &mut rng)
-            }
-            3 if dirs.len() >= 2 => {
-                let nested: Vec<&QuizFile> =
-                    d.files.iter().filter(|f| f.path.contains('/')).collect();
-                if nested.is_empty() {
-                    continue;
-                }
-                let f = nested[pick_idx(&mut rng, nested.len())];
-                let dir = f.path[..f.path.find('/').unwrap()].to_string();
-                let base = f.path[f.path.rfind('/').unwrap() + 1..].to_string();
-                let others: Vec<String> = dirs.iter().filter(|x| **x != dir).cloned().collect();
-                if others.is_empty() {
-                    continue;
-                }
-                mk_q(&format!("WHERE DOES {base} LIVE?"), dir, others, &mut rng)
-            }
-            4 if !langs.is_empty() => {
-                let top = langs[0].0.to_string();
-                let others: Vec<String> =
-                    ["RUST", "JAVASCRIPT", "TYPESCRIPT", "PYTHON", "GO", "RUBY"]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .filter(|l| *l != top)
-                        .collect();
-                mk_q(
-                    "WHICH LANGUAGE ANCHORS THIS PROJECT?",
-                    top,
-                    others,
-                    &mut rng,
-                )
-            }
-            _ => continue,
-        };
-        if q.choices.len() >= 2 {
-            out.push(q);
-        }
-    }
-    out
+fn accepted_question_batch(
+    questions: Vec<QQuestion>,
+    expected_count: usize,
+) -> Option<Vec<QQuestion>> {
+    let valid = retain_acceptable_questions(questions)
+        .into_iter()
+        .take(expected_count)
+        .collect::<Vec<_>>();
+    (!valid.is_empty()).then_some(valid)
 }
 
 fn gather_quiz_data(path: &std::path::Path) -> Result<QuizData, String> {
@@ -495,6 +330,18 @@ fn text_excerpt(path: &std::path::Path, max_lines: usize) -> String {
         .unwrap_or_default()
 }
 
+fn claude_question_prompt(
+    project_name: &str,
+    level: u32,
+    count: usize,
+    documentation: &str,
+    implementation_excerpts: &str,
+) -> String {
+    format!(
+        "You write questions for a retro handheld quiz game about a software project. Generate exactly {count} multiple-choice questions at difficulty level {level} (1=purpose and responsibilities, 3=component interactions and tradeoffs, 5=subtle invariants and design rationale).\n\nCONCEPTS ONLY: test the project's architecture, purpose, domain model, component responsibilities, interactions, invariants, tradeoffs, design rationale, or enduring behavior. Every question must still make sense if the project were reorganized and all implementation locations changed.\n\nNEVER ask about file names, paths, directories, or extensions; where code lives; repository structure; counts, sizes, or lines; dates or times; branches or commits; authors or contributors; ordering or recency; or any other state-in-time fact. Never use those facts as choices.\n\nDISPLAY LIMITS: each question must wrap into at most 4 lines of 37 characters. Each choice must be at most 35 characters. Return exactly 4 non-empty, distinct choices and exactly one correct answer. Wrong choices must be plausible concepts. Do not truncate words or sentences. Do not repeat questions.\n\nRespond with ONLY a JSON array, no prose and no code fences: [{{\"q\":\"...\",\"choices\":[\"a\",\"b\",\"c\",\"d\"],\"answer\":0}}]\n\nPROJECT: {project_name}\nPROJECT DOCUMENTATION:\n{documentation}\nANONYMIZED IMPLEMENTATION EXCERPTS:\n{implementation_excerpts}",
+    )
+}
+
 fn ai_questions(
     path: &std::path::Path,
     level: u32,
@@ -505,23 +352,11 @@ fn ai_questions(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    // context: files, commits, readme + two biggest source files (excerpts)
+    // The file inventory is used only to select representative source excerpts.
+    // Paths and repository metadata are deliberately withheld from Claude so the
+    // resulting questions focus on enduring concepts rather than file trivia.
     let mut files: Vec<&QuizFile> = d.files.iter().collect();
     files.sort_by_key(|file| std::cmp::Reverse(file.size));
-    let file_list: String = d
-        .files
-        .iter()
-        .take(60)
-        .map(|f| format!("{} ({}b)", f.path, f.size))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let commit_list: String = d
-        .commits
-        .iter()
-        .take(20)
-        .map(|c| format!("{} {} ({})", c.hash, c.msg, c.author))
-        .collect::<Vec<_>>()
-        .join("\n");
     let readme = text_excerpt(&path.join("README.md"), 40);
     let src_exts = [
         ".rs", ".js", ".ts", ".py", ".go", ".java", ".c", ".cpp", ".rb", ".sh", ".css", ".html",
@@ -533,20 +368,13 @@ fn ai_questions(
             continue;
         }
         if src_exts.iter().any(|e| f.path.ends_with(e)) {
-            excerpts.push_str(&format!(
-                "\n--- {} ---\n{}\n",
-                f.path,
-                text_excerpt(&path.join(&f.path), 50)
-            ));
+            excerpts.push_str("\n--- IMPLEMENTATION EXCERPT ---\n");
+            excerpts.push_str(&text_excerpt(&path.join(&f.path), 50));
+            excerpts.push('\n');
             used += 1;
         }
     }
-    let prompt = format!(
-        "You write questions for a retro handheld quiz game about a git repository. Generate exactly {count} multiple-choice questions at difficulty level {level} (1=purpose and what components are for, 3=how components interact and why, 5=subtle design decisions and behavior). THEMATIC ONLY: every question must test understanding of the project's architecture, purpose, domain concepts, component roles, or design decisions — things that stay true as the repo evolves. FORBIDDEN: counts of anything, file or repo sizes, dates or times, current branch, most-recent-commit or ordering questions, contributor statistics, or any state-in-time measurement. Rules: each question text under 70 characters; exactly 4 choices, each under 34 characters; exactly one correct choice; wrong choices must be plausible; questions must be answerable from the material below; no duplicates. Respond with ONLY a JSON array, no prose, no code fences: [{{\"q\":\"...\",\"choices\":[\"a\",\"b\",\"c\",\"d\"],\"answer\":0}}]\n\nREPO: {name}\nFILES:\n{file_list}\nCOMMIT MESSAGES (for context, not for recency questions):\n{commit_list}\nREADME EXCERPT:\n{readme}\nSOURCE EXCERPTS:{excerpts}",
-        count = count, level = level, name = name,
-        file_list = file_list, commit_list = commit_list,
-        readme = readme, excerpts = excerpts,
-    );
+    let prompt = claude_question_prompt(&name, level, count, &readme, &excerpts);
     let mut cmd = Command::new("timeout");
     cmd.args(["120", "claude", "-p", &prompt, "--output-format", "json"]);
     if let Ok(model) = std::env::var("CQA_CLAUDE_MODEL") {
@@ -570,21 +398,8 @@ fn ai_questions(
     let end = result.rfind(']').ok_or("NO JSON IN RESPONSE")?;
     let parsed: Vec<QQuestion> = serde_json::from_str(&result[start..=end])
         .map_err(|_| "UNPARSEABLE QUESTIONS".to_string())?;
-    let valid: Vec<QQuestion> = parsed
-        .into_iter()
-        .filter(|q| q.choices.len() == 4 && q.answer < 4 && !q.q.is_empty())
-        .map(|mut q| {
-            q.q.truncate(90);
-            for c in q.choices.iter_mut() {
-                c.truncate(40);
-            }
-            q
-        })
-        .collect();
-    if valid.is_empty() {
-        return Err("NO VALID QUESTIONS".to_string());
-    }
-    Ok(valid)
+    accepted_question_batch(parsed, count)
+        .ok_or_else(|| "INCOMPLETE OR INVALID QUESTIONS".to_string())
 }
 
 fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
@@ -592,21 +407,6 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
         engine::CartridgeMode::Custom
     } else {
         engine::CartridgeMode::Quiz
-    };
-    let questions = if mode == engine::CartridgeMode::Quiz {
-        let repo = std::path::Path::new(&cartridge.path);
-        gather_quiz_data(repo)
-            .map(|data| procedural_questions(&data, 1, 36))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|question| engine::QuizQuestion {
-                question: question.q,
-                choices: question.choices,
-                answer: question.answer,
-            })
-            .collect()
-    } else {
-        Vec::new()
     };
     engine::CartridgeSpec {
         id: cartridge.path,
@@ -621,7 +421,7 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
                 command: quest.command,
             })
             .collect(),
-        questions,
+        questions: Vec::new(),
     }
 }
 
@@ -633,31 +433,9 @@ fn engine_set_cartridge(
     let cartridge = path
         .map(|path| build_cartridge(std::path::Path::new(&path)))
         .transpose()?;
-    let oracle_path = cartridge
-        .as_ref()
-        .filter(|cartridge| cartridge.mode == "quiz")
-        .map(|cartridge| cartridge.path.clone());
     state
         .0
         .set_cartridge(cartridge.clone().map(engine_cartridge))?;
-
-    if let Some(path) = oracle_path.filter(|_| std::env::var("CQA_NO_AI").is_err()) {
-        let runtime = state.0.clone();
-        thread::spawn(move || {
-            let questions = ai_questions(std::path::Path::new(&path), 1, 12)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|question| engine::QuizQuestion {
-                    question: question.q,
-                    choices: question.choices,
-                    answer: question.answer,
-                })
-                .collect::<Vec<_>>();
-            if !questions.is_empty() {
-                let _ = runtime.replace_questions(path, questions);
-            }
-        });
-    }
     Ok(cartridge)
 }
 
@@ -684,9 +462,23 @@ fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let question_loader: engine::QuestionLoader = Arc::new(|path, level, count| {
+        if std::env::var("CQA_NO_AI").is_ok() {
+            return Vec::new();
+        }
+        ai_questions(std::path::Path::new(&path), level, count)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|question| engine::QuizQuestion {
+                question: question.q,
+                choices: question.choices,
+                answer: question.answer,
+            })
+            .collect()
+    });
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(EngineState(engine::EngineRuntime::spawn()))
+        .manage(EngineState(engine::EngineRuntime::spawn(question_loader)))
         .invoke_handler(tauri::generate_handler![
             pick_cartridge,
             engine_set_cartridge,
@@ -697,4 +489,160 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod question_policy_tests {
+    use super::*;
+
+    fn cartridge(path: &str, title: &str) -> Cartridge {
+        Cartridge {
+            id: path.to_string(),
+            title: title.to_string(),
+            color: "#000000".to_string(),
+            path: path.to_string(),
+            mode: "quiz".to_string(),
+            quests: Vec::new(),
+        }
+    }
+
+    fn question(text: &str, choices: &[&str]) -> QQuestion {
+        QQuestion {
+            q: text.to_string(),
+            choices: choices.iter().map(|choice| (*choice).to_string()).collect(),
+            answer: 0,
+        }
+    }
+
+    #[test]
+    fn accepted_ai_questions_are_conceptual_and_fit_the_quiz_layout() {
+        let conceptual = question(
+            "WHY SEPARATE GAME STATE FROM THE UI?",
+            &[
+                "TO KEEP RESPONSIBILITIES CLEAR",
+                "TO HIDE FAILURES",
+                "TO COUPLE COMPONENTS",
+                "TO DUPLICATE STATE",
+            ],
+        );
+        assert!(question_is_acceptable(&conceptual));
+
+        let file_trivia = question(
+            "WHICH FILE OWNS GAME STATE?",
+            &["engine.rs", "main.js", "styles.css", "README.md"],
+        );
+        assert!(!question_is_acceptable(&file_trivia));
+
+        let state_trivia = question(
+            "HOW MANY FILES ARE IN THE REPOSITORY?",
+            &["ONE", "TWO", "THREE", "FOUR"],
+        );
+        assert!(!question_is_acceptable(&state_trivia));
+
+        let overflowing = question(
+            &"CONCEPTUAL WORD ".repeat(40),
+            &[
+                "THIS CHOICE IS LONGER THAN THE DISPLAY CAN POSSIBLY SHOW",
+                "SECOND",
+                "THIRD",
+                "FOURTH",
+            ],
+        );
+        assert!(!question_is_acceptable(&overflowing));
+    }
+
+    #[test]
+    fn quiz_cartridges_have_no_preloaded_questions() {
+        let spec = engine_cartridge(cartridge("/tmp/first", "FIRST"));
+
+        assert!(spec.questions.is_empty());
+    }
+
+    #[test]
+    fn duplicate_choices_are_rejected() {
+        let ambiguous = question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &[
+                "THE GAME ENGINE",
+                "THE GAME ENGINE",
+                "THE VIEW",
+                "THE DEVICE SHELL",
+            ],
+        );
+
+        assert!(!question_is_acceptable(&ambiguous));
+    }
+
+    #[test]
+    fn claude_results_are_rejected_instead_of_truncated() {
+        let valid = question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &[
+                "THE GAME ENGINE",
+                "THE DEVICE SHELL",
+                "THE STYLES",
+                "THE VIEW",
+            ],
+        );
+        let file_trivia = question(
+            "WHICH FILE DEFINES THE ENGINE?",
+            &["engine.rs", "main.js", "styles.css", "README.md"],
+        );
+        let overflowing = question(
+            "WHY KEEP OUTPUT WITHIN A FIXED PRESENTATION BOUNDARY?",
+            &[
+                "THIS RESPONSE CANNOT FIT IN THE AVAILABLE CHOICE ROW",
+                "SECOND",
+                "THIRD",
+                "FOURTH",
+            ],
+        );
+
+        let accepted = retain_acceptable_questions(vec![valid.clone(), file_trivia, overflowing]);
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].q, valid.q);
+        assert_eq!(accepted[0].choices, valid.choices);
+    }
+
+    #[test]
+    fn valid_questions_survive_a_mixed_claude_batch() {
+        let valid = question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &[
+                "THE GAME ENGINE",
+                "THE DEVICE SHELL",
+                "THE STYLES",
+                "THE VIEW",
+            ],
+        );
+        let file_trivia = question(
+            "WHICH FILE DEFINES THE ENGINE?",
+            &["engine.rs", "main.js", "styles.css", "README.md"],
+        );
+
+        let accepted = accepted_question_batch(vec![valid.clone(), file_trivia.clone()], 2)
+            .expect("the valid question should remain playable");
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].q, valid.q);
+        assert!(accepted_question_batch(vec![file_trivia], 1).is_none());
+    }
+
+    #[test]
+    fn claude_prompt_requests_only_concepts_that_fit_the_display() {
+        let prompt = claude_question_prompt(
+            "DEMO PROJECT",
+            3,
+            12,
+            "A project that separates its engine from its device shell.",
+            "The engine owns state. The adapter translates platform operations.",
+        );
+
+        assert!(prompt.contains("CONCEPTS ONLY"));
+        assert!(prompt.contains("NEVER ask about file names, paths, directories, or extensions"));
+        assert!(prompt.contains("still make sense if the project were reorganized"));
+        assert!(prompt.contains("at most 4 lines of 37 characters"));
+        assert!(prompt.contains("at most 35 characters"));
+        assert!(!prompt.contains("FILES:"));
+        assert!(!prompt.contains("COMMIT MESSAGES"));
+    }
 }
