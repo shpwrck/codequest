@@ -64,6 +64,23 @@ jobs:
       - name: Build MSI and NSIS installers
         run: npm run tauri -- build --bundles msi,nsis
 
+      - name: Smoke-test Windows executable
+        shell: pwsh
+        run: |
+          $env:CQA_NO_AI = "1"
+          $applicationPath = Resolve-Path "src-tauri/target/release/code-quest-advance.exe"
+          $application = Start-Process -FilePath $applicationPath -WindowStyle Hidden -PassThru
+          try {
+            Start-Sleep -Seconds 5
+            if ($application.HasExited) {
+              throw "Windows application exited during startup with code $($application.ExitCode)"
+            }
+          } finally {
+            if (!$application.HasExited) {
+              Stop-Process -Id $application.Id -Force
+            }
+          }
+
       - name: Collect Windows packages
         shell: pwsh
         run: |

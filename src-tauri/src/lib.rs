@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod codequest;
 mod engine;
+mod external_tools;
 mod font5x7;
 pub mod scene_machine;
 
@@ -59,7 +60,7 @@ fn shquote(p: &str) -> String {
 }
 
 fn is_git_repo(path: &std::path::Path) -> bool {
-    Command::new("git")
+    external_tools::git_command()
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--is-inside-work-tree"])
@@ -71,7 +72,7 @@ fn is_git_repo(path: &std::path::Path) -> bool {
 }
 
 fn repository_branch(path: &std::path::Path) -> String {
-    Command::new("git")
+    external_tools::git_command()
         .arg("-C")
         .arg(path)
         .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
@@ -310,7 +311,7 @@ struct QuizData {
 }
 
 fn git_out(path: &std::path::Path, args: &[&str]) -> String {
-    Command::new("git")
+    external_tools::git_command()
         .arg("-C")
         .arg(path)
         .args(args)
@@ -537,7 +538,7 @@ fn ai_questions(
         }
     }
     let prompt = claude_question_prompt(&name, level, count, &readme, &excerpts);
-    let mut cmd = Command::new("claude");
+    let mut cmd = external_tools::claude_command();
     cmd.args(["-p", &prompt, "--output-format", "json"]);
     if let Ok(model) = std::env::var("CQA_CLAUDE_MODEL") {
         if !model.is_empty() {
@@ -682,7 +683,7 @@ mod question_policy_tests {
             std::process::id()
         ));
         std::fs::create_dir(&path).unwrap();
-        let status = Command::new("git")
+        let status = external_tools::git_command()
             .arg("-C")
             .arg(&path)
             .args(["init", "--quiet"])
@@ -708,14 +709,14 @@ mod question_policy_tests {
 
     fn commit_as(repo: &std::path::Path, name: &str, email: &str, date: &str, message: &str) {
         std::fs::write(repo.join("history.txt"), format!("{message}\n")).unwrap();
-        let add = Command::new("git")
+        let add = external_tools::git_command()
             .arg("-C")
             .arg(repo)
             .args(["add", "history.txt"])
             .status()
             .unwrap();
         assert!(add.success());
-        let commit = Command::new("git")
+        let commit = external_tools::git_command()
             .arg("-C")
             .arg(repo)
             .args([
@@ -798,7 +799,7 @@ mod question_policy_tests {
     #[test]
     fn cartridge_reports_the_repositorys_current_branch() {
         let repo = temporary_git_repo();
-        let switched = Command::new("git")
+        let switched = external_tools::git_command()
             .arg("-C")
             .arg(&repo)
             .args(["switch", "--quiet", "-c", "story/cartridge-label"])
