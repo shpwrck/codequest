@@ -3,6 +3,7 @@ mod codequest;
 mod engine;
 mod external_tools;
 mod font5x7;
+mod save;
 pub mod scene_machine;
 
 use std::io::Read;
@@ -185,6 +186,7 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
         return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
     }
     let codequest = CodeQuestConfig::load(&canon)?;
+    save::SaveFile::open_or_create(&canon)?;
     let p = canon.to_string_lossy().to_string();
     let default_name = canon
         .file_name()
@@ -367,6 +369,14 @@ struct QQuestion {
     answer: usize,
 }
 
+const CLAUDE_QUESTION_BATCHES_KEY: &str = "claude.question_batches";
+
+#[derive(Serialize, Deserialize, Clone)]
+struct SavedQuestionBatch {
+    level: u32,
+    questions: Vec<QQuestion>,
+}
+
 fn question_is_acceptable(question: &QQuestion) -> bool {
     const FACT_TRIVIA_MARKERS: [&str; 27] = [
         "WHICH FILE",
@@ -450,6 +460,39 @@ fn accepted_question_batch(
         .take(expected_count)
         .collect::<Vec<_>>();
     (!valid.is_empty()).then_some(valid)
+}
+
+fn load_saved_question_batches(path: &std::path::Path) -> Result<Vec<SavedQuestionBatch>, String> {
+    let save = save::SaveFile::open_or_create(path)?;
+    Ok(save
+        .get::<Vec<SavedQuestionBatch>>(CLAUDE_QUESTION_BATCHES_KEY)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|batch| {
+            batch.level > 0
+                && !batch.questions.is_empty()
+                && batch.questions.iter().all(question_is_acceptable)
+        })
+        .collect())
+}
+
+fn persist_claude_question_batch(
+    path: &std::path::Path,
+    level: u32,
+    questions: &[QQuestion],
+) -> Result<(), String> {
+    if level == 0 || questions.is_empty() || !questions.iter().all(question_is_acceptable) {
+        return Err("INVALID CLAUDE QUESTION BATCH".to_string());
+    }
+    let mut save = save::SaveFile::open_or_create(path)?;
+    let mut batches = save
+        .get::<Vec<SavedQuestionBatch>>(CLAUDE_QUESTION_BATCHES_KEY)
+        .unwrap_or_default();
+    batches.push(SavedQuestionBatch {
+        level,
+        questions: questions.to_vec(),
+    });
+    save.set(CLAUDE_QUESTION_BATCHES_KEY, &batches)
 }
 
 fn gather_quiz_data(path: &std::path::Path) -> Result<QuizData, String> {
@@ -582,6 +625,16 @@ fn ai_questions(
         .ok_or_else(|| "INCOMPLETE OR INVALID QUESTIONS".to_string())
 }
 
+fn generate_and_save_questions(
+    path: &std::path::Path,
+    level: u32,
+    count: usize,
+) -> Result<Vec<QQuestion>, String> {
+    let questions = ai_questions(path, level, count)?;
+    persist_claude_question_batch(path, level, &questions)?;
+    Ok(questions)
+}
+
 fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, String> {
     let mode = if cartridge.mode == "custom" {
         engine::CartridgeMode::Custom
@@ -599,6 +652,22 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
         .transpose()?
         .flatten()
         .unwrap_or_else(|| SceneMachineDefinition::template(template));
+    let saved_batches = load_saved_question_batches(std::path::Path::new(&cartridge.path))?;
+    let mut questions = Vec::new();
+    let mut question_batch_ends = Vec::with_capacity(saved_batches.len());
+    for batch in saved_batches {
+        questions.extend(
+            batch
+                .questions
+                .into_iter()
+                .map(|question| engine::QuizQuestion {
+                    question: question.q,
+                    choices: question.choices,
+                    answer: question.answer,
+                }),
+        );
+        question_batch_ends.push(questions.len());
+    }
 
     Ok(engine::CartridgeSpec {
         id: cartridge.path,
@@ -606,7 +675,7 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
         mode,
         provenance: cartridge.provenance,
         codequest: cartridge.codequest.map(Box::new),
-        machine,
+        machine: Box::new(machine),
         quests: cartridge
             .quests
             .into_iter()
@@ -616,7 +685,8 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
                 command: quest.command,
             })
             .collect(),
-        questions: Vec::new(),
+        questions,
+        question_batch_ends,
     })
 }
 
@@ -661,7 +731,7 @@ pub fn run() {
         if std::env::var("CQA_NO_AI").is_ok() {
             return Vec::new();
         }
-        ai_questions(std::path::Path::new(&path), level, count)
+        generate_and_save_questions(std::path::Path::new(&path), level, count)
             .unwrap_or_default()
             .into_iter()
             .map(|question| engine::QuizQuestion {
@@ -698,7 +768,7 @@ mod question_policy_tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "codequest-config-test-{}-{unique}",
+            "codequest-config-test-{}-{unique}.cartridge",
             std::process::id()
         ));
         std::fs::create_dir(&path).unwrap();
@@ -712,18 +782,9 @@ mod question_policy_tests {
         path
     }
 
-    fn cartridge(path: &str, title: &str) -> Cartridge {
-        Cartridge {
-            id: path.to_string(),
-            title: title.to_string(),
-            branch: "test-branch".to_string(),
-            color: "#000000".to_string(),
-            path: path.to_string(),
-            mode: "quiz".to_string(),
-            quests: Vec::new(),
-            provenance: engine::RepositoryProvenance::default(),
-            codequest: None,
-        }
+    fn remove_temporary_repo(repo: std::path::PathBuf) {
+        let _ = std::fs::remove_file(save::path_for(&repo));
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     fn commit_as(repo: &std::path::Path, name: &str, email: &str, date: &str, message: &str) {
@@ -812,7 +873,27 @@ mod question_policy_tests {
         assert_eq!(spec.mode, engine::CartridgeMode::Custom);
         assert!(spec.codequest.is_some());
 
-        std::fs::remove_dir_all(repo).unwrap();
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn cartridge_load_creates_an_emulator_style_save_file() {
+        let repo = temporary_git_repo();
+        let save_path = repo.parent().unwrap().join(format!(
+            "{}.sav",
+            repo.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(!save_path.exists());
+
+        build_cartridge(&repo).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&save_path).unwrap()).unwrap();
+        assert_eq!(saved["schema_version"], 1);
+        assert_eq!(saved["data"], serde_json::json!({}));
+
+        std::fs::remove_file(save_path).unwrap();
+        remove_temporary_repo(repo);
     }
 
     #[test]
@@ -886,7 +967,7 @@ mod question_policy_tests {
         let cartridge = build_cartridge(&repo).unwrap();
         assert_eq!(cartridge.branch, "story/cartridge-label");
 
-        std::fs::remove_dir_all(repo).unwrap();
+        remove_temporary_repo(repo);
     }
 
     #[test]
@@ -922,7 +1003,7 @@ mod question_policy_tests {
 
         let cartridge = build_cartridge(&repo).unwrap();
         let spec = engine_cartridge(cartridge).unwrap();
-        let mut machine = scene_machine::SceneMachine::new(spec.machine);
+        let mut machine = scene_machine::SceneMachine::new(*spec.machine);
         assert_eq!(machine.current_scene(), "title");
         assert_eq!(
             machine
@@ -934,7 +1015,7 @@ mod question_policy_tests {
             "game-over"
         );
 
-        std::fs::remove_dir_all(repo).unwrap();
+        remove_temporary_repo(repo);
     }
 
     #[test]
@@ -981,7 +1062,7 @@ mod question_policy_tests {
 
         let spec = engine_cartridge(cartridge).unwrap();
         assert_eq!(spec.provenance.authors[0], "Ada Lovelace");
-        std::fs::remove_dir_all(repo).unwrap();
+        remove_temporary_repo(repo);
     }
 
     #[test]
@@ -1004,7 +1085,7 @@ mod question_policy_tests {
         assert_eq!(cartridge.provenance.authors, vec!["Ada Lovelace"]);
         assert_eq!(cartridge.provenance.copyright, None);
 
-        std::fs::remove_dir_all(repo).unwrap();
+        remove_temporary_repo(repo);
     }
 
     #[test]
@@ -1046,9 +1127,66 @@ mod question_policy_tests {
 
     #[test]
     fn quiz_cartridges_have_no_preloaded_questions() {
-        let spec = engine_cartridge(cartridge("/tmp/first", "FIRST")).unwrap();
+        let repo = temporary_git_repo();
+        let spec = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
 
         assert!(spec.questions.is_empty());
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn cartridge_reload_restores_saved_claude_batches() {
+        let repo = temporary_git_repo();
+        let save_path = save::path_for(&repo);
+        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
+        save.set(
+            "claude.question_batches",
+            &serde_json::json!([
+                {
+                    "level": 1,
+                    "questions": [{
+                        "q": "WHAT SHOULD OWN GAMEPLAY STATE?",
+                        "choices": [
+                            "THE GAME ENGINE",
+                            "THE DEVICE SHELL",
+                            "THE STYLES",
+                            "THE VIEW"
+                        ],
+                        "answer": 0
+                    }]
+                },
+                {
+                    "level": 2,
+                    "questions": [{
+                        "q": "WHY KEEP THE DEVICE SHELL THIN?",
+                        "choices": [
+                            "TO CENTRALIZE GAME RULES",
+                            "TO DUPLICATE GAME STATE",
+                            "TO HIDE ENGINE OUTPUT",
+                            "TO BYPASS THE ENGINE"
+                        ],
+                        "answer": 0
+                    }]
+                }
+            ]),
+        )
+        .unwrap();
+
+        let spec = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
+
+        assert_eq!(spec.questions.len(), 2);
+        assert_eq!(
+            spec.questions[0].question,
+            "WHAT SHOULD OWN GAMEPLAY STATE?"
+        );
+        assert_eq!(
+            spec.questions[1].question,
+            "WHY KEEP THE DEVICE SHELL THIN?"
+        );
+        assert_eq!(spec.question_batch_ends, vec![1, 2]);
+
+        std::fs::remove_file(save_path).unwrap();
+        remove_temporary_repo(repo);
     }
 
     #[test]
@@ -1118,6 +1256,41 @@ mod question_policy_tests {
         assert_eq!(accepted.len(), 1);
         assert_eq!(accepted[0].q, valid.q);
         assert!(accepted_question_batch(vec![file_trivia], 1).is_none());
+    }
+
+    #[test]
+    fn generated_claude_batch_is_saved_without_replacing_other_game_data() {
+        let repo = temporary_git_repo();
+        let save_path = save::path_for(&repo);
+        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
+        save.set("quest.progress", &serde_json::json!({ "bosses": 2 }))
+            .unwrap();
+        let generated = vec![question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &[
+                "THE GAME ENGINE",
+                "THE DEVICE SHELL",
+                "THE STYLES",
+                "THE VIEW",
+            ],
+        )];
+
+        persist_claude_question_batch(&repo, 3, &generated).unwrap();
+
+        let reloaded = save::SaveFile::open_or_create(&repo).unwrap();
+        assert_eq!(
+            reloaded.get::<serde_json::Value>("quest.progress"),
+            Some(serde_json::json!({ "bosses": 2 }))
+        );
+        let batches = reloaded
+            .get::<Vec<SavedQuestionBatch>>(CLAUDE_QUESTION_BATCHES_KEY)
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].level, 3);
+        assert_eq!(batches[0].questions[0].q, generated[0].q);
+
+        std::fs::remove_file(save_path).unwrap();
+        remove_temporary_repo(repo);
     }
 
     #[test]
