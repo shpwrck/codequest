@@ -110,7 +110,7 @@ Cycles and branches are allowed. Every declared scene must be reachable from
 | `title` | shared | `continue` |
 | `quiz-menu` | quiz | `new-run`, `back` |
 | `character-creation` | quiz | `hero-ready`, `back` |
-| `oracle` | quiz | `questions-ready`, `back` |
+| `oracle` | quiz | `questions-ready` |
 | `concept-quiz` | quiz | `needs-question`, `batch-complete`, `hearts-empty`, `back` |
 | `level-up` | quiz | `questions-ready`, `needs-question` |
 | `game-over` | quiz | `replay` |

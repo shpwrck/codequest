@@ -37,10 +37,10 @@ feedback = ["Update the hero preview immediately."]
 
 [[mechanics]]
 id = "consult-oracle"
-summary = "Bring the hero to the Oracle while the next question is prepared."
-inputs = []
-rules = ["The Oracle holds the run until a valid question exists.", "A failed generation attempt is retried instead of replaced with filler."]
-feedback = ["Show question-generation status while waiting.", "Animate the hero while the Oracle is working."]
+summary = "Play Oracle Datafall while the next question is prepared."
+inputs = ["left", "right", "up", "down"]
+rules = ["Data packets and glitches fall in deterministic lanes while the Oracle holds the run for a valid question.", "Left and Right move the hero to dodge glitches or line up with data.", "Holding Up catches one overlapping data packet; uncaught data falls away.", "Holding Down processes a carried packet; releasing Down pauses progress.", "Face buttons and Start do nothing in this scene, so their input cannot carry into a newly loaded question.", "Datafall counters are cosmetic and never change quiz score, hearts, question timing, or generation.", "A failed generation attempt is retried instead of replaced with filler."]
+feedback = ["Use distinct packet and crossed-glitch silhouettes in addition to green and red.", "Show processed-data and glitch-hit counters plus carried-packet processing progress.", "Show truthful loading, retry, and ready status without a percentage."]
 
 [[mechanics]]
 id = "answer-question"
@@ -76,8 +76,8 @@ requirements = ["Consistent silhouette across variants.", "Readable on Oracle an
 [[art]]
 id = "oracle-sanctum"
 kind = "scene"
-summary = "A mysterious waiting space that makes question generation feel like part of the game."
-requirements = ["Supports the customized hero sprite.", "Has clear loading, retry, and ready states."]
+summary = "A readable falling-object playfield that makes question generation feel active."
+requirements = ["Supports the customized hero moving across the full playfield.", "Distinguishes collectible packets from crossed glitches by silhouette and color.", "Reserves space for loading status, counters, a carried packet, processing progress, and D-pad-only instructions.", "Has clear loading, retry, and ready states."]
 
 [[art]]
 id = "quiz-frame"
@@ -175,17 +175,13 @@ id = "oracle"
 title = "Oracle"
 kind = "interstitial"
 handler = "oracle"
-summary = "Turn question-generation latency into anticipation between challenges."
+summary = "Turn question-generation latency into a D-pad-only falling-object game between challenges."
 mechanics = ["consult-oracle"]
 art = ["hero-set", "oracle-sanctum"]
 
 [[scenes.transitions]]
 signal = "questions-ready"
 target = "quiz"
-
-[[scenes.transitions]]
-signal = "back"
-target = "quiz-menu"
 
 [[scenes]]
 id = "quiz"
