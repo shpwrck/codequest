@@ -37,6 +37,9 @@ runtime buffers and refuses incorrect dimensions or byte counts.
 - Live foreground bounds remain inside their assigned panels and do not overlap.
   Foreground palette colors are checked against the immediate dark panel fill;
   readable text may not rely on glow or decorative art for contrast.
+- Container coordinates describe the measured usable interior of each plate.
+  Renderers center or align against those coordinates, and preview fixtures use
+  the repository's real title so short placeholder copy cannot hide overflow.
 - The opening begins without emissive light, introduces cyan, adds gold, and
   reveals the complete Oracle only at the crescendo.
 - Every reachable scene, including the repository chronicle and aftermath, must

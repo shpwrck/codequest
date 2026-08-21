@@ -113,6 +113,143 @@ impl Color {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UiBox {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+const CHRONICLE_HEADER_BOX: UiBox = UiBox {
+    x: 68,
+    y: 39,
+    width: 104,
+    height: 7,
+};
+const CHRONICLE_TITLE_BOX: UiBox = UiBox {
+    x: 62,
+    y: 49,
+    width: 116,
+    height: 16,
+};
+const CHRONICLE_COPYRIGHT_BOX: UiBox = UiBox {
+    x: 62,
+    y: 67,
+    width: 116,
+    height: 16,
+};
+const CHRONICLE_AUTHORS_LABEL_BOX: UiBox = UiBox {
+    x: 62,
+    y: 85,
+    width: 116,
+    height: 7,
+};
+const CHRONICLE_AUTHORS_BOX: UiBox = UiBox {
+    x: 62,
+    y: 94,
+    width: 116,
+    height: 23,
+};
+const GATEWAY_TITLE_TOP_BOX: UiBox = UiBox {
+    x: 56,
+    y: 49,
+    width: 128,
+    height: 14,
+};
+const GATEWAY_TITLE_BOTTOM_BOX: UiBox = UiBox {
+    x: 63,
+    y: 67,
+    width: 114,
+    height: 7,
+};
+const GATEWAY_PROMPT_BOX: UiBox = UiBox {
+    x: 68,
+    y: 98,
+    width: 104,
+    height: 7,
+};
+const GATEWAY_SIGNATURE_BOX: UiBox = UiBox {
+    x: 68,
+    y: 123,
+    width: 104,
+    height: 7,
+};
+const GATEWAY_MENU_HEADING_BOX: UiBox = UiBox {
+    x: 54,
+    y: 49,
+    width: 132,
+    height: 7,
+};
+const GATEWAY_MENU_SUBTITLE_BOX: UiBox = UiBox {
+    x: 54,
+    y: 62,
+    width: 132,
+    height: 7,
+};
+const GATEWAY_MENU_OPTION_BOXES: [UiBox; 2] = [
+    UiBox {
+        x: 59,
+        y: 92,
+        width: 121,
+        height: 20,
+    },
+    UiBox {
+        x: 59,
+        y: 119,
+        width: 121,
+        height: 20,
+    },
+];
+const MENU_FOOTER_BOX: UiBox = UiBox {
+    x: 39,
+    y: 144,
+    width: 162,
+    height: 16,
+};
+const ATELIER_HEADER_BOX: UiBox = UiBox {
+    x: 8,
+    y: 4,
+    width: 126,
+    height: 16,
+};
+const ATELIER_ACCESSORY_BOX: UiBox = UiBox {
+    x: 8,
+    y: 119,
+    width: 100,
+    height: 16,
+};
+const ATELIER_BIND_BOX: UiBox = UiBox {
+    x: 137,
+    y: 112,
+    width: 55,
+    height: 21,
+};
+const ASCENSION_TITLE_BOX: UiBox = UiBox {
+    x: 47,
+    y: 68,
+    width: 146,
+    height: 34,
+};
+const ASCENSION_LEVEL_BOX: UiBox = UiBox {
+    x: 22,
+    y: 117,
+    width: 70,
+    height: 16,
+};
+const ASCENSION_BATCH_BOX: UiBox = UiBox {
+    x: 158,
+    y: 117,
+    width: 75,
+    height: 16,
+};
+const AFTERMATH_CONTENT_BOX: UiBox = UiBox {
+    x: 141,
+    y: 18,
+    width: 85,
+    height: 116,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PresentationTier {
     Initiate,
     Adept,
@@ -564,13 +701,52 @@ impl Framebuffer {
         self.text(x + (width - rendered_width) / 2, y, text, color, scale);
     }
 
-    fn centered_compact_text_in(&mut self, x: i32, y: i32, width: i32, text: &str, color: Color) {
+    fn centered_text_box(&mut self, bounds: UiBox, text: &str, color: Color, scale: i32) {
+        let rendered_width = text_width(text, scale);
+        let rendered_height = 7 * scale;
+        debug_assert!(
+            rendered_width <= bounds.width && rendered_height <= bounds.height,
+            "text `{text}` does not fit {bounds:?}"
+        );
+        self.text(
+            bounds.x + (bounds.width - rendered_width) / 2,
+            bounds.y + (bounds.height - rendered_height) / 2,
+            text,
+            color,
+            scale,
+        );
+    }
+
+    fn centered_compact_text_box(&mut self, bounds: UiBox, text: &str, color: Color) {
         let rendered_width = text.chars().count() as i32 * GLYPH_WIDTH;
         debug_assert!(
-            rendered_width <= width,
-            "text `{text}` is wider than its {width}px container"
+            rendered_width <= bounds.width && 7 <= bounds.height,
+            "compact text `{text}` does not fit {bounds:?}"
         );
-        self.compact_text(x + (width - rendered_width) / 2, y, text, color);
+        self.compact_text(
+            bounds.x + (bounds.width - rendered_width) / 2,
+            bounds.y + (bounds.height - 7) / 2,
+            text,
+            color,
+        );
+    }
+
+    fn centered_compact_lines_box(&mut self, bounds: UiBox, lines: &[String], color: Color) {
+        let capacity = ((bounds.height + 1) / LINE_HEIGHT) as usize;
+        let visible = &lines[..lines.len().min(capacity)];
+        let rendered_height = visible.len() as i32 * LINE_HEIGHT - 1;
+        let start_y = bounds.y + (bounds.height - rendered_height) / 2;
+        for (index, line) in visible.iter().enumerate() {
+            self.centered_compact_text_box(
+                UiBox {
+                    y: start_y + index as i32 * LINE_HEIGHT,
+                    height: 7,
+                    ..bounds
+                },
+                line,
+                color,
+            );
+        }
     }
 
     fn wrapped_text(
@@ -1399,11 +1575,11 @@ fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
 
 fn render_boot(frame: &mut Framebuffer, state: &GameState) {
     frame.blit_rgb_graded(ORACLE_GATEWAY, 92, 105, 74);
-    frame.centered_text(49, "CODE QUEST", PARCH, 2);
-    frame.centered_text(67, "ADVANCE", AMBER, 2);
-    frame.centered_text(83, "THE REPOSITORY ORACLE", CYAN_DIM, 1);
+    frame.centered_text_box(GATEWAY_TITLE_TOP_BOX, "CODE QUEST", PARCH, 2);
+    frame.centered_text_box(GATEWAY_TITLE_BOTTOM_BOX, "ADVANCE", AMBER, 1);
+    frame.centered_text_box(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", CYAN_DIM, 1);
     if !state.has_game() && state.screen_ticks > 50 && (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(101, "INSERT CARTRIDGE", PARCH, 1);
+        frame.centered_text_box(GATEWAY_PROMPT_BOX, "INSERT CARTRIDGE", PARCH, 1);
     }
 }
 
@@ -1423,7 +1599,7 @@ fn draw_asset_focus(frame: &mut Framebuffer, x: i32, y: i32, width: i32, height:
 
 fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
     frame.blit_rgb(ORACLE_CHRONICLE);
-    frame.centered_text(39, "REPOSITORY CHRONICLE", MIST, 1);
+    frame.centered_compact_text_box(CHRONICLE_HEADER_BOX, "REPOSITORY CHRONICLE", MIST);
     if state.screen_ticks >= 42 {
         frame.rect(42, 122, 156, 17, VOID);
         frame.outline(42, 122, 156, 17, CYAN_DIM);
@@ -1433,11 +1609,11 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
         .cartridge
         .as_ref()
         .map_or("NO CARTRIDGE", |cartridge| cartridge.title.as_str());
-    let lines = title_lines(title);
-    frame.centered_text(53, &truncate(&lines[0], 20), PARCH, 1);
-    if let Some(line) = lines.get(1) {
-        frame.centered_text(62, &truncate(line, 20), PARCH, 1);
-    }
+    let title_lines = wrap_text(title, 23)
+        .into_iter()
+        .map(|line| truncate(&line, 23))
+        .collect::<Vec<_>>();
+    frame.centered_compact_lines_box(CHRONICLE_TITLE_BOX, &title_lines, PARCH);
 
     if let Some(provenance) = state
         .cartridge
@@ -1457,16 +1633,28 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
                 notice.drain(..10);
             }
             notice = notice.replace("(C)", "COPY").replace("(c)", "COPY");
-            frame.centered_compact_text_in(42, 75, 156, &truncate(&notice, 28), MIST);
+            let notice_lines = wrap_text(&notice, 23)
+                .into_iter()
+                .map(|line| truncate(&line, 23))
+                .collect::<Vec<_>>();
+            frame.centered_compact_lines_box(CHRONICLE_COPYRIGHT_BOX, &notice_lines, MIST);
         }
         if state.screen_ticks >= 24 {
-            frame.centered_text(87, "COMMIT AUTHORS", CYAN_DIM, 1);
+            frame.centered_compact_text_box(
+                CHRONICLE_AUTHORS_LABEL_BOX,
+                "COMMIT AUTHORS",
+                CYAN_DIM,
+            );
             if provenance.authors.is_empty() {
-                frame.centered_text(98, "NO AUTHORS YET", PARCH, 1);
+                frame.centered_compact_text_box(CHRONICLE_AUTHORS_BOX, "NO AUTHORS YET", PARCH);
             } else {
-                for (index, author) in provenance.authors.iter().take(3).enumerate() {
-                    frame.centered_text(97 + index as i32 * 9, &truncate(author, 20), PARCH, 1);
-                }
+                let authors = provenance
+                    .authors
+                    .iter()
+                    .take(3)
+                    .map(|author| truncate(author, 23))
+                    .collect::<Vec<_>>();
+                frame.centered_compact_lines_box(CHRONICLE_AUTHORS_BOX, &authors, PARCH);
             }
         }
         if state.screen_ticks >= 42 {
@@ -1475,13 +1663,13 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
                 (Some(first), Some(latest)) => format!("ARCHIVE {first} > {latest}"),
                 _ => "HISTORY NOT YET WRITTEN".into(),
             };
-            frame.centered_text(126, &truncate(&history, 24), MIST, 1);
+            frame.centered_text_in(42, 126, 156, &truncate(&history, 24), MIST, 1);
         }
     }
     if state.can_signal(SceneSignal::Continue) && (state.screen_ticks / 20).is_multiple_of(2) {
         frame.rect(74, 141, 92, 16, VOID);
         frame.outline(74, 141, 92, 16, CYAN_DIM);
-        frame.centered_text(145, "A / START:SKIP", MIST, 1);
+        frame.centered_text_in(74, 145, 92, "A / START:SKIP", MIST, 1);
     }
 }
 
@@ -1500,13 +1688,13 @@ fn render_oracle_title(frame: &mut Framebuffer, state: &GameState) {
         .as_ref()
         .map_or("NO CARTRIDGE", |cart| cart.title.as_str());
     let lines = wrap_text(title, 10);
-    frame.centered_text(49, &truncate(&lines[0], 10), PARCH, 2);
+    frame.centered_text_box(GATEWAY_TITLE_TOP_BOX, &truncate(&lines[0], 10), PARCH, 2);
     if let Some(line) = lines.get(1) {
-        frame.centered_text(67, &truncate(line, 10), AMBER, 2);
+        frame.centered_text_box(GATEWAY_TITLE_BOTTOM_BOX, &truncate(line, 19), AMBER, 1);
     }
-    frame.centered_text(125, "REPOSITORY ORACLE", CYAN, 1);
+    frame.centered_text_box(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", CYAN, 1);
     if state.has_game() && (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(100, "PRESS START", PARCH, 1);
+        frame.centered_text_box(GATEWAY_PROMPT_BOX, "PRESS START", PARCH, 1);
     }
 }
 
@@ -1692,8 +1880,8 @@ fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
 
 fn render_oracle_menu(frame: &mut Framebuffer, state: &GameState) {
     frame.blit_rgb(ORACLE_GATEWAY);
-    frame.centered_text(51, "CHOOSE YOUR PATH", PARCH, 1);
-    frame.centered_text(64, "THE BOND BEGINS HERE", CYAN, 1);
+    frame.centered_text_box(GATEWAY_MENU_HEADING_BOX, "CHOOSE YOUR PATH", PARCH, 1);
+    frame.centered_text_box(GATEWAY_MENU_SUBTITLE_BOX, "THE BOND BEGINS HERE", CYAN, 1);
     for (index, (label, detail)) in [
         ("BEGIN THE TRIAL", "FORGE A HERO"),
         ("RETURN TO TITLE", "CLOSE ARCHIVE"),
@@ -1701,17 +1889,50 @@ fn render_oracle_menu(frame: &mut Framebuffer, state: &GameState) {
     .iter()
     .enumerate()
     {
-        let y = 92 + index as i32 * 27;
+        let option_box = GATEWAY_MENU_OPTION_BOXES[index];
+        let y = option_box.y;
         let focused = state.menu_selected == index;
         if focused {
-            draw_asset_focus(frame, 59, y, 121, 20);
+            draw_asset_focus(
+                frame,
+                option_box.x,
+                option_box.y,
+                option_box.width,
+                option_box.height,
+            );
         }
-        frame.centered_text(y + 3, label, if focused { PARCH } else { MIST }, 1);
-        frame.centered_text(y + 11, detail, if focused { AMBER } else { CYAN_DIM }, 1);
+        frame.centered_text_in(
+            option_box.x,
+            y + 2,
+            option_box.width,
+            label,
+            if focused { PARCH } else { MIST },
+            1,
+        );
+        frame.centered_text_in(
+            option_box.x,
+            y + 10,
+            option_box.width,
+            detail,
+            if focused { AMBER } else { CYAN_DIM },
+            1,
+        );
     }
-    frame.rect(39, 144, 162, 16, VOID);
-    frame.outline(39, 144, 162, 16, CYAN_DIM);
-    frame.centered_text(148, "D-PAD  A:CHOOSE  B:BACK", MIST, 1);
+    frame.rect(
+        MENU_FOOTER_BOX.x,
+        MENU_FOOTER_BOX.y,
+        MENU_FOOTER_BOX.width,
+        MENU_FOOTER_BOX.height,
+        VOID,
+    );
+    frame.outline(
+        MENU_FOOTER_BOX.x,
+        MENU_FOOTER_BOX.y,
+        MENU_FOOTER_BOX.width,
+        MENU_FOOTER_BOX.height,
+        CYAN_DIM,
+    );
+    frame.centered_text_box(MENU_FOOTER_BOX, "D-PAD  A:CHOOSE  B:BACK", MIST, 1);
 }
 
 fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
@@ -1767,14 +1988,43 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
 
 fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
     frame.blit_rgb(ORACLE_ATELIER);
-    frame.rect(8, 4, 126, 16, VOID);
-    frame.outline(8, 4, 126, 16, CYAN_DIM);
-    frame.text(13, 8, "BIND YOUR CODE-SEER", AMBER, 1);
+    frame.rect(
+        ATELIER_HEADER_BOX.x,
+        ATELIER_HEADER_BOX.y,
+        ATELIER_HEADER_BOX.width,
+        ATELIER_HEADER_BOX.height,
+        VOID,
+    );
+    frame.outline(
+        ATELIER_HEADER_BOX.x,
+        ATELIER_HEADER_BOX.y,
+        ATELIER_HEADER_BOX.width,
+        ATELIER_HEADER_BOX.height,
+        CYAN_DIM,
+    );
+    frame.centered_text_box(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", AMBER, 1);
     let bob = ((state.screen_ticks / 22) % 2) as i32;
     draw_hero(frame, 32, 47 - bob, 2, state);
-    frame.rect(8, 119, 100, 16, VOID);
-    frame.outline(8, 119, 100, 16, CYAN_DIM);
-    frame.centered_text_in(8, 124, 100, HERO_ACCESSORIES[state.hero_name], AMBER, 1);
+    frame.rect(
+        ATELIER_ACCESSORY_BOX.x,
+        ATELIER_ACCESSORY_BOX.y,
+        ATELIER_ACCESSORY_BOX.width,
+        ATELIER_ACCESSORY_BOX.height,
+        VOID,
+    );
+    frame.outline(
+        ATELIER_ACCESSORY_BOX.x,
+        ATELIER_ACCESSORY_BOX.y,
+        ATELIER_ACCESSORY_BOX.width,
+        ATELIER_ACCESSORY_BOX.height,
+        CYAN_DIM,
+    );
+    frame.centered_text_box(
+        ATELIER_ACCESSORY_BOX,
+        HERO_ACCESSORIES[state.hero_name],
+        AMBER,
+        1,
+    );
 
     let rows = [
         ("NAME", HERO_NAMES[state.hero_name]),
@@ -1797,11 +2047,16 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
     }
 
     if state.hero_row == 3 {
-        draw_asset_focus(frame, 137, 112, 55, 21);
+        draw_asset_focus(
+            frame,
+            ATELIER_BIND_BOX.x,
+            ATELIER_BIND_BOX.y,
+            ATELIER_BIND_BOX.width,
+            ATELIER_BIND_BOX.height,
+        );
     }
-    frame.text(
-        153,
-        119,
+    frame.centered_text_box(
+        ATELIER_BIND_BOX,
         "BIND",
         if state.hero_row == 3 { PARCH } else { MIST },
         1,
@@ -2152,11 +2407,32 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
 fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
     let tier = state.visual_tier();
     frame.blit_rgb(ORACLE_ASCENSION);
-    frame.rect(47, 68, 146, 34, VOID);
-    frame.outline(47, 68, 146, 34, AMBER);
-    frame.centered_text(73, "ORACLE BOND ASCENDS", AMBER, 1);
-    frame.centered_text(
+    frame.rect(
+        ASCENSION_TITLE_BOX.x,
+        ASCENSION_TITLE_BOX.y,
+        ASCENSION_TITLE_BOX.width,
+        ASCENSION_TITLE_BOX.height,
+        VOID,
+    );
+    frame.outline(
+        ASCENSION_TITLE_BOX.x,
+        ASCENSION_TITLE_BOX.y,
+        ASCENSION_TITLE_BOX.width,
+        ASCENSION_TITLE_BOX.height,
+        AMBER,
+    );
+    frame.centered_text_in(
+        ASCENSION_TITLE_BOX.x,
+        73,
+        ASCENSION_TITLE_BOX.width,
+        "ORACLE BOND ASCENDS",
+        AMBER,
+        1,
+    );
+    frame.centered_text_in(
+        ASCENSION_TITLE_BOX.x,
         84,
+        ASCENSION_TITLE_BOX.width,
         tier.label(),
         if tier == PresentationTier::OracleBound {
             MAGENTA
@@ -2168,33 +2444,65 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
     let rise = (state.screen_ticks.min(45) / 5) as i32;
     draw_hero(frame, 108, 105 - rise, 1, state);
     if let Some(run) = state.quiz.as_ref() {
-        frame.rect(22, 117, 70, 16, VOID);
-        frame.outline(22, 117, 70, 16, CYAN_DIM);
-        frame.centered_text_in(
-            22,
-            122,
-            70,
+        frame.rect(
+            ASCENSION_LEVEL_BOX.x,
+            ASCENSION_LEVEL_BOX.y,
+            ASCENSION_LEVEL_BOX.width,
+            ASCENSION_LEVEL_BOX.height,
+            VOID,
+        );
+        frame.outline(
+            ASCENSION_LEVEL_BOX.x,
+            ASCENSION_LEVEL_BOX.y,
+            ASCENSION_LEVEL_BOX.width,
+            ASCENSION_LEVEL_BOX.height,
+            CYAN_DIM,
+        );
+        frame.centered_text_box(
+            ASCENSION_LEVEL_BOX,
             &format!("LEVEL {}", run.level.min(99)),
             PARCH,
             1,
         );
-        frame.rect(158, 117, 75, 16, VOID);
-        frame.outline(158, 117, 75, 16, CYAN_DIM);
-        frame.centered_text_in(
-            158,
-            122,
-            75,
+        frame.rect(
+            ASCENSION_BATCH_BOX.x,
+            ASCENSION_BATCH_BOX.y,
+            ASCENSION_BATCH_BOX.width,
+            ASCENSION_BATCH_BOX.height,
+            VOID,
+        );
+        frame.outline(
+            ASCENSION_BATCH_BOX.x,
+            ASCENSION_BATCH_BOX.y,
+            ASCENSION_BATCH_BOX.width,
+            ASCENSION_BATCH_BOX.height,
+            CYAN_DIM,
+        );
+        frame.centered_text_box(
+            ASCENSION_BATCH_BOX,
             &format!("BATCH {}", run.completed_batches.min(99)),
             PARCH,
             1,
         );
     }
-    frame.rect(39, 144, 162, 16, VOID);
-    frame.outline(39, 144, 162, 16, CYAN_DIM);
+    frame.rect(
+        MENU_FOOTER_BOX.x,
+        MENU_FOOTER_BOX.y,
+        MENU_FOOTER_BOX.width,
+        MENU_FOOTER_BOX.height,
+        VOID,
+    );
+    frame.outline(
+        MENU_FOOTER_BOX.x,
+        MENU_FOOTER_BOX.y,
+        MENU_FOOTER_BOX.width,
+        MENU_FOOTER_BOX.height,
+        CYAN_DIM,
+    );
     if state.screen_ticks >= LEVEL_UP_HOLD_TICKS {
-        frame.centered_text(149, "A / START:CONTINUE", PARCH, 1);
+        frame.centered_text_box(MENU_FOOTER_BOX, "A / START:CONTINUE", PARCH, 1);
     } else {
-        frame.centered_text(149, "THE NEW CREST TAKES HOLD", MIST, 1);
+        frame.centered_text_box(MENU_FOOTER_BOX, "THE NEW CREST TAKES HOLD", MIST, 1);
     }
 }
 
@@ -2222,14 +2530,43 @@ fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
 fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
     let tier = state.visual_tier();
     frame.blit_rgb(ORACLE_AFTERMATH);
-    frame.text(149, 24, "VISION CLOSED", RED, 1);
+    frame.centered_text_in(
+        AFTERMATH_CONTENT_BOX.x,
+        24,
+        AFTERMATH_CONTENT_BOX.width,
+        "VISION CLOSED",
+        RED,
+        1,
+    );
     if let Some(run) = state.quiz.as_ref() {
-        frame.text(148, 49, "FINAL SCORE", MIST, 1);
-        frame.text(197, 59, &format!("{:04}", run.score.min(9999)), AMBER, 1);
-        frame.text(148, 76, "BOND REACHED", MIST, 1);
-        frame.text(
-            148,
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
+            49,
+            AFTERMATH_CONTENT_BOX.width,
+            "FINAL SCORE",
+            MIST,
+            1,
+        );
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
+            59,
+            AFTERMATH_CONTENT_BOX.width,
+            &format!("{:04}", run.score.min(9999)),
+            AMBER,
+            1,
+        );
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
+            76,
+            AFTERMATH_CONTENT_BOX.width,
+            "BOND REACHED",
+            MIST,
+            1,
+        );
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
             87,
+            AFTERMATH_CONTENT_BOX.width,
             tier.label(),
             if tier == PresentationTier::Initiate {
                 CYAN
@@ -2238,13 +2575,34 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
             },
             1,
         );
-        frame.text(148, 104, &format!("LEVEL {}", run.level.min(99)), PARCH, 1);
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
+            104,
+            AFTERMATH_CONTENT_BOX.width,
+            &format!("LEVEL {}", run.level.min(99)),
+            PARCH,
+            1,
+        );
         draw_defeated_hero(frame, 52, 106, state);
     } else {
-        frame.text(148, 79, "NO QUESTIONS", AMBER, 1);
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
+            79,
+            AFTERMATH_CONTENT_BOX.width,
+            "NO QUESTIONS",
+            AMBER,
+            1,
+        );
     }
     if (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.text(144, 126, "A/B/START:MENU", PARCH, 1);
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
+            126,
+            AFTERMATH_CONTENT_BOX.width,
+            "A/B/START:MENU",
+            PARCH,
+            1,
+        );
     }
 }
 
@@ -2811,6 +3169,9 @@ mod tests {
         let mut cartridge = quiz_cartridge();
         let config = CodeQuestConfig::parse(include_str!("../../CODEQUEST.toml"))
             .expect("the repository Oracle cartridge should parse");
+        if let Some(title) = config.game.title.clone() {
+            cartridge.title = title;
+        }
         cartridge.machine = Box::new(
             config
                 .runtime_machine()
@@ -3014,13 +3375,32 @@ mod tests {
         text_bounds(container.x + (container.width - width) / 2, y, text, scale)
     }
 
-    fn centered_compact_text_in_bounds(
-        container: LayoutBounds,
-        y: i32,
-        text: &str,
-    ) -> LayoutBounds {
+    fn ui_box_bounds(bounds: UiBox) -> LayoutBounds {
+        LayoutBounds {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+        }
+    }
+
+    fn centered_text_box_bounds(bounds: UiBox, text: &str, scale: i32) -> LayoutBounds {
+        let width = text_width(text, scale);
+        text_bounds(
+            bounds.x + (bounds.width - width) / 2,
+            bounds.y + (bounds.height - 7 * scale) / 2,
+            text,
+            scale,
+        )
+    }
+
+    fn centered_compact_text_box_bounds(bounds: UiBox, text: &str) -> LayoutBounds {
         let width = text.chars().count() as i32 * GLYPH_WIDTH;
-        compact_text_bounds(container.x + (container.width - width) / 2, y, text)
+        compact_text_bounds(
+            bounds.x + (bounds.width - width) / 2,
+            bounds.y + (bounds.height - 7) / 2,
+            text,
+        )
     }
 
     fn bounds_contains(container: LayoutBounds, child: LayoutBounds) -> bool {
@@ -3035,6 +3415,14 @@ mod tests {
             || right.x + right.width <= left.x
             || left.y + left.height <= right.y
             || right.y + right.height <= left.y
+    }
+
+    fn horizontal_centers_align(container: LayoutBounds, child: LayoutBounds) -> bool {
+        ((container.x * 2 + container.width) - (child.x * 2 + child.width)).abs() <= 1
+    }
+
+    fn vertical_centers_align(container: LayoutBounds, child: LayoutBounds) -> bool {
+        ((container.y * 2 + container.height) - (child.y * 2 + child.height)).abs() <= 1
     }
 
     fn relative_luminance(color: Color) -> f64 {
@@ -3069,12 +3457,11 @@ mod tests {
             width: WIDTH as i32,
             height: HEIGHT as i32,
         };
-        let chronicle_body = LayoutBounds {
-            x: 42,
-            y: 34,
-            width: 156,
-            height: 88,
-        };
+        let chronicle_header = ui_box_bounds(CHRONICLE_HEADER_BOX);
+        let chronicle_title = ui_box_bounds(CHRONICLE_TITLE_BOX);
+        let chronicle_copyright = ui_box_bounds(CHRONICLE_COPYRIGHT_BOX);
+        let chronicle_authors_label = ui_box_bounds(CHRONICLE_AUTHORS_LABEL_BOX);
+        let chronicle_authors = ui_box_bounds(CHRONICLE_AUTHORS_BOX);
         let chronicle_footer = LayoutBounds {
             x: 42,
             y: 122,
@@ -3087,18 +3474,13 @@ mod tests {
             width: 92,
             height: 16,
         };
-        let title_panel = LayoutBounds {
-            x: 49,
-            y: 39,
-            width: 142,
-            height: 43,
-        };
-        let menu_panel = LayoutBounds {
-            x: 59,
-            y: 92,
-            width: 121,
-            height: 20,
-        };
+        let title_top = ui_box_bounds(GATEWAY_TITLE_TOP_BOX);
+        let title_bottom = ui_box_bounds(GATEWAY_TITLE_BOTTOM_BOX);
+        let title_prompt = ui_box_bounds(GATEWAY_PROMPT_BOX);
+        let title_signature = ui_box_bounds(GATEWAY_SIGNATURE_BOX);
+        let menu_panel = ui_box_bounds(GATEWAY_MENU_OPTION_BOXES[0]);
+        let menu_heading = ui_box_bounds(GATEWAY_MENU_HEADING_BOX);
+        let menu_subtitle = ui_box_bounds(GATEWAY_MENU_SUBTITLE_BOX);
         let atelier_row = LayoutBounds {
             x: 116,
             y: 17,
@@ -3117,36 +3499,16 @@ mod tests {
             width: 204,
             height: 20,
         };
-        let aftermath_panel = LayoutBounds {
-            x: 136,
-            y: 14,
-            width: 96,
-            height: 123,
-        };
+        let aftermath_panel = ui_box_bounds(AFTERMATH_CONTENT_BOX);
         let opening_skip = LayoutBounds {
             x: 164,
             y: 149,
             width: 76,
             height: 11,
         };
-        let menu_footer = LayoutBounds {
-            x: 39,
-            y: 144,
-            width: 162,
-            height: 16,
-        };
-        let atelier_header = LayoutBounds {
-            x: 8,
-            y: 4,
-            width: 126,
-            height: 16,
-        };
-        let atelier_accessory = LayoutBounds {
-            x: 8,
-            y: 119,
-            width: 100,
-            height: 16,
-        };
+        let menu_footer = ui_box_bounds(MENU_FOOTER_BOX);
+        let atelier_header = ui_box_bounds(ATELIER_HEADER_BOX);
+        let atelier_accessory = ui_box_bounds(ATELIER_ACCESSORY_BOX);
         let full_header = LayoutBounds {
             x: 0,
             y: 0,
@@ -3159,46 +3521,51 @@ mod tests {
             width: 240,
             height: 17,
         };
-        let ascension_title = LayoutBounds {
-            x: 47,
-            y: 68,
-            width: 146,
-            height: 34,
-        };
+        let ascension_title = ui_box_bounds(ASCENSION_TITLE_BOX);
         let trial_header = LayoutBounds {
             x: 37,
             y: 2,
             width: 203,
             height: 28,
         };
-        let ascension_level = LayoutBounds {
-            x: 22,
-            y: 117,
-            width: 70,
-            height: 16,
-        };
-        let ascension_batch = LayoutBounds {
-            x: 158,
-            y: 117,
-            width: 75,
-            height: 16,
-        };
+        let ascension_level = ui_box_bounds(ASCENSION_LEVEL_BOX);
+        let ascension_batch = ui_box_bounds(ASCENSION_BATCH_BOX);
 
         for (name, container, child) in [
             (
-                "chronicle title",
-                chronicle_body,
-                centered_text_bounds(53, "REPOSITORY CHRONICL", 1),
+                "chronicle heading",
+                chronicle_header,
+                centered_compact_text_box_bounds(CHRONICLE_HEADER_BOX, "REPOSITORY CHRONICLE"),
+            ),
+            (
+                "chronicle title first line",
+                chronicle_title,
+                compact_text_bounds(62, 49, "T".repeat(23).as_str()),
+            ),
+            (
+                "chronicle title second line",
+                chronicle_title,
+                compact_text_bounds(62, 57, "T".repeat(23).as_str()),
+            ),
+            (
+                "chronicle copyright first line",
+                chronicle_copyright,
+                compact_text_bounds(62, 67, "C".repeat(23).as_str()),
+            ),
+            (
+                "chronicle copyright second line",
+                chronicle_copyright,
+                compact_text_bounds(62, 75, "C".repeat(23).as_str()),
+            ),
+            (
+                "chronicle author heading",
+                chronicle_authors_label,
+                centered_compact_text_box_bounds(CHRONICLE_AUTHORS_LABEL_BOX, "COMMIT AUTHORS"),
             ),
             (
                 "chronicle third author",
-                chronicle_body,
-                centered_text_bounds(115, "A TWENTY CHAR NAME", 1),
-            ),
-            (
-                "chronicle copyright",
-                chronicle_body,
-                centered_compact_text_in_bounds(chronicle_body, 75, "(C) 2020-2024 ADA LOVELACE"),
+                chronicle_authors,
+                compact_text_bounds(62, 110, "A".repeat(23).as_str()),
             ),
             (
                 "chronicle history",
@@ -3212,13 +3579,23 @@ mod tests {
             ),
             (
                 "title first line",
-                title_panel,
-                centered_text_bounds(49, "1234567890", 2),
+                title_top,
+                centered_text_box_bounds(GATEWAY_TITLE_TOP_BOX, "CODE QUEST", 2),
             ),
             (
                 "title second line",
-                title_panel,
-                centered_text_bounds(67, "1234567890", 2),
+                title_bottom,
+                centered_text_box_bounds(GATEWAY_TITLE_BOTTOM_BOX, "ADVANCE", 1),
+            ),
+            (
+                "title prompt",
+                title_prompt,
+                centered_text_box_bounds(GATEWAY_PROMPT_BOX, "PRESS START", 1),
+            ),
+            (
+                "title signature",
+                title_signature,
+                centered_text_box_bounds(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", 1),
             ),
             (
                 "awakening skip",
@@ -3228,27 +3605,37 @@ mod tests {
             (
                 "menu option",
                 menu_panel,
-                centered_text_bounds(95, "RETURN TO TITLE", 1),
+                centered_text_in_bounds(menu_panel, 94, "RETURN TO TITLE", 1),
             ),
             (
                 "menu detail",
                 menu_panel,
-                centered_text_bounds(103, "CLOSE ARCHIVE", 1),
+                centered_text_in_bounds(menu_panel, 102, "CLOSE ARCHIVE", 1),
+            ),
+            (
+                "menu heading",
+                menu_heading,
+                centered_text_box_bounds(GATEWAY_MENU_HEADING_BOX, "CHOOSE YOUR PATH", 1),
+            ),
+            (
+                "menu subtitle",
+                menu_subtitle,
+                centered_text_box_bounds(GATEWAY_MENU_SUBTITLE_BOX, "THE BOND BEGINS HERE", 1),
             ),
             (
                 "menu controls",
                 menu_footer,
-                centered_text_bounds(148, "D-PAD  A:CHOOSE  B:BACK", 1),
+                centered_text_box_bounds(MENU_FOOTER_BOX, "D-PAD  A:CHOOSE  B:BACK", 1),
             ),
             (
                 "atelier heading",
                 atelier_header,
-                text_bounds(13, 8, "BIND YOUR CODE-SEER", 1),
+                centered_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", 1),
             ),
             (
                 "atelier accessory",
                 atelier_accessory,
-                centered_text_in_bounds(atelier_accessory, 124, "MUSTACHE", 1),
+                centered_text_box_bounds(ATELIER_ACCESSORY_BOX, "MUSTACHE", 1),
             ),
             (
                 "atelier row label",
@@ -3334,32 +3721,32 @@ mod tests {
             (
                 "ascension level",
                 ascension_level,
-                centered_text_in_bounds(ascension_level, 122, "LEVEL 99", 1),
+                centered_text_box_bounds(ASCENSION_LEVEL_BOX, "LEVEL 99", 1),
             ),
             (
                 "ascension batch",
                 ascension_batch,
-                centered_text_in_bounds(ascension_batch, 122, "BATCH 99", 1),
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "BATCH 99", 1),
             ),
             (
                 "ascension controls",
                 menu_footer,
-                centered_text_bounds(149, "A / START:CONTINUE", 1),
+                centered_text_box_bounds(MENU_FOOTER_BOX, "A / START:CONTINUE", 1),
             ),
             (
                 "aftermath tier",
                 aftermath_panel,
-                text_bounds(148, 87, "ORACLE-BOUND", 1),
+                centered_text_in_bounds(aftermath_panel, 87, "ORACLE-BOUND", 1),
             ),
             (
                 "aftermath title",
                 aftermath_panel,
-                text_bounds(149, 24, "VISION CLOSED", 1),
+                centered_text_in_bounds(aftermath_panel, 24, "VISION CLOSED", 1),
             ),
             (
                 "aftermath controls",
                 aftermath_panel,
-                text_bounds(144, 126, "A/B/START:MENU", 1),
+                centered_text_in_bounds(aftermath_panel, 126, "A/B/START:MENU", 1),
             ),
         ] {
             assert!(
@@ -3372,11 +3759,131 @@ mod tests {
             );
         }
 
+        for (name, container, child) in [
+            (
+                "chronicle heading",
+                chronicle_header,
+                centered_compact_text_box_bounds(CHRONICLE_HEADER_BOX, "REPOSITORY CHRONICLE"),
+            ),
+            (
+                "chronicle repository title",
+                chronicle_title,
+                centered_compact_text_box_bounds(CHRONICLE_TITLE_BOX, "CODE QUEST ADVANCE"),
+            ),
+            (
+                "title first line",
+                title_top,
+                centered_text_box_bounds(GATEWAY_TITLE_TOP_BOX, "CODE QUEST", 2),
+            ),
+            (
+                "title second line",
+                title_bottom,
+                centered_text_box_bounds(GATEWAY_TITLE_BOTTOM_BOX, "ADVANCE", 1),
+            ),
+            (
+                "title prompt",
+                title_prompt,
+                centered_text_box_bounds(GATEWAY_PROMPT_BOX, "PRESS START", 1),
+            ),
+            (
+                "title signature",
+                title_signature,
+                centered_text_box_bounds(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", 1),
+            ),
+            (
+                "menu heading",
+                menu_heading,
+                centered_text_box_bounds(GATEWAY_MENU_HEADING_BOX, "CHOOSE YOUR PATH", 1),
+            ),
+            (
+                "menu subtitle",
+                menu_subtitle,
+                centered_text_box_bounds(GATEWAY_MENU_SUBTITLE_BOX, "THE BOND BEGINS HERE", 1),
+            ),
+            (
+                "menu footer",
+                menu_footer,
+                centered_text_box_bounds(MENU_FOOTER_BOX, "D-PAD  A:CHOOSE  B:BACK", 1),
+            ),
+            (
+                "atelier heading",
+                atelier_header,
+                centered_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", 1),
+            ),
+            (
+                "atelier accessory",
+                atelier_accessory,
+                centered_text_box_bounds(ATELIER_ACCESSORY_BOX, "MUSTACHE", 1),
+            ),
+            (
+                "ascension level",
+                ascension_level,
+                centered_text_box_bounds(ASCENSION_LEVEL_BOX, "LEVEL 99", 1),
+            ),
+            (
+                "ascension batch",
+                ascension_batch,
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "BATCH 99", 1),
+            ),
+        ] {
+            assert!(
+                horizontal_centers_align(container, child),
+                "{name} is not horizontally centered: {child:?} in {container:?}"
+            );
+            assert!(
+                vertical_centers_align(container, child),
+                "{name} is not vertically centered: {child:?} in {container:?}"
+            );
+        }
+
+        for (name, container, child) in [
+            (
+                "menu option",
+                menu_panel,
+                centered_text_in_bounds(menu_panel, 94, "RETURN TO TITLE", 1),
+            ),
+            (
+                "menu detail",
+                menu_panel,
+                centered_text_in_bounds(menu_panel, 102, "CLOSE ARCHIVE", 1),
+            ),
+            (
+                "ascension heading",
+                ascension_title,
+                centered_text_bounds(73, "ORACLE BOND ASCENDS", 1),
+            ),
+            (
+                "ascension tier",
+                ascension_title,
+                centered_text_bounds(84, "ORACLE-BOUND", 2),
+            ),
+            (
+                "aftermath title",
+                aftermath_panel,
+                centered_text_in_bounds(aftermath_panel, 24, "VISION CLOSED", 1),
+            ),
+            (
+                "aftermath score",
+                aftermath_panel,
+                centered_text_in_bounds(aftermath_panel, 59, "9999", 1),
+            ),
+            (
+                "aftermath controls",
+                aftermath_panel,
+                centered_text_in_bounds(aftermath_panel, 126, "A/B/START:MENU", 1),
+            ),
+        ] {
+            assert!(
+                horizontal_centers_align(container, child),
+                "{name} is not horizontally centered: {child:?} in {container:?}"
+            );
+        }
+
         for (name, left, right) in [
             (
                 "menu label and detail",
-                centered_text_bounds(95, "RETURN TO TITLE", 1),
-                centered_text_bounds(103, "CLOSE ARCHIVE", 1),
+                centered_text_in_bounds(menu_panel, 94, "RETURN TO TITLE", 1),
+                centered_text_in_bounds(menu_panel, 102, "CLOSE ARCHIVE", 1),
             ),
             (
                 "atelier label and value",
@@ -4864,6 +5371,10 @@ mod tests {
         };
 
         let mut previews = Vec::new();
+        state.screen_ticks = 60;
+        let mut boot = Framebuffer::default();
+        render_boot(&mut boot, &state);
+        maybe_write_preview("00-boot", &boot.pixels);
         for (name, ticks) in [
             ("02a-awakening-dormant", 0),
             ("02b-awakening-cyan", 96),
@@ -4889,7 +5400,11 @@ mod tests {
             ("08-ascension", render_oracle_ascension),
             ("09-aftermath", render_oracle_aftermath),
         ] {
-            state.screen_ticks = if name == "02-awakening" { 260 } else { 90 };
+            state.screen_ticks = match name {
+                "02-awakening" => 260,
+                "03-title" => 60,
+                _ => 90,
+            };
             let mut frame = Framebuffer::default();
             renderer(&mut frame, &state);
             maybe_write_preview(name, &frame.pixels);

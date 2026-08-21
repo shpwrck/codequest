@@ -48,6 +48,9 @@ palette to otherwise sparse geometry.
 9. Run layout checks with worst-case live strings and counters. Fail the build
    when text or focus exceeds its container, foreground siblings overlap, or a
    foreground/background palette pair falls below the project's contrast floor.
+   Measure the usable interior from the actual plate; do not substitute the
+   framebuffer center or an estimated outer border. Preview the real manifest
+   title and representative production provenance, not only short fixture text.
 
 ## Progression rule
 
@@ -68,6 +71,8 @@ number.
 - Does the scene remain legible in grayscale and when audio is muted?
 - Do all live bounds remain inside their containers without intersecting other
   foreground content?
+- Is every centered or aligned element positioned relative to its measured art
+  container rather than the full framebuffer?
 - Does each foreground/background pair meet the contrast check at native size?
 - Does it hand off a motif or state cleanly to the next scene?
 - Does it meet or exceed the Oracle asset catalog rather than merely resemble
