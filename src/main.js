@@ -376,7 +376,7 @@ import {
         `${value.title}. ${accessibilityAction}`,
       );
       const shortPath = value.path.length > 26 ? `…${value.path.slice(-25)}` : value.path;
-      const gesture = current ? "IN DEVICE · EJECT TO RECYCLE" : "↑ LOAD · ↓ RECYCLE";
+      const gesture = current ? "EJECT FIRST" : "↑ LOAD · ↓ RECYCLE";
       card.innerHTML = `<span class="cc-strip">CODEQUEST ADVANCE</span><span class="cc-label" style="--cc:${escapeHtml(value.color || "#6a6fd1")}"><span class="cc-title">${escapeHtml(value.title)}</span><span class="cc-sub">${escapeHtml(shortPath)}</span><span class="cc-gesture">${gesture}</span></span>`;
       bindCartridgeDrag(card, value, current);
       list.appendChild(card);

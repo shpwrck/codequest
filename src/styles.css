@@ -1390,17 +1390,28 @@ html, body {
   color: #fff;
 }
 .cc-title { display: block; font-size: 9px; line-height: 1.5; text-shadow: 1px 1px 0 rgba(0,0,0,.5); }
-.cc-sub { display: block; margin-top: 8px; font-size: 6px; opacity: .85; }
+.cc-sub {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  font-size: 9px;
+  line-height: 1.2;
+  opacity: .85;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cc-gesture {
   position: absolute;
   left: 8px;
   right: 8px;
   bottom: 5px;
   display: block;
-  font-size: 5px;
+  font-size: 9px;
+  line-height: 1.2;
   letter-spacing: .5px;
   color: #fff;
   opacity: .88;
+  white-space: nowrap;
 }
 .cart-card.eject { background: #1c1d38; }
 .cart-card.eject .cc-label { background: transparent; border-style: dashed; color: #8a8cb8; }

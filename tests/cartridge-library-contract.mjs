@@ -86,5 +86,10 @@ assert.doesNotMatch(
 assert.match(styles, /\.tray-head \{ font-size: 12px;/);
 assert.match(styles, /\.tray-hint \{[^}]*font-size: 12px;/);
 assert.match(styles, /\.tray-safety \{[^}]*font-size: 12px;/);
+assert.match(styles, /\.cc-sub \{[^}]*font-size: 9px;/);
+assert.match(styles, /\.cc-gesture \{[^}]*font-size: 9px;/);
+assert.match(styles, /\.cc-sub \{[^}]*white-space: nowrap;/);
+assert.match(styles, /\.cc-gesture \{[^}]*white-space: nowrap;/);
+assert.match(mainSource, /current \? "EJECT FIRST" : "↑ LOAD · ↓ RECYCLE"/);
 
 console.log("Cartridge library contract OK: three slots with up/load and down/recycle gestures");
