@@ -45,6 +45,18 @@
 |---|---|---|---|---|---|---|
 | `art-id` | | | | | | Needed |
 
+## Sound requirement ledger
+
+| ID | Used by scenes | Player-facing purpose | Cues/loops and variants | Constraints and acceptance | Status |
+|---|---|---|---|---|---|
+| `sound-id` | | | | | Needed |
+
+## Whole-game polish matrix
+
+| Scene | Static | Motion | Sound | Mechanical closure | Felt progression | Evidence/status |
+|---|---|---|---|---|---|---|
+| `scene-id` | | | | | | Proposed |
+
 ## Runtime traceability
 
 | Element | Status | Evidence or required work |
@@ -55,7 +67,7 @@
 
 1. [Smallest playable or testable increment]
 2. [Next dependency-aware increment]
-3. [Optional polish]
+3. [Polish closure and expression pass across every reachable scene]
 
 ## Open decisions
 

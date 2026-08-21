@@ -32,7 +32,7 @@ impl SceneHandler {
             Handler::Title => signal == Signal::Continue,
             Handler::QuizMenu => matches!(signal, Signal::NewRun | Signal::Back),
             Handler::CharacterCreation => matches!(signal, Signal::HeroReady | Signal::Back),
-            Handler::Oracle => signal == Signal::QuestionsReady,
+            Handler::Oracle => matches!(signal, Signal::QuestionsReady | Signal::Back),
             Handler::ConceptQuiz => matches!(
                 signal,
                 Signal::NeedsQuestion | Signal::BatchComplete | Signal::HeartsEmpty | Signal::Back
@@ -249,7 +249,10 @@ impl SceneMachineDefinition {
                 scene(
                     "oracle",
                     Handler::Oracle,
-                    vec![transition(Signal::QuestionsReady, "quiz", None)],
+                    vec![
+                        transition(Signal::QuestionsReady, "quiz", None),
+                        transition(Signal::Back, "quiz-menu", None),
+                    ],
                 ),
                 scene(
                     "quiz",
@@ -265,8 +268,8 @@ impl SceneMachineDefinition {
                     "level-up",
                     Handler::LevelUp,
                     vec![
-                        transition(Signal::QuestionsReady, "quiz", None),
-                        transition(Signal::NeedsQuestion, "oracle", None),
+                        transition(Signal::QuestionsReady, "quiz", Some(60)),
+                        transition(Signal::NeedsQuestion, "oracle", Some(60)),
                     ],
                 ),
                 scene(
@@ -426,18 +429,66 @@ mod tests {
     }
 
     #[test]
-    fn oracle_scene_cannot_restore_a_face_button_back_route() {
-        let error = SceneMachineDefinition::compile(
+    fn oracle_scene_supports_an_explicit_back_recovery_route() {
+        let definition = SceneMachineDefinition::compile(
             "oracle",
-            vec![scene(
-                "oracle",
-                SceneHandler::Oracle,
-                vec![route(SceneSignal::Back, "oracle")],
-            )],
+            vec![
+                scene(
+                    "oracle",
+                    SceneHandler::Oracle,
+                    vec![route(SceneSignal::Back, "menu")],
+                ),
+                scene("menu", SceneHandler::QuizMenu, vec![]),
+            ],
         )
-        .unwrap_err();
+        .expect("Oracle B-back should close an indefinite wait");
+        let mut machine = SceneMachine::new(definition);
 
-        assert!(error.contains("cannot emit signal `Back`"));
+        assert_eq!(
+            machine.handle(SceneEvent::Signal(SceneSignal::Back)),
+            Some(SceneChange {
+                source: "oracle".into(),
+                target: "menu".into(),
+                handler: SceneHandler::QuizMenu,
+            })
+        );
+    }
+
+    #[test]
+    fn level_up_requires_a_readable_hold_before_continue() {
+        let definition = SceneMachineDefinition::compile(
+            "level-up",
+            vec![
+                scene(
+                    "level-up",
+                    SceneHandler::LevelUp,
+                    vec![SceneTransition {
+                        signal: SceneSignal::QuestionsReady,
+                        target: "quiz".into(),
+                        after_ticks: Some(60),
+                    }],
+                ),
+                scene("quiz", SceneHandler::ConceptQuiz, vec![]),
+            ],
+        )
+        .unwrap();
+        let mut machine = SceneMachine::new(definition);
+
+        assert_eq!(
+            machine.handle(SceneEvent::Signal(SceneSignal::QuestionsReady)),
+            None
+        );
+        for _ in 0..59 {
+            assert_eq!(machine.handle(SceneEvent::Tick), None);
+        }
+        assert_eq!(
+            machine.handle(SceneEvent::Signal(SceneSignal::QuestionsReady)),
+            None
+        );
+        assert_eq!(machine.handle(SceneEvent::Tick), None);
+        assert!(machine
+            .handle(SceneEvent::Signal(SceneSignal::QuestionsReady))
+            .is_some());
     }
 
     #[test]

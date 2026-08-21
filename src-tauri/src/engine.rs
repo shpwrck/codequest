@@ -27,6 +27,8 @@ const ORACLE_HERO_MAX_X: i32 = 210;
 const ORACLE_HERO_SPEED: i32 = 2;
 const ORACLE_DROP_INTERVAL: u64 = 30;
 const ORACLE_COLLISION_Y: i32 = 100;
+const QUIZ_FEEDBACK_TICKS: u16 = 45;
+const LEVEL_UP_HOLD_TICKS: u64 = 60;
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -869,7 +871,11 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             Button::A | Button::Start => begin_quiz_run(state),
             _ => {}
         },
-        Screen::Oracle => {}
+        Screen::Oracle => {
+            if button == Button::B {
+                state.signal(SceneSignal::Back);
+            }
+        }
         Screen::Quiz => {
             let Some(run) = state.quiz.as_mut() else {
                 return;
@@ -902,13 +908,15 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                         run.hearts = run.hearts.saturating_sub(1);
                         run.streak = 0;
                     }
-                    run.feedback = Some((correct, 45));
+                    run.feedback = Some((correct, QUIZ_FEEDBACK_TICKS));
                 }
                 _ => {}
             }
         }
         Screen::LevelUp => {
-            if matches!(button, Button::A | Button::Start) {
+            if state.screen_ticks >= LEVEL_UP_HOLD_TICKS
+                && matches!(button, Button::A | Button::Start)
+            {
                 let signal = if state.has_unanswered_question() {
                     SceneSignal::QuestionsReady
                 } else {
@@ -1381,7 +1389,7 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
         GREEN,
         1,
     );
-    frame.centered_text(143, "L/R MOVE", PARCH, 1);
+    frame.centered_text(143, "L/R MOVE  B:BACK", PARCH, 1);
     frame.text(
         201,
         143,
@@ -1411,6 +1419,7 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
     };
     frame.rect(0, 0, WIDTH as i32, 16, INK);
     frame.text(5, 4, &format!("Q{:02}", run.question + 1), SKY, 1);
+    draw_hero(frame, 47, 1, 1, state);
     frame.text(
         84,
         4,
@@ -1451,16 +1460,19 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
         }
         frame.text(21, y, &truncate(choice, QUIZ_CHOICE_CHARS), color, 1);
     }
-    frame.text(5, 151, "A:ANSWER", MIST, 1);
-    frame.text(199, 151, "B:BACK", MIST, 1);
+    if run.feedback.is_some() {
+        frame.centered_text(151, "REVIEW ANSWER", MIST, 1);
+    } else {
+        frame.text(5, 151, "A:ANSWER", MIST, 1);
+        frame.text(199, 151, "B:BACK", MIST, 1);
+    }
 }
 
 fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
-    frame.clear(if (state.screen_ticks / 6).is_multiple_of(2) {
-        ROYAL
-    } else {
-        NAVY
-    });
+    frame.clear(NAVY);
+    frame.outline(8, 8, 224, 144, PLUM);
+    let pulse = ((state.screen_ticks / 10) % 3) as i32;
+    draw_oracle_sigil(frame, 120, 72, pulse);
     frame.centered_text(22, "LEVEL UP!", GOLD, 2);
     let rise = (state.screen_ticks.min(45) / 5) as i32;
     draw_hero(frame, 106, 91 - rise, 1, state);
@@ -1473,19 +1485,27 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
             1,
         );
     }
-    frame.centered_text(149, "A / START:CONTINUE", MIST, 1);
+    if state.screen_ticks >= LEVEL_UP_HOLD_TICKS {
+        frame.centered_text(149, "A / START:CONTINUE", MIST, 1);
+    } else {
+        frame.centered_text(149, "ORACLE BOND DEEPENS", MIST, 1);
+    }
 }
 
 fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(INK);
-    frame.centered_text(43, "GAME OVER", RED, 2);
+    frame.outline(8, 8, 224, 144, PLUM);
+    frame.centered_text(24, "GAME OVER", RED, 2);
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text(81, &format!("SCORE {:04}", run.score), GOLD, 1);
+        frame.centered_text(57, &format!("SCORE {:04}", run.score), GOLD, 1);
+        frame.centered_text(70, &format!("LEVEL {} REACHED", run.level), SKY, 1);
+        draw_oracle_sigil(frame, 120, 104, 0);
+        draw_hero(frame, 106, 99, 1, state);
     } else {
-        frame.centered_text(81, "NO QUESTIONS FOUND", GOLD, 1);
+        frame.centered_text(70, "NO QUESTIONS FOUND", GOLD, 1);
     }
     if (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(124, "PRESS A", PARCH, 1);
+        frame.centered_text(143, "A/B/START:MENU", PARCH, 1);
     }
 }
 
@@ -1975,6 +1995,37 @@ mod tests {
         engine
     }
 
+    fn playing_quiz_engine() -> GameEngine {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        for button in [Button::Start, Button::A, Button::Start] {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: false,
+                },
+            );
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        engine
+    }
+
     fn color_pixels_in_region(
         frame: &[u8],
         color: Color,
@@ -2113,6 +2164,68 @@ mod tests {
             pressed.frame() == control.frame(),
             "A changed the Oracle frame"
         );
+    }
+
+    #[test]
+    fn oracle_b_returns_to_the_quiz_menu_from_an_indefinite_wait() {
+        let mut engine = waiting_oracle_engine();
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::B,
+                pressed: true,
+            },
+        );
+
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::B,
+                pressed: false,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn quiz_result_hold_replaces_active_controls_and_ignores_back() {
+        let mut engine = playing_quiz_engine();
+        let active_controls = frame_region(engine.frame(), 0..WIDTH, 148..HEIGHT);
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::A,
+                pressed: true,
+            },
+        );
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::A,
+                pressed: false,
+            },
+        );
+        let review_controls = frame_region(engine.frame(), 0..WIDTH, 148..HEIGHT);
+        assert_ne!(review_controls, active_controls);
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::B,
+                pressed: true,
+            },
+        );
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::B,
+                pressed: false,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::Quiz);
     }
 
     #[test]
