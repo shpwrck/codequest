@@ -84,8 +84,8 @@ Grab the AppImage, make it executable, run it — there is nothing to install an
 no toolchain required:
 
 ```bash
-chmod +x code-quest-advance_0.1.0_amd64.AppImage
-./code-quest-advance_0.1.0_amd64.AppImage
+chmod +x code-quest-advance_0.2.0_amd64.AppImage
+./code-quest-advance_0.2.0_amd64.AppImage
 ```
 
 It carries GTK3 and WebKitGTK 4.1 inside it (~200 libraries), which matters most
@@ -97,7 +97,7 @@ and render on RHEL 9 (glibc 2.34) and Fedora 43 (glibc 2.42).
 The host supplies only its own graphics stack and fonts. On a machine with a
 desktop session those are already present; on a bare/minimal host you need
 `libGLESv2.so.2` (`libglvnd-gles`) and some fonts. If the host has no FUSE, run
-it as `./code-quest-advance_0.1.0_amd64.AppImage --appimage-extract-and-run`.
+it as `./code-quest-advance_0.2.0_amd64.AppImage --appimage-extract-and-run`.
 
 At runtime the app shells out, so `git` — and `claude`, for AI question
 generation — must be on `PATH`. Those are the only other requirements.
