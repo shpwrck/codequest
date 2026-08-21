@@ -25,8 +25,11 @@ Cartridges are **local git repositories**. Click the cartridge slot on the
 top edge (or press `C`) while the power is off, then **+ ADD FROM DISK** to
 pick a directory with the native folder dialog. If the directory is a git
 repo it loads as a cartridge — title from the directory name, label color
-from a path hash — and is cached in the tray for future launches. If it
-isn't a git repo, the cartridge is refused with a message. The loaded cart
+from a path hash — and is cached in the three-slot rack for future launches.
+Drag a cached cartridge upward toward the device to load it; drag it downward
+to recycle its rack entry without touching the repository on disk. Click or
+Enter still loads, and Delete provides a keyboard recycle action. If it isn't
+a git repo, the cartridge is refused with a message. The loaded cart
 peeks out of the top-back slot GBA-style and is remembered between launches;
 powering on with an empty slot halts on the boot logo, like real hardware.
 

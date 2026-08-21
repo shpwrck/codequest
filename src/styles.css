@@ -1349,21 +1349,29 @@ html, body {
   border-radius: 10px;
   padding: 18px 22px;
   text-align: center;
+  max-width: calc(100vw - 56px);
 }
 .tray-head { font-size: 12px; color: #e8e9f4; letter-spacing: 2px; margin-bottom: 16px; }
-#tray-carts { display: flex; gap: 16px; justify-content: center; }
+#tray-carts { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
 .cart-card {
   position: relative;
   width: 176px;
   height: 108px;
+  padding: 0;
   background: linear-gradient(#cdcedd, #a5a6bc);
   border: 3px solid #101124;
   border-radius: 10px 10px 6px 6px;
-  cursor: pointer;
-  transition: transform .1s;
+  appearance: none;
+  color: inherit;
+  font: inherit;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: transform .1s ease, box-shadow .1s ease, opacity .1s ease;
   text-align: left;
 }
-.cart-card:hover { transform: translateY(-4px); }
+.cart-card:hover:not(.dragging) { transform: translateY(-4px); }
+.cart-card:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
 .cart-card.current { outline: 3px solid var(--gold); }
 .cc-strip {
   margin: 7px 10px 0;
@@ -1383,13 +1391,43 @@ html, body {
 }
 .cc-title { display: block; font-size: 9px; line-height: 1.5; text-shadow: 1px 1px 0 rgba(0,0,0,.5); }
 .cc-sub { display: block; margin-top: 8px; font-size: 6px; opacity: .85; }
+.cc-gesture {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 5px;
+  display: block;
+  font-size: 5px;
+  letter-spacing: .5px;
+  color: #fff;
+  opacity: .88;
+}
 .cart-card.eject { background: #1c1d38; }
 .cart-card.eject .cc-label { background: transparent; border-style: dashed; color: #8a8cb8; }
-.tray-hint { margin-top: 16px; font-size: 6px; color: #8a8cb8; letter-spacing: 1px; }
+.cart-card.add .cc-label,
+.cart-card.eject .cc-label { top: 10px; }
+.tray-hint { margin-top: 16px; font-size: 12px; color: #8a8cb8; letter-spacing: 1px; }
+.tray-safety { margin-top: 10px; font-size: 12px; color: #67dc87; letter-spacing: 1px; }
 
-.cart-card.locked { opacity: .45; cursor: default; }
-.cart-card.locked:hover { transform: none; }
-.cart-card.current { opacity: 1; cursor: default; }
+.cart-card.current { opacity: 1; cursor: not-allowed; }
+.cart-card.dragging {
+  z-index: 2;
+  cursor: grabbing;
+  transform: translateY(var(--drag-y, 0));
+  transition: none;
+}
+.cart-card.load-ready {
+  outline: 3px solid #64d8ff;
+  box-shadow: 0 -10px 22px rgba(100,216,255,.42);
+}
+.cart-card.recycle-ready {
+  outline: 3px solid #ff5a70;
+  box-shadow: 0 10px 22px rgba(255,90,112,.42);
+}
+.cart-card.recycling { animation: cartRecycle .18s ease-in forwards; }
+@keyframes cartRecycle {
+  to { transform: translateY(84px) rotate(4deg); opacity: 0; }
+}
 #cart-back.ejecting { animation: cartOut .24s ease-in forwards; }
 @keyframes cartOut {
   to { transform: translate(-50%, -34px); opacity: 0; }
@@ -1397,6 +1435,7 @@ html, body {
 
 .cart-card.add { background: #1c1d38; }
 .cart-card.add .cc-label { background: transparent; border-style: dashed; color: #9ec3ff; }
+.cart-card.add, .cart-card.eject { cursor: pointer; }
 #tray-error {
   margin-top: 12px;
   font-size: 7px;
@@ -1405,6 +1444,7 @@ html, body {
   animation: errBlink 1s steps(2) infinite;
 }
 #tray-error.hidden { display: none; }
+#tray-error.notice { color: #67dc87; }
 @keyframes errBlink { 50% { opacity: .45; } }
 
 /* ============================ QUIZ MODE ============================ */
