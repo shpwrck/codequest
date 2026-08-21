@@ -1083,13 +1083,6 @@ fn draw_commit_constellation(frame: &mut Framebuffer, ticks: u64) {
 
 fn render_opening_fanfare(frame: &mut Framebuffer, state: &GameState) {
     let ticks = state.screen_ticks;
-    if ticks >= 240 {
-        render_title(frame, state);
-        draw_oracle_sigil(frame, 120, 111, ((ticks / 10) % 2) as i32);
-        frame.centered_text(145, "THE ORACLE AWAKENS", GOLD, 1);
-        return;
-    }
-
     frame.clear(INK);
     for index in 0..24 {
         let x = ((index * 67 + ticks as usize) % WIDTH) as i32;
@@ -2736,6 +2729,26 @@ mod tests {
         }
         assert_eq!(engine.screen(), Screen::Title);
         assert_ne!(engine.frame(), fanfare_oracle);
+    }
+
+    #[test]
+    fn late_fanfare_keeps_its_own_frame_until_title_transition() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        for _ in 0..179 {
+            engine.update();
+        }
+        for _ in 0..240 {
+            engine.update();
+        }
+
+        assert_eq!(engine.screen(), Screen::OpeningFanfare);
+        assert_eq!(&engine.frame()[..4], &[INK.0, INK.1, INK.2, 255]);
     }
 
     #[test]

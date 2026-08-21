@@ -19,7 +19,7 @@ id = "play-opening-fanfare"
 summary = "Play a finite original spectacle while first-round question generation continues in the background."
 inputs = ["a", "start"]
 rules = ["The sequence lasts five to seven seconds when unskipped.", "A or Start may skip after the opening impact has been readable for 1.5 seconds.", "Finishing the fanfare does not imply that a question is ready."]
-feedback = ["Build from dark silhouettes to a bright repository sigil and resolve into the title mark.", "Provide a reduced-motion version using cuts and fades instead of flashes."]
+feedback = ["Build from dark silhouettes to a bright repository sigil, then cut cleanly to the title scene.", "Provide a reduced-motion version using cuts and fades instead of flashes."]
 
 [[mechanics]]
 id = "navigate-menu"
@@ -59,7 +59,7 @@ requirements = ["Fits repository title, up to three credited author lines, and e
 id = "opening-fanfare"
 kind = "scene-vfx"
 summary = "An original code-fantasy opening that turns repository history into spectacle before the title appears."
-requirements = ["Uses high-contrast silhouettes, a commit-graph constellation, and an Oracle sigil rather than borrowed characters or layouts.", "Completes in five to seven seconds at 60 fps.", "Has a reduced-motion variant without full-frame flashes.", "Resolves cleanly into the title-mark composition."]
+requirements = ["Uses high-contrast silhouettes, a commit-graph constellation, and an Oracle sigil rather than borrowed characters or layouts.", "Completes in five to seven seconds at 60 fps.", "Has a reduced-motion variant without full-frame flashes.", "Hands off to the title without sharing or overlaying the title frame."]
 
 [[art]]
 id = "title-mark"
@@ -98,9 +98,9 @@ next = ["opening-fanfare"]
 id = "opening-fanfare"
 title = "Opening Fanfare"
 kind = "cinematic"
-summary = "Distract with a short original repository spectacle while question generation continues."
+summary = "Complete a short original repository spectacle, then hand off cleanly while question generation continues."
 mechanics = ["play-opening-fanfare"]
-art = ["opening-fanfare", "title-mark"]
+art = ["opening-fanfare"]
 next = ["title"]
 
 [[scenes]]

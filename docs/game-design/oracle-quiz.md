@@ -56,7 +56,7 @@ implements Bevy screens.
 | ID | Purpose | Player actions and feedback | Exit and next scenes | Mechanics | Art |
 |---|---|---|---|---|---|
 | `copyright` | Credit the repository's authors and real timeline while the first question request starts. | Read the provenance card; A/Start skips after its minimum dwell. Never infer a legal owner from commit authorship. | `opening-fanfare` | `present-copyright` | `copyright-card` |
-| `opening-fanfare` | Turn early generation time into a finite original spectacle. | Watch a dark-to-bright code-fantasy sequence; A/Start skips after the readable opening impact. | `title` | `play-opening-fanfare` | `opening-fanfare`, `title-mark` |
+| `opening-fanfare` | Turn early generation time into a finite original spectacle. | Watch a dark-to-bright code-fantasy sequence; A/Start skips after the readable opening impact. | `title` | `play-opening-fanfare` | `opening-fanfare` |
 | `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; title remains readable at native scale. | `quiz-menu` | `navigate-menu` | `title-mark` |
 | `quiz-menu` | Explain the run and offer a safe return. | D-pad selects; A/Start confirms; B returns. | `character-creation` or `title` | `navigate-menu` | — |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, class, and style with an immediate hero preview. | `oracle` | `customize-hero` | `hero-set` |
@@ -82,8 +82,8 @@ their characters or layouts.
 | Copyright card | 0.0–1.5s | Repository title, up to three author lines, and earliest → latest commit dates appear as a high-contrast provenance card. Show a literal © owner only when an explicit repository notice supplies it. | The first request has already started when the cartridge was accepted. | A/Start becomes available after the text has had one readable second. |
 | Timeline traversal | 1.5–3.0s | A light travels through a sparse commit constellation; real tag or release landmarks may flare when available. Overflow authors use a second card rather than smaller text. | Continue silently; no percentage, spinner claim, or completion implication. | A/Start advances to the fanfare. |
 | Sigil encounter | 3.0–5.0s | Two abstract code sigils enter as silhouettes, collide once, and turn the impact into the cartridge-colored repository crest. | Continue in the background; cache an early result without interrupting the sequence. | A/Start may skip after the impact is readable. |
-| Oracle ignition | 5.0–7.0s | The crest branches like a commit graph, folds into the Oracle eye, and illuminates the title mark. Reduced motion uses three clean cuts and fades. | Finishing this beat never promises that questions are ready. | No input required. |
-| Title handoff | 7.0–8.5s | The moving elements settle into the static title composition and its Start prompt. | Continue generation through title, menu, and hero creation if needed. | A/Start begins the normal menu flow. |
+| Oracle ignition | 5.0–7.0s | The crest branches like a commit graph, folds into the Oracle eye, and holds on its own dark composition. Reduced motion uses three clean cuts and fades. | Finishing this beat never promises that questions are ready. | No input required. |
+| Title handoff | 7.0–8.5s | The fanfare ends on its own dark frame; the title scene starts from a fresh clear with no fanfare overlays. | Continue generation through title, menu, and hero creation if needed. | A/Start begins the normal menu flow. |
 
 If the first batch is ready early, it waits safely for the player. If it is
 still unavailable after hero creation, the existing Oracle scene communicates
@@ -124,7 +124,7 @@ model, or hides a failed request behind invented progress.
 - **Rules:** The sequence is finite and deterministic. Completion never implies
   question readiness. Reduced motion changes transitions, not duration or data.
 - **Feedback:** Dark silhouettes resolve through a repository crest and commit
-  constellation into the Oracle title mark.
+  constellation into the Oracle sigil, then cut cleanly to the title scene.
 
 ### `navigate-menu`
 
@@ -164,8 +164,8 @@ model, or hides a failed request behind invented progress.
 | ID | Kind | Used by scenes | Purpose and required states | Constraints | Status |
 |---|---|---|---|---|---|
 | `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and overflow page. | Legible at 240×160; never infer legal ownership; body text stays at native size. | Procedural base implemented; overflow polish needed |
-| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes. | Procedural base implemented; reduced-motion polish needed |
-| `title-mark` | Logo/UI | `opening-fanfare`, `title` | Identify the cartridge and Oracle motif; fanfare reveal, idle, and prompt-pulse states. | Legible at 240×160 without glow. | Basic renderer implemented; art polish needed |
+| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes; never overlay the title frame. | Procedural base implemented; reduced-motion polish needed |
+| `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | Basic renderer implemented; art polish needed |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, jump, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base implemented; state polish needed |
 | `oracle-sanctum` | Scene/UI | `oracle` | Make arrival, scrying, retry, ready, and long-wait states feel like one place. | Reserve clear status, hero, and Oracle regions; reduced-motion state required. | Basic renderer implemented; redesign needed |
 | `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | Core frame implemented; accessibility polish needed |
@@ -178,7 +178,7 @@ model, or hides a failed request behind invented progress.
 | Scene, mechanic, and art graph | Configured | Parsed, cross-reference validated, and retained; not executed dynamically in schema v1. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
 | Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
-| Copyright and opening-fanfare screens | Implemented in basic form | Hard-coded Bevy states render before `Title`, enforce minimum skip times, auto-advance, and remain independent of question readiness. |
+| Copyright and opening-fanfare screens | Implemented in basic form | Hard-coded Bevy states render before `Title`, enforce minimum skip times, auto-advance, remain independent of question readiness, and keep fanfare/title frame composition separate. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Hard-coded `Screen` states, input handling, advancement, and render functions. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
 | Truthful multi-state Oracle presentation | Proposed | Add distinct in-flight/retry/ready/AI-disabled UI and tests to the existing Oracle state. |
