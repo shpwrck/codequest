@@ -8,11 +8,12 @@ into the engine, but it does not dynamically create these screens.
 
 ## Experience frame
 
-**Pitch:** The player binds a small code-seer, consults an Oracle that is
-reading the inserted software project, and proves their understanding through
-an endless sequence of increasingly difficult conceptual questions. Real
-question-generation latency becomes an honest ritual instead of an unexplained
-loading screen.
+**Pitch:** A copyright-style repository chronicle names the people and history
+behind the cartridge, then erupts into an original code-fantasy fanfare before
+the player binds a small code-seer, consults an Oracle, and proves their
+understanding through increasingly difficult conceptual questions. The first
+question request runs behind the opening spectacle, and any remaining latency
+becomes an honest Oracle ritual instead of an unexplained loading screen.
 
 **Player outcome:** Build a durable mental model of a project's purpose,
 responsibilities, interactions, invariants, and tradeoffs—not memorize file
@@ -24,17 +25,19 @@ names or repository trivia.
    fabricate percent-complete progress.
 2. Every transition carries player identity or learning state forward; the
    quiz should feel like one run, not a stack of forms.
-3. Native 240×160 readability wins over visual density, motion, or extra copy.
+3. Earn spectacle from real repository provenance, while native 240×160
+   readability wins over visual density, motion, or extra copy.
 
 **Non-goals:** No town or overworld layer, inventory economy, timed-answer
-pressure, generated filler questions, or claim that manifest metadata already
+pressure, generated filler questions, borrowed characters or compositions,
+unsupported copyright claims, or claim that manifest metadata already
 implements Bevy screens.
 
 ## Session and loops
 
-- **Session shape:** Title → quiz menu → hero creation → Oracle → questions →
-  level-up or game-over. A run lasts until the player loses three hearts or
-  returns to the menu.
+- **Session shape:** Copyright → opening fanfare → title → quiz menu → hero
+  creation → Oracle → questions → level-up or game-over. A run lasts until the
+  player loses three hearts or returns to the menu.
 - **Core loop:** Consult Oracle → receive one valid question → choose an answer
   → read feedback → continue or return to the Oracle.
 - **Progression loop:** Survive a six-question batch → raise difficulty → mark
@@ -43,15 +46,18 @@ implements Bevy screens.
   the level.
 - **Failure/recovery:** A wrong answer costs one heart and reveals the correct
   choice. At zero hearts, show the final score and a one-button replay path.
-- **Latency loop:** Request early and prefetch during play. Enter the Oracle
-  only when no valid unanswered question is ready; failed batches retry there
-  instead of becoming generic trivia.
+- **Latency loop:** Request the first batch as soon as the cartridge is
+  accepted, then continue behind the copyright, fanfare, title, menu, and hero
+  creation. Enter the Oracle only when no valid unanswered question is ready;
+  failed batches retry there instead of becoming generic trivia.
 
 ## Scene storyboard
 
 | ID | Purpose | Player actions and feedback | Exit and next scenes | Mechanics | Art |
 |---|---|---|---|---|---|
-| `title` | Establish the cartridge as an invitation from the Oracle. | A/Start begins; title remains readable at native scale. | `quiz-menu` | `navigate-menu` | `title-mark` |
+| `copyright` | Credit the repository's authors and real timeline while the first question request starts. | Read the provenance card; A/Start skips after its minimum dwell. Never infer a legal owner from commit authorship. | `opening-fanfare` | `present-copyright` | `copyright-card` |
+| `opening-fanfare` | Turn early generation time into a finite original spectacle. | Watch a dark-to-bright code-fantasy sequence; A/Start skips after the readable opening impact. | `title` | `play-opening-fanfare` | `opening-fanfare`, `title-mark` |
+| `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; title remains readable at native scale. | `quiz-menu` | `navigate-menu` | `title-mark` |
 | `quiz-menu` | Explain the run and offer a safe return. | D-pad selects; A/Start confirms; B returns. | `character-creation` or `title` | `navigate-menu` | — |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, class, and style with an immediate hero preview. | `oracle` | `customize-hero` | `hero-set` |
 | `oracle` | Turn real generation latency into anticipation without deception. | A animates the hero; truthful loading/retry/ready copy remains visible; B returns safely. | `quiz` or `quiz-menu` | `consult-oracle` | `hero-set`, `oracle-sanctum` |
@@ -59,8 +65,30 @@ implements Bevy screens.
 | `level-up` | Recognize a completed batch while the next batch is prepared. | A/Start continues after level and batch feedback. | `oracle` | `navigate-menu` | `hero-set` |
 | `game-over` | Close the run and make replay obvious. | Show final score; A/B/Start returns to the menu. | `quiz-menu` | `navigate-menu` | `hero-set` |
 
-All scenes are reachable from `title`. The `oracle` → `quiz` loop is deliberate;
-`game-over`, menu back actions, and Oracle B provide clear exits.
+All scenes are reachable from `copyright`. The opening path is finite, and the
+`oracle` → `quiz` loop is deliberate; `game-over`, menu back actions, and Oracle
+B provide clear exits.
+
+## Opening micro-storyboard
+
+The pacing grammar comes from observing two GBA openings locally: one uses an
+immediate animated confrontation before a silhouette and title reveal, while
+the other lets a luminous emblem, restrained motion, and an idle vignette build
+tone. CODE QUEST uses original symbols, staging, and art rather than copying
+their characters or layouts.
+
+| Beat | Target time | Presentation | Question-generation behavior | Player agency |
+|---|---:|---|---|---|
+| Copyright card | 0.0–1.5s | Repository title, up to three author lines, and earliest → latest commit dates appear as a high-contrast provenance card. Show a literal © owner only when an explicit repository notice supplies it. | The first request has already started when the cartridge was accepted. | A/Start becomes available after the text has had one readable second. |
+| Timeline traversal | 1.5–3.0s | A light travels through a sparse commit constellation; real tag or release landmarks may flare when available. Overflow authors use a second card rather than smaller text. | Continue silently; no percentage, spinner claim, or completion implication. | A/Start advances to the fanfare. |
+| Sigil encounter | 3.0–5.0s | Two abstract code sigils enter as silhouettes, collide once, and turn the impact into the cartridge-colored repository crest. | Continue in the background; cache an early result without interrupting the sequence. | A/Start may skip after the impact is readable. |
+| Oracle ignition | 5.0–7.0s | The crest branches like a commit graph, folds into the Oracle eye, and illuminates the title mark. Reduced motion uses three clean cuts and fades. | Finishing this beat never promises that questions are ready. | No input required. |
+| Title handoff | 7.0–8.5s | The moving elements settle into the static title composition and its Start prompt. | Continue generation through title, menu, and hero creation if needed. | A/Start begins the normal menu flow. |
+
+If the first batch is ready early, it waits safely for the player. If it is
+still unavailable after hero creation, the existing Oracle scene communicates
+the real wait and retry states. The opening never stretches itself to fake a
+dependency on generation.
 
 ## Oracle micro-storyboard
 
@@ -76,6 +104,27 @@ The Oracle never rewards a slow response, suggests that jumping speeds up the
 model, or hides a failed request behind invented progress.
 
 ## Mechanics
+
+### `present-copyright`
+
+- **Decision:** Read the repository provenance or advance after a minimum dwell.
+- **Inputs:** A or Start.
+- **Rules:** Use repository-derived author names and earliest/latest commit
+  dates. Credit up to three git authors by commit count and break ties by first
+  commit. Display explicit copyright ownership only when a repository notice
+  provides it. Begin generation at cartridge acceptance, not at scene exit.
+- **Feedback:** Reveal authors and timeline landmarks with fixed, readable
+  timing; do not present generation progress.
+
+### `play-opening-fanfare`
+
+- **Decision:** Watch the complete five-to-seven-second spectacle or skip after
+  its opening impact.
+- **Inputs:** A or Start.
+- **Rules:** The sequence is finite and deterministic. Completion never implies
+  question readiness. Reduced motion changes transitions, not duration or data.
+- **Feedback:** Dark silhouettes resolve through a repository crest and commit
+  constellation into the Oracle title mark.
 
 ### `navigate-menu`
 
@@ -114,7 +163,9 @@ model, or hides a failed request behind invented progress.
 
 | ID | Kind | Used by scenes | Purpose and required states | Constraints | Status |
 |---|---|---|---|---|---|
-| `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | Needed |
+| `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and overflow page. | Legible at 240×160; never infer legal ownership; body text stays at native size. | Needed |
+| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes. | Needed |
+| `title-mark` | Logo/UI | `opening-fanfare`, `title` | Identify the cartridge and Oracle motif; fanfare reveal, idle, and prompt-pulse states. | Legible at 240×160 without glow. | Needed |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, jump, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base implemented; state polish needed |
 | `oracle-sanctum` | Scene/UI | `oracle` | Make arrival, scrying, retry, ready, and long-wait states feel like one place. | Reserve clear status, hero, and Oracle regions; reduced-motion state required. | Basic renderer implemented; redesign needed |
 | `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | Core frame implemented; accessibility polish needed |
@@ -125,6 +176,9 @@ model, or hides a failed request behind invented progress.
 |---|---|---|
 | Manifest title and `quiz`/`quest` type | Implemented | Parsed at cartridge load and used by the engine. |
 | Scene, mechanic, and art graph | Configured | Parsed, cross-reference validated, and retained; not executed dynamically in schema v1. |
+| First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
+| Repository authors, timeline, and explicit copyright extraction | Proposed | Extend cartridge preparation with bounded, sanitized git-history and notice metadata. |
+| Copyright and opening-fanfare screens | Configured / Proposed | Present in the validated storyboard; add hard-coded Bevy states and rendering before `Title`. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Hard-coded `Screen` states, input handling, advancement, and render functions. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
 | Truthful multi-state Oracle presentation | Proposed | Add distinct in-flight/retry/ready/AI-disabled UI and tests to the existing Oracle state. |
@@ -133,16 +187,23 @@ model, or hides a failed request behind invented progress.
 
 ## Implementation slices
 
-1. **Oracle state pass:** Keep the hard-coded Oracle screen; add distinct
+1. **Repository provenance pass:** Derive bounded author credits,
+   earliest/latest commit dates, and any explicit copyright notice during
+   cartridge preparation; add parser/sanitization tests.
+2. **Opening state pass:** Add hard-coded `Copyright` and `OpeningFanfare`
+   screens before `Title`, preserve the already-early question request, and
+   test minimum dwell, auto-advance, skip, and reduced-motion paths.
+3. **Oracle state pass:** Keep the hard-coded Oracle screen; add distinct
    in-flight, retry, ready, and AI-disabled presentation using actual engine
    state and retain the B exit.
-2. **Feedback/accessibility pass:** Add correctness labels, reduced-motion
+4. **Feedback/accessibility pass:** Add correctness labels, reduced-motion
    Oracle behavior, and native-scale screenshot assertions.
-3. **Continuity pass:** Show the previous lesson and batch status during a wait
+5. **Continuity pass:** Show the previous lesson and batch status during a wait
    using state the engine already owns.
-4. **Art pass:** Produce and verify `title-mark`, `oracle-sanctum`, and remaining
-   `hero-set` states against the 240×160 ledger.
-5. **Future dynamic-scenes decision:** Only version the schema if cartridges
+6. **Art pass:** Produce and verify `copyright-card`, `opening-fanfare`,
+   `title-mark`, `oracle-sanctum`, and remaining `hero-set` states against the
+   240×160 ledger.
+7. **Future dynamic-scenes decision:** Only version the schema if cartridges
    truly need to drive scene execution; do not reinterpret v1 metadata.
 
 ## Open decisions

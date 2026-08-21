@@ -233,7 +233,23 @@ mod tests {
 
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.game.game_type, GameType::Quiz);
-        assert_eq!(config.game.start_scene.as_deref(), Some("title"));
+        assert_eq!(config.game.start_scene.as_deref(), Some("copyright"));
+        let copyright = config
+            .scenes
+            .iter()
+            .find(|scene| scene.id == "copyright")
+            .expect("the storyboard should begin with repository provenance");
+        assert_eq!(
+            copyright.next,
+            vec!["opening-fanfare".to_string()],
+            "copyright should hand off to the latency-masking fanfare"
+        );
+        let fanfare = config
+            .scenes
+            .iter()
+            .find(|scene| scene.id == "opening-fanfare")
+            .expect("the storyboard should include an opening fanfare");
+        assert_eq!(fanfare.next, vec!["title".to_string()]);
         assert!(config.scenes.iter().any(|scene| scene.id == "quiz"));
     }
 
