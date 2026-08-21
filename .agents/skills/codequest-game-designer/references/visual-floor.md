@@ -15,6 +15,9 @@ At native 240×160 it must retain:
 - state-owned lighting with cyan for system energy and gold for earned or
   climactic energy;
 - quiet regions intentionally reserved for live text and interaction feedback.
+- fidelity continuity between authored assets and runtime overlays; omit a
+  procedural adornment when its pixel treatment is visibly coarser or less
+  authored than the plate or sprite beneath it;
 - strict containment: foreground elements stay inside their assigned panel or
   playfield, and sibling foreground bounds never intersect;
 - measured contrast between every foreground element and its immediate
@@ -51,6 +54,10 @@ palette to otherwise sparse geometry.
    Measure the usable interior from the actual plate; do not substitute the
    framebuffer center or an estimated outer border. Preview the real manifest
    title and representative production provenance, not only short fixture text.
+10. Compare every runtime-drawn ornament against the authored plate at native
+    resolution. Remove accessory, weapon, particle, or badge overlays that do
+    not meet the same material detail, cluster discipline, and silhouette
+    quality; customization metadata does not require a visible sprite overlay.
 
 ## Progression rule
 
@@ -74,6 +81,8 @@ number.
 - Is every centered or aligned element positioned relative to its measured art
   container rather than the full framebuffer?
 - Does each foreground/background pair meet the contrast check at native size?
+- Do runtime-drawn ornaments match the fidelity of the authored art beneath
+  them, or should the cleaner authored asset stand on its own?
 - Does it hand off a motif or state cleanly to the next scene?
 - Does it meet or exceed the Oracle asset catalog rather than merely resemble
   its colors?

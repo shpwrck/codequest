@@ -65,17 +65,6 @@ const HERO_CLASSES: [&str; 6] = [
     "SHELL DRUID",
 ];
 const HERO_STYLES: [&str; 5] = ["EMBER", "OCEAN", "FOREST", "GOLD", "VOID"];
-const HERO_ACCESSORIES: [&str; 6] = [
-    "MUSTACHE", "FEDORA", "BOW TIE", "MONOCLE", "CROWN", "SHADES",
-];
-const HERO_WEAPONS: [&str; 6] = [
-    "SWORD",
-    "ORB STAFF",
-    "PIPE",
-    "WARHAMMER",
-    "BOW",
-    "SHELL SHIELD",
-];
 const HERO_STYLE_COLORS: [Color; 5] = [RED, SKY, GREEN, GOLD, PLUM];
 
 const ORACLE_CHRONICLE: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/chronicle.rgb");
@@ -200,6 +189,20 @@ const GATEWAY_MENU_OPTION_BOXES: [UiBox; 2] = [
         height: 20,
     },
 ];
+const GATEWAY_MENU_OPTION_TEXT_BOXES: [UiBox; 2] = [
+    UiBox {
+        x: 66,
+        y: 94,
+        width: 108,
+        height: 14,
+    },
+    UiBox {
+        x: 66,
+        y: 121,
+        width: 108,
+        height: 14,
+    },
+];
 const MENU_FOOTER_BOX: UiBox = UiBox {
     x: 39,
     y: 144,
@@ -212,12 +215,45 @@ const ATELIER_HEADER_BOX: UiBox = UiBox {
     width: 126,
     height: 16,
 };
-const ATELIER_ACCESSORY_BOX: UiBox = UiBox {
-    x: 8,
-    y: 119,
-    width: 100,
-    height: 16,
-};
+const ATELIER_ROW_BOXES: [UiBox; 3] = [
+    UiBox {
+        x: 116,
+        y: 17,
+        width: 98,
+        height: 29,
+    },
+    UiBox {
+        x: 116,
+        y: 49,
+        width: 98,
+        height: 29,
+    },
+    UiBox {
+        x: 116,
+        y: 81,
+        width: 98,
+        height: 29,
+    },
+];
+
+const fn atelier_label_box(row_box: UiBox) -> UiBox {
+    UiBox {
+        x: row_box.x + 4,
+        y: row_box.y + 5,
+        width: row_box.width - 8,
+        height: 7,
+    }
+}
+
+const fn atelier_value_box(row_box: UiBox) -> UiBox {
+    UiBox {
+        x: row_box.x + 4,
+        y: row_box.y + 15,
+        width: row_box.width - 8,
+        height: 9,
+    }
+}
+
 const ATELIER_BIND_BOX: UiBox = UiBox {
     x: 137,
     y: 112,
@@ -1882,15 +1918,9 @@ fn render_oracle_menu(frame: &mut Framebuffer, state: &GameState) {
     frame.blit_rgb(ORACLE_GATEWAY);
     frame.centered_text_box(GATEWAY_MENU_HEADING_BOX, "CHOOSE YOUR PATH", PARCH, 1);
     frame.centered_text_box(GATEWAY_MENU_SUBTITLE_BOX, "THE BOND BEGINS HERE", CYAN, 1);
-    for (index, (label, detail)) in [
-        ("BEGIN THE TRIAL", "FORGE A HERO"),
-        ("RETURN TO TITLE", "CLOSE ARCHIVE"),
-    ]
-    .iter()
-    .enumerate()
-    {
+    for (index, label) in ["BEGIN THE TRIAL", "RETURN TO TITLE"].iter().enumerate() {
         let option_box = GATEWAY_MENU_OPTION_BOXES[index];
-        let y = option_box.y;
+        let text_box = GATEWAY_MENU_OPTION_TEXT_BOXES[index];
         let focused = state.menu_selected == index;
         if focused {
             draw_asset_focus(
@@ -1901,22 +1931,7 @@ fn render_oracle_menu(frame: &mut Framebuffer, state: &GameState) {
                 option_box.height,
             );
         }
-        frame.centered_text_in(
-            option_box.x,
-            y + 2,
-            option_box.width,
-            label,
-            if focused { PARCH } else { MIST },
-            1,
-        );
-        frame.centered_text_in(
-            option_box.x,
-            y + 10,
-            option_box.width,
-            detail,
-            if focused { AMBER } else { CYAN_DIM },
-            1,
-        );
+        frame.centered_text_box(text_box, label, if focused { PARCH } else { MIST }, 1);
     }
     frame.rect(
         MENU_FOOTER_BOX.x,
@@ -1959,21 +1974,6 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
         }
         frame.text(81, y, label, PARCH, 1);
     }
-    frame.text(
-        81,
-        39,
-        &format!("GEAR: {}", HERO_ACCESSORIES[state.hero_name]),
-        MIST,
-        1,
-    );
-    frame.text(
-        81,
-        60,
-        &format!("WEAPON: {}", HERO_WEAPONS[state.hero_class]),
-        MIST,
-        1,
-    );
-
     let oracle_status = if state.question_count() > 0 {
         "ORACLE READY"
     } else if state.questions_loading {
@@ -2005,26 +2005,6 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
     frame.centered_text_box(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", AMBER, 1);
     let bob = ((state.screen_ticks / 22) % 2) as i32;
     draw_hero(frame, 32, 47 - bob, 2, state);
-    frame.rect(
-        ATELIER_ACCESSORY_BOX.x,
-        ATELIER_ACCESSORY_BOX.y,
-        ATELIER_ACCESSORY_BOX.width,
-        ATELIER_ACCESSORY_BOX.height,
-        VOID,
-    );
-    frame.outline(
-        ATELIER_ACCESSORY_BOX.x,
-        ATELIER_ACCESSORY_BOX.y,
-        ATELIER_ACCESSORY_BOX.width,
-        ATELIER_ACCESSORY_BOX.height,
-        CYAN_DIM,
-    );
-    frame.centered_text_box(
-        ATELIER_ACCESSORY_BOX,
-        HERO_ACCESSORIES[state.hero_name],
-        AMBER,
-        1,
-    );
 
     let rows = [
         ("NAME", HERO_NAMES[state.hero_name]),
@@ -2032,15 +2012,16 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
         ("AURA", HERO_STYLES[state.hero_style]),
     ];
     for (index, (label, value)) in rows.iter().enumerate() {
-        let y = 17 + index as i32 * 32;
+        let row_box = ATELIER_ROW_BOXES[index];
+        let label_box = atelier_label_box(row_box);
+        let value_box = atelier_value_box(row_box);
         let focused = state.hero_row == index;
         if focused {
-            draw_asset_focus(frame, 116, y, 98, 29);
+            draw_asset_focus(frame, row_box.x, row_box.y, row_box.width, row_box.height);
         }
-        frame.text(126, y + 6, label, if focused { AMBER } else { CYAN_DIM }, 1);
-        frame.compact_text(
-            122,
-            y + 16,
+        frame.centered_text_box(label_box, label, if focused { AMBER } else { CYAN_DIM }, 1);
+        frame.centered_compact_text_box(
+            value_box,
             &format!("<{}>", truncate(value, 14)),
             if focused { PARCH } else { MIST },
         );
@@ -2685,20 +2666,11 @@ fn draw_hero(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, state: &GameSt
         return;
     }
     let accent = HERO_STYLE_COLORS[state.hero_style];
-    draw_weapon(frame, x, y, scale, state.hero_class, accent);
     draw_crab(frame, x, y, scale);
     frame.rect(x + 8 * scale, y + 8 * scale, 12 * scale, 3 * scale, accent);
-    draw_accessory(frame, x, y, scale, state.hero_name, accent);
 }
 
 fn draw_oracle_hero(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, state: &GameState) {
-    let accent = match state.hero_style {
-        0 => MAGENTA,
-        1 => CYAN,
-        2 => GREEN,
-        3 => AMBER,
-        _ => VIOLET,
-    };
     frame.blit_rgba(
         ORACLE_HEROES[state.hero_style],
         HERO_SPRITE_WIDTH,
@@ -2707,134 +2679,6 @@ fn draw_oracle_hero(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, state: 
         y,
         scale,
     );
-    draw_oracle_weapon(frame, x, y, scale, state.hero_class, accent);
-    draw_oracle_accessory(frame, x, y, scale, state.hero_name, accent);
-}
-
-fn draw_oracle_weapon(
-    frame: &mut Framebuffer,
-    x: i32,
-    y: i32,
-    scale: i32,
-    weapon: usize,
-    accent: Color,
-) {
-    let edge_x = x + 25 * scale;
-    match weapon {
-        0 => {
-            frame.rect(edge_x, y + 10 * scale, scale, 12 * scale, PARCH);
-            frame.rect(edge_x - 2 * scale, y + 20 * scale, 5 * scale, scale, AMBER);
-        }
-        1 => {
-            frame.rect(edge_x, y + 12 * scale, scale, 13 * scale, AMBER);
-            frame.rect(
-                edge_x - 2 * scale,
-                y + 8 * scale,
-                5 * scale,
-                5 * scale,
-                accent,
-            );
-            frame.pixel(edge_x, y + 10 * scale, PARCH);
-        }
-        2 => {
-            frame.line(
-                x - 4 * scale,
-                y + 18 * scale,
-                x + 2 * scale,
-                y + 18 * scale,
-                accent,
-            );
-            frame.line(
-                x - 4 * scale,
-                y + 18 * scale,
-                x - 4 * scale,
-                y + 23 * scale,
-                accent,
-            );
-            frame.line(x - 4 * scale, y + 23 * scale, x, y + 23 * scale, PARCH);
-        }
-        3 => {
-            frame.rect(edge_x, y + 13 * scale, 2 * scale, 12 * scale, AMBER);
-            frame.rect(
-                edge_x - 3 * scale,
-                y + 9 * scale,
-                7 * scale,
-                5 * scale,
-                accent,
-            );
-        }
-        4 => {
-            frame.line(edge_x, y + 8 * scale, edge_x, y + 25 * scale, AMBER);
-            frame.line(
-                edge_x,
-                y + 8 * scale,
-                edge_x + 4 * scale,
-                y + 16 * scale,
-                accent,
-            );
-            frame.line(
-                edge_x + 4 * scale,
-                y + 16 * scale,
-                edge_x,
-                y + 25 * scale,
-                accent,
-            );
-        }
-        _ => {
-            frame.outline(x - 5 * scale, y + 13 * scale, 6 * scale, 11 * scale, accent);
-            frame.rect(x - 3 * scale, y + 16 * scale, 2 * scale, 5 * scale, AMBER);
-        }
-    }
-}
-
-fn draw_oracle_accessory(
-    frame: &mut Framebuffer,
-    x: i32,
-    y: i32,
-    scale: i32,
-    accessory: usize,
-    accent: Color,
-) {
-    match accessory {
-        0 => {
-            frame.rect(x + 8 * scale, y + 13 * scale, 3 * scale, scale, INK);
-            frame.rect(x + 13 * scale, y + 13 * scale, 3 * scale, scale, INK);
-        }
-        1 => {
-            frame.rect(x + 4 * scale, y + 2 * scale, 16 * scale, scale, AMBER);
-            frame.rect(x + 8 * scale, y, 9 * scale, 3 * scale, accent);
-        }
-        2 => {
-            frame.rect(x + 8 * scale, y + 20 * scale, 3 * scale, 3 * scale, accent);
-            frame.rect(x + 13 * scale, y + 20 * scale, 3 * scale, 3 * scale, accent);
-        }
-        3 => {
-            frame.outline(x + 13 * scale, y + 10 * scale, 5 * scale, 5 * scale, AMBER);
-            frame.line(
-                x + 17 * scale,
-                y + 14 * scale,
-                x + 19 * scale,
-                y + 18 * scale,
-                AMBER,
-            );
-        }
-        4 => {
-            for offset in [0, 6, 12] {
-                frame.rect(
-                    x + (5 + offset) * scale,
-                    y + 2 * scale,
-                    3 * scale,
-                    3 * scale,
-                    AMBER,
-                );
-            }
-        }
-        _ => {
-            frame.rect(x + 5 * scale, y + 10 * scale, 14 * scale, 3 * scale, INK);
-            frame.pixel(x + 8 * scale, y + 11 * scale, accent);
-            frame.pixel(x + 15 * scale, y + 11 * scale, accent);
-        }
-    }
 }
 
 fn draw_defeated_hero(frame: &mut Framebuffer, x: i32, y: i32, state: &GameState) {
@@ -2842,88 +2686,6 @@ fn draw_defeated_hero(frame: &mut Framebuffer, x: i32, y: i32, state: &GameState
     frame.rect(x + 5, y + 12, 14, 2, VOID);
     frame.line(x + 4, y + 35, x + 20, y + 35, ASH);
     frame.line(x - 7, y + 36, x + 31, y + 36, INDIGO);
-}
-
-fn draw_weapon(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, weapon: usize, accent: Color) {
-    match weapon {
-        0 => {
-            frame.rect(x + 31 * scale, y - 6 * scale, 2 * scale, 17 * scale, PARCH);
-            frame.rect(x + 29 * scale, y - 8 * scale, 6 * scale, 3 * scale, PARCH);
-            frame.rect(x + 28 * scale, y + 8 * scale, 7 * scale, 2 * scale, GOLD);
-            frame.rect(x + 31 * scale, y + 10 * scale, 2 * scale, 6 * scale, accent);
-        }
-        1 => {
-            frame.rect(x + 31 * scale, y - 3 * scale, 2 * scale, 20 * scale, GOLD);
-            frame.rect(x + 28 * scale, y - 9 * scale, 8 * scale, 7 * scale, accent);
-            frame.rect(x + 30 * scale, y - 7 * scale, 4 * scale, 3 * scale, PARCH);
-        }
-        2 => {
-            frame.rect(x - 7 * scale, y + 2 * scale, 10 * scale, 3 * scale, accent);
-            frame.rect(x - 7 * scale, y + 4 * scale, 3 * scale, 8 * scale, accent);
-            frame.rect(x - 4 * scale, y + 9 * scale, 7 * scale, 3 * scale, accent);
-            frame.rect(x - 9 * scale, y, 3 * scale, 3 * scale, MIST);
-        }
-        3 => {
-            frame.rect(x + 31 * scale, y + scale, 3 * scale, 17 * scale, GOLD);
-            frame.rect(x + 27 * scale, y - 5 * scale, 11 * scale, 7 * scale, accent);
-            frame.rect(x + 29 * scale, y - 7 * scale, 7 * scale, 2 * scale, PARCH);
-        }
-        4 => {
-            frame.rect(x + 31 * scale, y - 6 * scale, 2 * scale, 23 * scale, GOLD);
-            frame.rect(x + 28 * scale, y - 4 * scale, 3 * scale, 5 * scale, accent);
-            frame.rect(x + 27 * scale, y + scale, 3 * scale, 8 * scale, accent);
-            frame.rect(x + 28 * scale, y + 9 * scale, 3 * scale, 5 * scale, accent);
-            frame.rect(x + 26 * scale, y + 4 * scale, 9 * scale, scale, PARCH);
-        }
-        _ => {
-            frame.rect(x - 8 * scale, y + 2 * scale, 11 * scale, 13 * scale, accent);
-            frame.rect(x - 6 * scale, y + 4 * scale, 7 * scale, 9 * scale, GOLD);
-            frame.rect(x - 4 * scale, y + 6 * scale, 3 * scale, 5 * scale, accent);
-        }
-    }
-}
-
-fn draw_accessory(
-    frame: &mut Framebuffer,
-    x: i32,
-    y: i32,
-    scale: i32,
-    accessory: usize,
-    accent: Color,
-) {
-    match accessory {
-        0 => {
-            frame.rect(x + 8 * scale, y + 7 * scale, 5 * scale, 3 * scale, INK);
-            frame.rect(x + 15 * scale, y + 7 * scale, 5 * scale, 3 * scale, INK);
-            frame.rect(x + 12 * scale, y + 8 * scale, 4 * scale, 2 * scale, INK);
-        }
-        1 => {
-            frame.rect(x + 3 * scale, y - 4 * scale, 22 * scale, 3 * scale, INK);
-            frame.rect(x + 8 * scale, y - 10 * scale, 14 * scale, 7 * scale, accent);
-            frame.rect(x + 8 * scale, y - 4 * scale, 14 * scale, 2 * scale, GOLD);
-        }
-        2 => {
-            frame.rect(x + 8 * scale, y + 9 * scale, 5 * scale, 5 * scale, accent);
-            frame.rect(x + 15 * scale, y + 9 * scale, 5 * scale, 5 * scale, accent);
-            frame.rect(x + 13 * scale, y + 10 * scale, 2 * scale, 3 * scale, GOLD);
-        }
-        3 => {
-            frame.outline(x + 16 * scale, y + scale, 7 * scale, 7 * scale, GOLD);
-            frame.rect(x + 22 * scale, y + 7 * scale, 2 * scale, 8 * scale, GOLD);
-        }
-        4 => {
-            frame.rect(x + 5 * scale, y - 4 * scale, 18 * scale, 4 * scale, GOLD);
-            frame.rect(x + 5 * scale, y - 8 * scale, 4 * scale, 5 * scale, GOLD);
-            frame.rect(x + 12 * scale, y - 10 * scale, 4 * scale, 7 * scale, accent);
-            frame.rect(x + 19 * scale, y - 8 * scale, 4 * scale, 5 * scale, GOLD);
-        }
-        _ => {
-            frame.rect(x + 5 * scale, y + 2 * scale, 18 * scale, 5 * scale, INK);
-            frame.rect(x + 7 * scale, y + 3 * scale, 5 * scale, 2 * scale, accent);
-            frame.rect(x + 16 * scale, y + 3 * scale, 5 * scale, 2 * scale, accent);
-            frame.rect(x + 12 * scale, y + 3 * scale, 4 * scale, 2 * scale, GOLD);
-        }
-    }
 }
 
 fn draw_boss(frame: &mut Framebuffer, x: i32, y: i32, tick: u64, scale: i32) {
@@ -3478,15 +3240,11 @@ mod tests {
         let title_bottom = ui_box_bounds(GATEWAY_TITLE_BOTTOM_BOX);
         let title_prompt = ui_box_bounds(GATEWAY_PROMPT_BOX);
         let title_signature = ui_box_bounds(GATEWAY_SIGNATURE_BOX);
-        let menu_panel = ui_box_bounds(GATEWAY_MENU_OPTION_BOXES[0]);
+        let menu_option_text = ui_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1]);
         let menu_heading = ui_box_bounds(GATEWAY_MENU_HEADING_BOX);
         let menu_subtitle = ui_box_bounds(GATEWAY_MENU_SUBTITLE_BOX);
-        let atelier_row = LayoutBounds {
-            x: 116,
-            y: 17,
-            width: 98,
-            height: 29,
-        };
+        let atelier_label = ui_box_bounds(atelier_label_box(ATELIER_ROW_BOXES[1]));
+        let atelier_value = ui_box_bounds(atelier_value_box(ATELIER_ROW_BOXES[1]));
         let quiz_question = LayoutBounds {
             x: 20,
             y: 30,
@@ -3508,7 +3266,6 @@ mod tests {
         };
         let menu_footer = ui_box_bounds(MENU_FOOTER_BOX);
         let atelier_header = ui_box_bounds(ATELIER_HEADER_BOX);
-        let atelier_accessory = ui_box_bounds(ATELIER_ACCESSORY_BOX);
         let full_header = LayoutBounds {
             x: 0,
             y: 0,
@@ -3604,13 +3361,8 @@ mod tests {
             ),
             (
                 "menu option",
-                menu_panel,
-                centered_text_in_bounds(menu_panel, 94, "RETURN TO TITLE", 1),
-            ),
-            (
-                "menu detail",
-                menu_panel,
-                centered_text_in_bounds(menu_panel, 102, "CLOSE ARCHIVE", 1),
+                menu_option_text,
+                centered_text_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1], "RETURN TO TITLE", 1),
             ),
             (
                 "menu heading",
@@ -3633,19 +3385,17 @@ mod tests {
                 centered_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", 1),
             ),
             (
-                "atelier accessory",
-                atelier_accessory,
-                centered_text_box_bounds(ATELIER_ACCESSORY_BOX, "MUSTACHE", 1),
-            ),
-            (
                 "atelier row label",
-                atelier_row,
-                text_bounds(126, 23, "PATH", 1),
+                atelier_label,
+                centered_text_box_bounds(atelier_label_box(ATELIER_ROW_BOXES[1]), "PATH", 1),
             ),
             (
                 "atelier longest value",
-                atelier_row,
-                compact_text_bounds(122, 33, "<MERGE PALADIN>"),
+                atelier_value,
+                centered_compact_text_box_bounds(
+                    atelier_value_box(ATELIER_ROW_BOXES[1]),
+                    "<MERGE PALADIN>",
+                ),
             ),
             (
                 "atelier retry status",
@@ -3806,14 +3556,27 @@ mod tests {
                 centered_text_box_bounds(MENU_FOOTER_BOX, "D-PAD  A:CHOOSE  B:BACK", 1),
             ),
             (
+                "menu option",
+                menu_option_text,
+                centered_text_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1], "RETURN TO TITLE", 1),
+            ),
+            (
                 "atelier heading",
                 atelier_header,
                 centered_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", 1),
             ),
             (
-                "atelier accessory",
-                atelier_accessory,
-                centered_text_box_bounds(ATELIER_ACCESSORY_BOX, "MUSTACHE", 1),
+                "atelier row label",
+                atelier_label,
+                centered_text_box_bounds(atelier_label_box(ATELIER_ROW_BOXES[1]), "PATH", 1),
+            ),
+            (
+                "atelier row value",
+                atelier_value,
+                centered_compact_text_box_bounds(
+                    atelier_value_box(ATELIER_ROW_BOXES[1]),
+                    "<MERGE PALADIN>",
+                ),
             ),
             (
                 "ascension level",
@@ -3837,16 +3600,6 @@ mod tests {
         }
 
         for (name, container, child) in [
-            (
-                "menu option",
-                menu_panel,
-                centered_text_in_bounds(menu_panel, 94, "RETURN TO TITLE", 1),
-            ),
-            (
-                "menu detail",
-                menu_panel,
-                centered_text_in_bounds(menu_panel, 102, "CLOSE ARCHIVE", 1),
-            ),
             (
                 "ascension heading",
                 ascension_title,
@@ -3881,14 +3634,12 @@ mod tests {
 
         for (name, left, right) in [
             (
-                "menu label and detail",
-                centered_text_in_bounds(menu_panel, 94, "RETURN TO TITLE", 1),
-                centered_text_in_bounds(menu_panel, 102, "CLOSE ARCHIVE", 1),
-            ),
-            (
                 "atelier label and value",
-                text_bounds(126, 23, "PATH", 1),
-                compact_text_bounds(122, 33, "<MERGE PALADIN>"),
+                centered_text_box_bounds(atelier_label_box(ATELIER_ROW_BOXES[1]), "PATH", 1),
+                centered_compact_text_box_bounds(
+                    atelier_value_box(ATELIER_ROW_BOXES[1]),
+                    "<MERGE PALADIN>",
+                ),
             ),
             (
                 "atelier status and controls",
@@ -4573,7 +4324,7 @@ mod tests {
     }
 
     #[test]
-    fn character_choices_change_accessory_weapon_and_style_pixels() {
+    fn identity_choices_preserve_authored_hero_art_while_aura_changes_colorway() {
         let mut engine = GameEngine::new();
         issue(
             &mut engine,
@@ -4599,7 +4350,7 @@ mod tests {
         }
         assert_eq!(engine.screen(), Screen::CharacterCreation);
 
-        let default_accessory = hero_pixels(&engine);
+        let default_name = hero_pixels(&engine);
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -4607,7 +4358,7 @@ mod tests {
                 pressed: true,
             },
         );
-        assert_ne!(hero_pixels(&engine), default_accessory);
+        assert_eq!(hero_pixels(&engine), default_name);
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -4630,7 +4381,7 @@ mod tests {
                 pressed: false,
             },
         );
-        let default_weapon = hero_pixels(&engine);
+        let default_path = hero_pixels(&engine);
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -4638,7 +4389,7 @@ mod tests {
                 pressed: true,
             },
         );
-        assert_ne!(hero_pixels(&engine), default_weapon);
+        assert_eq!(hero_pixels(&engine), default_path);
         issue(
             &mut engine,
             EngineCommand::Input {

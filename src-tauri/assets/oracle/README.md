@@ -8,9 +8,9 @@ templates selected by `art[].template` in `CODEQUEST.toml`.
 | `oracle-chronicle` | `chronicle.png` | Repository title, copyright notice, authors, dates, reveal timing |
 | `oracle-awakening` | `awakening.png` | Dormant → cyan → gold → Oracle luminance progression and skip prompt |
 | `oracle-title` | `gateway.png` | Cartridge title and start prompt |
-| `oracle-menu` | `gateway.png` | Focus, menu labels, descriptions, and controls |
+| `oracle-menu` | `gateway.png` | Focus, contained action labels, and controls |
 | `oracle-atelier` | `atelier.png` | Hero, customization values, truthful generation status, focus |
-| `oracle-hero` | `hero-*.png`, `portrait-*.png` | Selected style plus lightweight accessory/weapon states |
+| `oracle-hero` | `hero-*.png`, `portrait-*.png` | Selected authored colorway with no procedural accessory or weapon overlays |
 | `oracle-sanctum` | `sanctum.png` | Datafall objects, hero movement, counters, status, tier grading |
 | `oracle-trial` | `trial.png` | Question, choices, focus, hearts, score, correctness, review lock |
 | `oracle-ascension` | `ascension.png` | Hero rise, earned tier, level, batch, hold/continue state |
@@ -40,6 +40,9 @@ runtime buffers and refuses incorrect dimensions or byte counts.
 - Container coordinates describe the measured usable interior of each plate.
   Renderers center or align against those coordinates, and preview fixtures use
   the repository's real title so short placeholder copy cannot hide overflow.
+- Authored hero sprites remain visually intact. Name and path are textual
+  identity choices, aura selects the authored colorway, and lower-fidelity
+  procedural accessories or weapons are not layered over the source art.
 - The opening begins without emissive light, introduces cyan, adds gold, and
   reveals the complete Oracle only at the crescendo.
 - Every reachable scene, including the repository chronicle and aftermath, must

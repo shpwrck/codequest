@@ -37,10 +37,10 @@ feedback = ["Highlight the current choice by pointer, shape, and color.", "Use d
 
 [[mechanics]]
 id = "customize-hero"
-summary = "Choose the hero name, class, and visual style before beginning a run."
+summary = "Choose the hero name, path, and aura before beginning a run."
 inputs = ["d-pad", "a", "b", "start"]
 rules = ["Each row edits one hero trait.", "The selected hero persists for the run."]
-feedback = ["Update the hero preview immediately.", "Pair each changed trait with one short response variant and reserve the Oracle cadence for final confirmation."]
+feedback = ["Update each identity label immediately; aura changes the authored hero colorway without layering procedural equipment over it.", "Pair each changed trait with one short response variant and reserve the Oracle cadence for final confirmation."]
 
 [[mechanics]]
 id = "consult-oracle"
@@ -103,14 +103,14 @@ id = "character-frame"
 kind = "ui-scene"
 summary = "A staged code-fantasy workshop for hero customization and truthful Oracle status."
 template = "oracle-atelier"
-requirements = ["Fits hero, equipment, native-scale labels, and controls inside 240x160.", "Supports loading, retry, and ready without fake progress.", "Keeps the hero preview visually dominant over status copy."]
+requirements = ["Fits the authored hero, centered native-scale identity labels, and controls inside 240x160.", "Supports loading, retry, and ready without fake progress.", "Keeps the hero preview visually dominant over status copy.", "Does not layer lower-fidelity procedural accessories or weapons over the authored hero sprite."]
 
 [[art]]
 id = "hero-set"
 kind = "sprite-set"
-summary = "Modular hero sprites that reflect the customization choices."
+summary = "Authored hero sprites whose colorway reflects the selected aura while name and path remain textual identity choices."
 template = "oracle-hero"
-requirements = ["Consistent silhouette across variants.", "Readable on Oracle and quiz backgrounds."]
+requirements = ["Consistent silhouette across variants.", "Readable on Oracle and quiz backgrounds.", "No procedural accessory or weapon overlays."]
 
 [[art]]
 id = "oracle-sanctum"
