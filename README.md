@@ -212,5 +212,5 @@ Verify a change by rebuilding and re-running the smoke test in
 `docs/runbooks/headless-gui-smoke-test/`, which drives the gameplay loop without
 touching the desktop.
 
-Engine status: playable end to end, with deliberately minimal procedural art
-and room for production polish.
+Engine status: playable end to end, with asset-backed Oracle scene templates,
+native 240×160 hero sprites, staged opening luminance, and live FSM-owned UI.

@@ -74,6 +74,13 @@ glyphs, characters, and environments share one rune-and-circuit shape language.
 The brightest cyan/gold combination and densest detail are reserved for earned
 peaks; glow is a state, not a default decoration.
 
+The implemented Oracle presentation uses repository-owned illustrated plates
+and live hero/portrait sprites from `src-tauri/assets/oracle/`. Runtime text,
+focus, loading, correctness, counters, and progression remain separate from the
+source art. Every live foreground is assigned to a bounded panel or playfield;
+layout checks reject overflow and sibling overlap, while palette checks require
+readable contrast against the immediate panel fill.
+
 The run has three perceivable presentation tiers in addition to its numeric
 difficulty:
 
@@ -298,15 +305,15 @@ engine does not load or play them yet.
 | Mechanic and presentation graph | Mixed | Mechanics and audio remain metadata; typed visual templates are parsed, validated, and executed by scene renderers. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
 | Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
-| Copyright and opening-fanfare screens | Implemented in basic form | Trusted Bevy handlers render before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
+| Copyright and opening-fanfare screens | Implemented with asset-backed templates | Trusted Bevy handlers render the illustrated chronicle and staged awakening before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Trusted handlers own input and rendering while the manifest routes their semantic events. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
 | Oracle Datafall with safe recovery | Implemented in this pass | Held horizontal movement, deterministic falling objects, automatic data/bug collision counters, split top/bottom HUD, and B-back close the indefinite wait. |
 | Safe Oracle-to-quiz input boundary | Implemented | A/Start are ignored in Oracle; B exits to the menu; held D-pad controls have no answer action after the automatic transition. |
 | Quiz result and reward input boundaries | Implemented in this pass | The 45-tick answer reveal replaces active controls, and level-up enforces a 60-tick hold before A/Start can leave. |
-| Truthful multi-state Oracle presentation | Implemented in basic form | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
+| Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
 | Non-color-only result labels and reduced motion | Partially implemented | Correct/wrong labels, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
-| Visual templates selected from manifest | Implemented in this pass | Eleven typed built-in templates are selected by `art[].template`; unknown names fail validation and untemplated cartridges keep their legacy renderers. |
+| Visual templates selected from manifest | Implemented in this pass | Eleven typed built-in templates are selected by `art[].template`; Oracle templates composite native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
 | Whole-game sound design and playback | Configured/metadata; runtime proposed | Every scene references an audio requirement, but the current engine has no sound asset selection or playback system. |
 | Felt presentation progression | Visual runtime implemented; audio proposed | Initiate, Adept, and Oracle-bound change palette, circuit density, crest geometry, and reward/result presentation; native-frame tests verify a non-numeric final-tier channel. |
 

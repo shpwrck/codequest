@@ -19,6 +19,11 @@ or motion only when the silence/stillness has a purpose and a defined handoff.
 - Budget the brightest colors and densest detail for meaningful states.
 - Specify focused, disabled, loading, success, failure, and empty variants.
 - Preserve information through shape, position, or text rather than color alone.
+- Keep every foreground element inside its declared container and keep sibling
+  foreground bounds disjoint. Treat clipped text, focus marks outside a panel,
+  and decorative overlap with live UI as failed states.
+- Measure foreground contrast against the immediate image or fill beneath it.
+  Text must be readable at native size without depending on glow alone.
 - Use repository-owned template assets when they fit; generate or implement only
   the missing states. Record actual paths and status instead of implying an
   asset exists because a manifest ID names it.

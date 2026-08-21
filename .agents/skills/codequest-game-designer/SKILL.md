@@ -23,6 +23,11 @@ When the request includes polish, finishing, animation, sound, game feel, or
 progression, also read `references/polish.md` in this skill completely before
 editing the design.
 
+When the request creates, replaces, or judges visual assets, also read
+`references/visual-floor.md` completely. Treat repository-owned native template
+plates as the acceptance floor; a procedural palette or glow treatment does not
+meet an illustrated asset-backed reference.
+
 If the repository contract differs from examples in this skill, the repository
 contract wins. Never invent fields or game types that the current schema rejects.
 
@@ -178,6 +183,10 @@ CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
   cargo test --manifest-path src-tauri/Cargo.toml \
   oracle_templates_produce_nine_distinct_native_scene_frames --lib
 ```
+
+When the repository includes `scripts/compile-oracle-assets.sh`, run it before
+the preview test so inspectable PNG sources and embedded runtime buffers cannot
+drift.
 
 Then perform a traceability pass:
 

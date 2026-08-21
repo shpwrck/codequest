@@ -17,6 +17,12 @@ use crate::scene_machine::{
 pub const WIDTH: usize = 240;
 pub const HEIGHT: usize = 160;
 pub const FRAME_BYTES: usize = WIDTH * HEIGHT * 4;
+const NATIVE_RGB_BYTES: usize = WIDTH * HEIGHT * 3;
+const HERO_SPRITE_WIDTH: usize = 24;
+const HERO_SPRITE_HEIGHT: usize = 36;
+const HERO_SPRITE_BYTES: usize = HERO_SPRITE_WIDTH * HERO_SPRITE_HEIGHT * 4;
+const HERO_PORTRAIT_SIZE: usize = 24;
+const HERO_PORTRAIT_BYTES: usize = HERO_PORTRAIT_SIZE * HERO_PORTRAIT_SIZE * 4;
 pub const QUIZ_QUESTION_COLUMNS: usize = 37;
 pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 35;
@@ -38,16 +44,14 @@ const PARCH: Color = Color::rgb(244, 244, 244);
 const MIST: Color = Color::rgb(148, 176, 194);
 const GOLD: Color = Color::rgb(255, 205, 117);
 const GREEN: Color = Color::rgb(56, 183, 100);
-const RED: Color = Color::rgb(177, 62, 83);
+const RED: Color = Color::rgb(225, 75, 95);
 const PLUM: Color = Color::rgb(93, 39, 93);
 const CRAB: Color = Color::rgb(206, 142, 107);
 const VOID: Color = Color::rgb(7, 10, 24);
-const MIDNIGHT: Color = Color::rgb(12, 18, 38);
 const INDIGO: Color = Color::rgb(22, 29, 66);
 const CYAN: Color = Color::rgb(67, 224, 244);
-const CYAN_DIM: Color = Color::rgb(32, 111, 139);
+const CYAN_DIM: Color = Color::rgb(47, 146, 174);
 const AMBER: Color = Color::rgb(247, 183, 72);
-const AMBER_DIM: Color = Color::rgb(126, 79, 35);
 const VIOLET: Color = Color::rgb(105, 58, 151);
 const MAGENTA: Color = Color::rgb(213, 91, 151);
 const ASH: Color = Color::rgb(68, 78, 105);
@@ -73,6 +77,31 @@ const HERO_WEAPONS: [&str; 6] = [
     "SHELL SHIELD",
 ];
 const HERO_STYLE_COLORS: [Color; 5] = [RED, SKY, GREEN, GOLD, PLUM];
+
+const ORACLE_CHRONICLE: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/chronicle.rgb");
+const ORACLE_AWAKENING: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/awakening.rgb");
+const ORACLE_GATEWAY: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/gateway.rgb");
+const ORACLE_ATELIER: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/atelier.rgb");
+const ORACLE_SANCTUM: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/sanctum.rgb");
+const ORACLE_TRIAL: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/trial.rgb");
+const ORACLE_ASCENSION: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/ascension.rgb");
+const ORACLE_AFTERMATH: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/aftermath.rgb");
+
+const ORACLE_HEROES: [&[u8; HERO_SPRITE_BYTES]; 5] = [
+    include_bytes!("../assets/oracle/hero-magenta.rgba"),
+    include_bytes!("../assets/oracle/hero-cyan.rgba"),
+    include_bytes!("../assets/oracle/hero-emerald.rgba"),
+    include_bytes!("../assets/oracle/hero-amber.rgba"),
+    include_bytes!("../assets/oracle/hero-violet.rgba"),
+];
+
+const ORACLE_PORTRAITS: [&[u8; HERO_PORTRAIT_BYTES]; 5] = [
+    include_bytes!("../assets/oracle/portrait-magenta.rgba"),
+    include_bytes!("../assets/oracle/portrait-cyan.rgba"),
+    include_bytes!("../assets/oracle/portrait-emerald.rgba"),
+    include_bytes!("../assets/oracle/portrait-amber.rgba"),
+    include_bytes!("../assets/oracle/portrait-violet.rgba"),
+];
 
 #[derive(Clone, Copy)]
 struct Color(u8, u8, u8);
@@ -308,6 +337,111 @@ impl Framebuffer {
         }
     }
 
+    fn blit_rgb(&mut self, rgb: &[u8; NATIVE_RGB_BYTES]) {
+        for (source, destination) in rgb.chunks_exact(3).zip(self.pixels.chunks_exact_mut(4)) {
+            destination.copy_from_slice(&[source[0], source[1], source[2], 255]);
+        }
+    }
+
+    fn blit_rgb_graded(&mut self, rgb: &[u8; NATIVE_RGB_BYTES], base: u16, cyan: u16, gold: u16) {
+        for (source, destination) in rgb.chunks_exact(3).zip(self.pixels.chunks_exact_mut(4)) {
+            let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
+            let scale = if blue > red.saturating_add(12) && green > red {
+                cyan
+            } else if red > blue.saturating_add(14) && green > blue {
+                gold
+            } else {
+                base
+            };
+            destination.copy_from_slice(&[
+                (red * scale / 255) as u8,
+                (green * scale / 255) as u8,
+                (blue * scale / 255) as u8,
+                255,
+            ]);
+        }
+    }
+
+    fn blit_awakening(&mut self, ticks: u64) {
+        let cyan_strength = 38 + ticks.saturating_sub(36).min(108) as u16 * 190 / 108;
+        let gold_strength = 38 + ticks.saturating_sub(112).min(108) as u16 * 197 / 108;
+        let center_strength = 38 + ticks.saturating_sub(188).min(48) as u16 * 217 / 48;
+        let ambient_strength = 34 + ticks.min(236) as u16 * 38 / 236;
+
+        for (index, (source, destination)) in ORACLE_AWAKENING
+            .chunks_exact(3)
+            .zip(self.pixels.chunks_exact_mut(4))
+            .enumerate()
+        {
+            let x = (index % WIDTH) as i32;
+            let y = (index / WIDTH) as i32;
+            let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
+            let in_oracle = (x - 120).abs() + (y - 80).abs() < 47;
+            let cyan_pixel = blue > red.saturating_add(12) && green > red;
+            let gold_pixel = red > blue.saturating_add(14) && green > blue;
+            let strength = if in_oracle {
+                center_strength
+            } else if cyan_pixel {
+                cyan_strength
+            } else if gold_pixel {
+                gold_strength
+            } else {
+                ambient_strength
+            };
+            destination.copy_from_slice(&[
+                (red * strength / 255) as u8,
+                (green * strength / 255) as u8,
+                (blue * strength / 255) as u8,
+                255,
+            ]);
+        }
+    }
+
+    fn blit_rgba(
+        &mut self,
+        rgba: &[u8],
+        source_width: usize,
+        source_height: usize,
+        x: i32,
+        y: i32,
+        scale: i32,
+    ) {
+        debug_assert_eq!(rgba.len(), source_width * source_height * 4);
+        for source_y in 0..source_height {
+            for source_x in 0..source_width {
+                let source_index = (source_y * source_width + source_x) * 4;
+                let alpha = rgba[source_index + 3] as u16;
+                if alpha == 0 {
+                    continue;
+                }
+                for offset_y in 0..scale {
+                    for offset_x in 0..scale {
+                        let target_x = x + source_x as i32 * scale + offset_x;
+                        let target_y = y + source_y as i32 * scale + offset_y;
+                        if target_x < 0
+                            || target_y < 0
+                            || target_x >= WIDTH as i32
+                            || target_y >= HEIGHT as i32
+                        {
+                            continue;
+                        }
+                        let destination_index = (target_y as usize * WIDTH + target_x as usize) * 4;
+                        let inverse = 255 - alpha;
+                        for channel in 0..3 {
+                            let source_channel = rgba[source_index + channel] as u16;
+                            let destination_channel =
+                                self.pixels[destination_index + channel] as u16;
+                            self.pixels[destination_index + channel] =
+                                ((source_channel * alpha + destination_channel * inverse) / 255)
+                                    as u8;
+                        }
+                        self.pixels[destination_index + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
     fn pixel(&mut self, x: i32, y: i32, color: Color) {
         if x < 0 || y < 0 || x >= WIDTH as i32 || y >= HEIGHT as i32 {
             return;
@@ -375,11 +509,68 @@ impl Framebuffer {
         }
     }
 
+    fn compact_text(&mut self, x: i32, y: i32, text: &str, color: Color) {
+        let mut cursor = x;
+        for ch in text.to_ascii_uppercase().chars() {
+            for (glyph_y, row) in glyph(ch).iter().enumerate() {
+                for glyph_x in 0..GLYPH_WIDTH {
+                    let mask = 1u8 << (GLYPH_WIDTH - 1 - glyph_x) as u32;
+                    if row & mask != 0 {
+                        self.pixel(cursor + glyph_x, y + glyph_y as i32, color);
+                    }
+                }
+            }
+            cursor += GLYPH_WIDTH;
+        }
+    }
+
+    fn wrapped_compact_text(
+        &mut self,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: Color,
+        max_chars: usize,
+        max_lines: usize,
+    ) {
+        for (line_no, line) in wrap_text(text, max_chars)
+            .into_iter()
+            .take(max_lines)
+            .enumerate()
+        {
+            self.compact_text(x, y + line_no as i32 * LINE_HEIGHT, &line, color);
+        }
+    }
+
     fn centered_text(&mut self, y: i32, text: &str, color: Color, scale: i32) {
-        let characters = text.chars().count() as i32;
-        let trailing_space = if characters > 0 { 1 } else { 0 };
-        let width = (characters * GLYPH_ADVANCE - trailing_space) * scale;
+        let width = text_width(text, scale);
         self.text((WIDTH as i32 - width) / 2, y, text, color, scale);
+    }
+
+    fn centered_text_in(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: i32,
+        text: &str,
+        color: Color,
+        scale: i32,
+    ) {
+        let rendered_width = text_width(text, scale);
+        debug_assert!(
+            rendered_width <= width,
+            "text `{text}` is wider than its {width}px container"
+        );
+        self.text(x + (width - rendered_width) / 2, y, text, color, scale);
+    }
+
+    fn centered_compact_text_in(&mut self, x: i32, y: i32, width: i32, text: &str, color: Color) {
+        let rendered_width = text.chars().count() as i32 * GLYPH_WIDTH;
+        debug_assert!(
+            rendered_width <= width,
+            "text `{text}` is wider than its {width}px container"
+        );
+        self.compact_text(x + (width - rendered_width) / 2, y, text, color);
     }
 
     fn wrapped_text(
@@ -1207,217 +1398,45 @@ fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
 }
 
 fn render_boot(frame: &mut Framebuffer, state: &GameState) {
-    frame.clear(PARCH);
-    frame.centered_text(54, "CODEQUEST", NAVY, 2);
-    frame.centered_text(73, "ADVANCE", ROYAL, 2);
-    frame.rect(68, 96, 104, 2, MIST);
+    frame.blit_rgb_graded(ORACLE_GATEWAY, 92, 105, 74);
+    frame.centered_text(49, "CODE QUEST", PARCH, 2);
+    frame.centered_text(67, "ADVANCE", AMBER, 2);
+    frame.centered_text(83, "THE REPOSITORY ORACLE", CYAN_DIM, 1);
     if !state.has_game() && state.screen_ticks > 50 && (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(115, "INSERT CARTRIDGE", RED, 1);
+        frame.centered_text(101, "INSERT CARTRIDGE", PARCH, 1);
     }
 }
 
-fn draw_oracle_backdrop(frame: &mut Framebuffer, tier: PresentationTier, energy: u8, ticks: u64) {
-    frame.clear(VOID);
-    frame.rect(0, 18, WIDTH as i32, 142, MIDNIGHT);
-    for y in (22..160).step_by(8) {
-        let color = if ((y as u64 + ticks / 12) / 8).is_multiple_of(2) {
-            MIDNIGHT
-        } else {
-            INDIGO
-        };
-        for x in ((y / 2) % 4..WIDTH as i32).step_by(8) {
-            frame.pixel(x, y, color);
+fn draw_asset_focus(frame: &mut Framebuffer, x: i32, y: i32, width: i32, height: i32) {
+    frame.outline(x, y, width, height, AMBER);
+    for (corner_x, direction_x) in [(x, 1), (x + width - 1, -1)] {
+        for corner_y in [y, y + height - 1] {
+            let start_x = if direction_x > 0 {
+                corner_x
+            } else {
+                corner_x - 3
+            };
+            frame.rect(start_x, corner_y, 4, 2, PARCH);
         }
     }
-
-    let stone = if energy == 0 { ASH } else { INDIGO };
-    for x in [8, 30, 208, 230] {
-        frame.rect(x, 35, 2, 125, stone);
-        frame.rect(x - 3, 48, 8, 2, stone);
-    }
-    frame.line(31, 50, 48, 27, stone);
-    frame.line(48, 27, 72, 17, stone);
-    frame.line(72, 17, 120, 10, stone);
-    frame.line(120, 10, 168, 17, stone);
-    frame.line(168, 17, 192, 27, stone);
-    frame.line(192, 27, 209, 50, stone);
-    frame.line(48, 27, 48, 132, stone);
-    frame.line(192, 27, 192, 132, stone);
-
-    if energy > 0 {
-        let primary = CYAN_DIM;
-        let secondary = match tier {
-            PresentationTier::Initiate => INDIGO,
-            PresentationTier::Adept => AMBER_DIM,
-            PresentationTier::OracleBound => VIOLET,
-        };
-        frame.line(9, 64, 30, 64, primary);
-        frame.line(210, 64, 231, 64, primary);
-        frame.rect(27, 61, 5, 5, primary);
-        frame.rect(208, 61, 5, 5, primary);
-        if energy > 1 {
-            frame.line(31, 97, 48, 97, secondary);
-            frame.line(192, 97, 209, 97, secondary);
-            frame.rect(46, 95, 5, 5, secondary);
-            frame.rect(190, 95, 5, 5, secondary);
-        }
-        if energy > 2 {
-            for (x, y) in [(19, 120), (61, 36), (179, 36), (221, 120)] {
-                frame.rect(x - 1, y - 1, 3, 3, AMBER);
-            }
-        }
-    }
-}
-
-fn draw_circuit_frame(frame: &mut Framebuffer, tier: PresentationTier, inset: i32) {
-    let x = inset;
-    let y = inset;
-    let width = WIDTH as i32 - inset * 2;
-    let height = HEIGHT as i32 - inset * 2;
-    frame.outline(x, y, width, height, CYAN_DIM);
-    for (corner_x, direction) in [(x, 1), (x + width - 1, -1)] {
-        frame.line(corner_x, y + 8, corner_x + direction * 11, y + 8, CYAN);
-        frame.line(
-            corner_x,
-            y + height - 9,
-            corner_x + direction * 11,
-            y + height - 9,
-            CYAN,
-        );
-    }
-    if tier != PresentationTier::Initiate {
-        frame.line(x + 24, y, x + 42, y, AMBER);
-        frame.line(x + width - 43, y, x + width - 25, y, AMBER);
-        frame.rect(x + 39, y - 1, 3, 3, AMBER);
-        frame.rect(x + width - 43, y - 1, 3, 3, AMBER);
-    }
-    if tier == PresentationTier::OracleBound {
-        frame.line(x, y + 28, x, y + 48, MAGENTA);
-        frame.line(x + width - 1, y + 28, x + width - 1, y + 48, MAGENTA);
-    }
-}
-
-fn draw_oracle_eye(
-    frame: &mut Framebuffer,
-    center_x: i32,
-    center_y: i32,
-    tier: PresentationTier,
-    energy: u8,
-) {
-    let radius = 22 + energy as i32 * 3;
-    let outer = if energy >= 2 { CYAN } else { CYAN_DIM };
-    frame.line(center_x - radius, center_y, center_x, center_y - 14, outer);
-    frame.line(center_x, center_y - 14, center_x + radius, center_y, outer);
-    frame.line(center_x + radius, center_y, center_x, center_y + 14, outer);
-    frame.line(center_x, center_y + 14, center_x - radius, center_y, outer);
-    frame.line(
-        center_x - radius + 6,
-        center_y,
-        center_x,
-        center_y - 9,
-        INDIGO,
-    );
-    frame.line(
-        center_x,
-        center_y - 9,
-        center_x + radius - 6,
-        center_y,
-        INDIGO,
-    );
-    frame.line(
-        center_x + radius - 6,
-        center_y,
-        center_x,
-        center_y + 9,
-        INDIGO,
-    );
-    frame.line(
-        center_x,
-        center_y + 9,
-        center_x - radius + 6,
-        center_y,
-        INDIGO,
-    );
-    frame.rect(center_x - 6, center_y - 7, 13, 15, AMBER_DIM);
-    frame.outline(center_x - 6, center_y - 7, 13, 15, AMBER);
-    frame.rect(center_x - 2, center_y - 5, 5, 11, VOID);
-    frame.rect(center_x - 1, center_y - 3, 3, 5, PARCH);
-
-    if tier != PresentationTier::Initiate || energy >= 3 {
-        frame.line(
-            center_x - radius,
-            center_y,
-            center_x - radius - 10,
-            center_y - 8,
-            AMBER,
-        );
-        frame.line(
-            center_x + radius,
-            center_y,
-            center_x + radius + 10,
-            center_y - 8,
-            AMBER,
-        );
-        frame.rect(center_x - radius - 12, center_y - 10, 4, 4, AMBER);
-        frame.rect(center_x + radius + 9, center_y - 10, 4, 4, AMBER);
-    }
-    if tier == PresentationTier::OracleBound || energy >= 3 {
-        frame.line(
-            center_x,
-            center_y - 14,
-            center_x - 8,
-            center_y - 24,
-            MAGENTA,
-        );
-        frame.line(
-            center_x,
-            center_y - 14,
-            center_x + 8,
-            center_y - 24,
-            MAGENTA,
-        );
-        frame.line(center_x, center_y + 14, center_x - 8, center_y + 24, VIOLET);
-        frame.line(center_x, center_y + 14, center_x + 8, center_y + 24, VIOLET);
-    }
-}
-
-fn draw_oracle_panel(
-    frame: &mut Framebuffer,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    focused: bool,
-) {
-    frame.rect(x, y, width, height, if focused { INDIGO } else { MIDNIGHT });
-    frame.outline(x, y, width, height, if focused { CYAN } else { CYAN_DIM });
-    frame.rect(x + 3, y + 3, 2, 2, if focused { AMBER } else { ASH });
-    frame.rect(
-        x + width - 5,
-        y + height - 5,
-        2,
-        2,
-        if focused { AMBER } else { ASH },
-    );
 }
 
 fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
-    draw_oracle_backdrop(frame, PresentationTier::Initiate, 0, state.screen_ticks);
-    frame.rect(17, 15, 206, 133, MIDNIGHT);
-    frame.outline(17, 15, 206, 133, ASH);
-    frame.line(25, 25, 25, 138, INDIGO);
-    frame.line(214, 25, 214, 138, INDIGO);
-    frame.centered_text(22, "REPOSITORY CHRONICLE", AMBER_DIM, 1);
-    frame.centered_text(32, "~ ARCHIVE RECORD ~", ASH, 1);
+    frame.blit_rgb(ORACLE_CHRONICLE);
+    frame.centered_text(39, "REPOSITORY CHRONICLE", MIST, 1);
+    if state.screen_ticks >= 42 {
+        frame.rect(42, 122, 156, 17, VOID);
+        frame.outline(42, 122, 156, 17, CYAN_DIM);
+    }
 
     let title = state
         .cartridge
         .as_ref()
         .map_or("NO CARTRIDGE", |cartridge| cartridge.title.as_str());
     let lines = title_lines(title);
-    frame.centered_text(49, &lines[0], PARCH, 1);
+    frame.centered_text(53, &truncate(&lines[0], 20), PARCH, 1);
     if let Some(line) = lines.get(1) {
-        frame.centered_text(59, line, PARCH, 1);
+        frame.centered_text(62, &truncate(line, 20), PARCH, 1);
     }
 
     if let Some(provenance) = state
@@ -1426,20 +1445,27 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
         .map(|cartridge| &cartridge.provenance)
     {
         if state.screen_ticks >= 12 {
-            let notice = provenance
+            let mut notice = provenance
                 .copyright
                 .as_deref()
                 .map(|notice| notice.replace('©', "(C)"))
                 .unwrap_or_else(|| "NO DECLARED COPYRIGHT NOTICE".into());
-            frame.centered_text(73, &truncate(&notice, 32), MIST, 1);
+            if notice
+                .get(..10)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("copyright "))
+            {
+                notice.drain(..10);
+            }
+            notice = notice.replace("(C)", "COPY").replace("(c)", "COPY");
+            frame.centered_compact_text_in(42, 75, 156, &truncate(&notice, 28), MIST);
         }
         if state.screen_ticks >= 24 {
-            frame.centered_text(87, "COMMIT AUTHORS", ASH, 1);
+            frame.centered_text(87, "COMMIT AUTHORS", CYAN_DIM, 1);
             if provenance.authors.is_empty() {
-                frame.centered_text(98, "NO COMMIT AUTHORS YET", PARCH, 1);
+                frame.centered_text(98, "NO AUTHORS YET", PARCH, 1);
             } else {
                 for (index, author) in provenance.authors.iter().take(3).enumerate() {
-                    frame.centered_text(98 + index as i32 * 9, &truncate(author, 32), PARCH, 1);
+                    frame.centered_text(97 + index as i32 * 9, &truncate(author, 20), PARCH, 1);
                 }
             }
         }
@@ -1449,113 +1475,38 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
                 (Some(first), Some(latest)) => format!("ARCHIVE {first} > {latest}"),
                 _ => "HISTORY NOT YET WRITTEN".into(),
             };
-            frame.centered_text(128, &history, AMBER_DIM, 1);
+            frame.centered_text(126, &truncate(&history, 24), MIST, 1);
         }
     }
     if state.can_signal(SceneSignal::Continue) && (state.screen_ticks / 20).is_multiple_of(2) {
-        frame.centered_text(140, "A / START:SKIP", MIST, 1);
-    }
-}
-
-fn draw_history_path(frame: &mut Framebuffer, lit_nodes: usize) {
-    let nodes = [
-        (34, 108),
-        (65, 88),
-        (92, 101),
-        (120, 77),
-        (150, 95),
-        (180, 70),
-        (210, 91),
-    ];
-    for (index, pair) in nodes.windows(2).enumerate() {
-        frame.line(
-            pair[0].0,
-            pair[0].1,
-            pair[1].0,
-            pair[1].1,
-            if index + 1 < lit_nodes {
-                CYAN_DIM
-            } else {
-                INDIGO
-            },
-        );
-    }
-    for (index, (x, y)) in nodes.into_iter().enumerate() {
-        let color = if index < lit_nodes {
-            if index.is_multiple_of(3) {
-                AMBER
-            } else {
-                CYAN
-            }
-        } else {
-            ASH
-        };
-        frame.rect(x - 2, y - 2, 5, 5, color);
+        frame.rect(74, 141, 92, 16, VOID);
+        frame.outline(74, 141, 92, 16, CYAN_DIM);
+        frame.centered_text(145, "A / START:SKIP", MIST, 1);
     }
 }
 
 fn render_oracle_awakening(frame: &mut Framebuffer, state: &GameState) {
-    let ticks = state.screen_ticks;
-    let energy = match ticks {
-        0..=39 => 0,
-        40..=109 => 1,
-        110..=209 => 2,
-        _ => 3,
-    };
-    draw_oracle_backdrop(frame, PresentationTier::OracleBound, energy, ticks);
-    let lit_nodes = if ticks < 40 {
-        0
-    } else {
-        (((ticks - 40) / 24) + 1).min(7) as usize
-    };
-    draw_history_path(frame, lit_nodes);
-
-    frame.line(72, 58, 92, 77, if energy >= 2 { CYAN } else { ASH });
-    frame.line(72, 96, 92, 77, if energy >= 2 { CYAN_DIM } else { ASH });
-    frame.line(168, 58, 148, 77, if energy >= 2 { AMBER } else { ASH });
-    frame.line(168, 96, 148, 77, if energy >= 2 { AMBER_DIM } else { ASH });
-
-    if energy >= 3 {
-        let pulse = ((ticks / 12) % 2) as u8;
-        draw_oracle_eye(frame, 120, 76, PresentationTier::OracleBound, 2 + pulse);
-        frame.centered_text(20, "THE ARCHIVE AWAKENS", AMBER, 1);
-        frame.centered_text(132, "THE ORACLE OPENS", PARCH, 1);
-    } else if energy == 2 {
-        frame.centered_text(20, "SIGNALS CONVERGE", CYAN, 1);
-        frame.centered_text(132, "TWO SIGILS REMEMBER", MIST, 1);
-    } else if energy == 1 {
-        frame.centered_text(132, "ONE COMMIT ANSWERS", CYAN, 1);
-    } else {
-        frame.centered_text(132, "THE ARCHIVE SLEEPS", ASH, 1);
-    }
-
+    frame.blit_awakening(state.screen_ticks);
     if state.can_signal(SceneSignal::Continue) {
-        frame.text(164, 150, "A/START:SKIP", MIST, 1);
+        frame.rect(164, 149, 76, 11, VOID);
+        frame.text(166, 151, "A/START:SKIP", MIST, 1);
     }
 }
 
 fn render_oracle_title(frame: &mut Framebuffer, state: &GameState) {
-    draw_oracle_backdrop(frame, PresentationTier::Initiate, 1, state.screen_ticks);
-    draw_circuit_frame(frame, PresentationTier::Initiate, 7);
-    let eye_energy = if (state.screen_ticks / 36).is_multiple_of(2) {
-        1
-    } else {
-        0
-    };
-    draw_oracle_eye(frame, 120, 35, PresentationTier::Initiate, eye_energy);
+    frame.blit_rgb(ORACLE_GATEWAY);
     let title = state
         .cartridge
         .as_ref()
         .map_or("NO CARTRIDGE", |cart| cart.title.as_str());
-    let lines = title_lines(title);
-    frame.centered_text(62, &lines[0], PARCH, 2);
+    let lines = wrap_text(title, 10);
+    frame.centered_text(49, &truncate(&lines[0], 10), PARCH, 2);
     if let Some(line) = lines.get(1) {
-        frame.centered_text(81, line, AMBER, 2);
+        frame.centered_text(67, &truncate(line, 10), AMBER, 2);
     }
-    frame.centered_text(104, "THE ORACLE OF THE REPOSITORY", CYAN_DIM, 1);
+    frame.centered_text(125, "REPOSITORY ORACLE", CYAN, 1);
     if state.has_game() && (state.screen_ticks / 30).is_multiple_of(2) {
-        draw_oracle_panel(frame, 66, 123, 108, 19, true);
-        frame.centered_text(129, "PRESS START", PARCH, 1);
+        frame.centered_text(100, "PRESS START", PARCH, 1);
     }
 }
 
@@ -1740,29 +1691,27 @@ fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
 }
 
 fn render_oracle_menu(frame: &mut Framebuffer, state: &GameState) {
-    let tier = PresentationTier::Initiate;
-    draw_oracle_backdrop(frame, tier, 1, state.screen_ticks);
-    draw_circuit_frame(frame, tier, 7);
-    draw_oracle_eye(frame, 120, 30, tier, 0);
-    frame.centered_text(49, "CHOOSE YOUR PATH", AMBER, 1);
-    frame.centered_text(59, "THE BOND BEGINS HERE", CYAN_DIM, 1);
+    frame.blit_rgb(ORACLE_GATEWAY);
+    frame.centered_text(51, "CHOOSE YOUR PATH", PARCH, 1);
+    frame.centered_text(64, "THE BOND BEGINS HERE", CYAN, 1);
     for (index, (label, detail)) in [
-        ("BEGIN THE TRIAL", "FORGE A HERO / FACE ORACLE"),
-        ("RETURN TO TITLE", "CLOSE THE ARCHIVE"),
+        ("BEGIN THE TRIAL", "FORGE A HERO"),
+        ("RETURN TO TITLE", "CLOSE ARCHIVE"),
     ]
     .iter()
     .enumerate()
     {
-        let y = 74 + index as i32 * 31;
+        let y = 92 + index as i32 * 27;
         let focused = state.menu_selected == index;
-        draw_oracle_panel(frame, 25, y, 190, 24, focused);
         if focused {
-            frame.text(32, y + 5, ">", AMBER, 1);
+            draw_asset_focus(frame, 59, y, 121, 20);
         }
-        frame.text(44, y + 4, label, if focused { PARCH } else { MIST }, 1);
-        frame.text(44, y + 13, detail, if focused { CYAN } else { ASH }, 1);
+        frame.centered_text(y + 3, label, if focused { PARCH } else { MIST }, 1);
+        frame.centered_text(y + 11, detail, if focused { AMBER } else { CYAN_DIM }, 1);
     }
-    frame.centered_text(145, "D-PAD  A:CHOOSE  B:BACK", MIST, 1);
+    frame.rect(39, 144, 162, 16, VOID);
+    frame.outline(39, 144, 162, 16, CYAN_DIM);
+    frame.centered_text(148, "D-PAD  A:CHOOSE  B:BACK", MIST, 1);
 }
 
 fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
@@ -1817,34 +1766,46 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
 }
 
 fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
-    let tier = PresentationTier::Initiate;
-    draw_oracle_backdrop(frame, tier, 1, state.screen_ticks);
-    draw_circuit_frame(frame, tier, 6);
-    frame.centered_text(10, "BIND YOUR CODE-SEER", AMBER, 1);
-
-    draw_oracle_panel(frame, 8, 25, 82, 104, false);
-    frame.centered_text(31, "VESSEL", CYAN_DIM, 1);
+    frame.blit_rgb(ORACLE_ATELIER);
+    frame.rect(8, 4, 126, 16, VOID);
+    frame.outline(8, 4, 126, 16, CYAN_DIM);
+    frame.text(13, 8, "BIND YOUR CODE-SEER", AMBER, 1);
     let bob = ((state.screen_ticks / 22) % 2) as i32;
-    frame.line(15, 112, 83, 112, CYAN_DIM);
-    frame.line(23, 117, 75, 117, INDIGO);
-    draw_hero(frame, 18, 66 - bob, 2, state);
-    frame.text(13, 120, HERO_ACCESSORIES[state.hero_name], AMBER_DIM, 1);
+    draw_hero(frame, 32, 47 - bob, 2, state);
+    frame.rect(8, 119, 100, 16, VOID);
+    frame.outline(8, 119, 100, 16, CYAN_DIM);
+    frame.centered_text_in(8, 124, 100, HERO_ACCESSORIES[state.hero_name], AMBER, 1);
 
     let rows = [
-        format!("NAME  <{}>", HERO_NAMES[state.hero_name]),
-        format!("PATH  <{}>", HERO_CLASSES[state.hero_class]),
-        format!("AURA  <{}>", HERO_STYLES[state.hero_style]),
-        "BEGIN BINDING".to_string(),
+        ("NAME", HERO_NAMES[state.hero_name]),
+        ("PATH", HERO_CLASSES[state.hero_class]),
+        ("AURA", HERO_STYLES[state.hero_style]),
     ];
-    for (index, label) in rows.iter().enumerate() {
-        let y = 28 + index as i32 * 24;
+    for (index, (label, value)) in rows.iter().enumerate() {
+        let y = 17 + index as i32 * 32;
         let focused = state.hero_row == index;
-        draw_oracle_panel(frame, 96, y, 136, 19, focused);
         if focused {
-            frame.text(101, y + 5, ">", AMBER, 1);
+            draw_asset_focus(frame, 116, y, 98, 29);
         }
-        frame.text(113, y + 5, label, if focused { PARCH } else { MIST }, 1);
+        frame.text(126, y + 6, label, if focused { AMBER } else { CYAN_DIM }, 1);
+        frame.compact_text(
+            122,
+            y + 16,
+            &format!("<{}>", truncate(value, 14)),
+            if focused { PARCH } else { MIST },
+        );
     }
+
+    if state.hero_row == 3 {
+        draw_asset_focus(frame, 137, 112, 55, 21);
+    }
+    frame.text(
+        153,
+        119,
+        "BIND",
+        if state.hero_row == 3 { PARCH } else { MIST },
+        1,
+    );
 
     let oracle_status = if state.question_count() > 0 {
         "ORACLE READY"
@@ -1853,10 +1814,9 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
     } else {
         "VISION CLOUDY - RETRYING"
     };
-    frame.rect(8, 134, 224, 18, MIDNIGHT);
-    frame.outline(8, 134, 224, 18, CYAN_DIM);
-    frame.text(13, 140, oracle_status, CYAN, 1);
-    frame.text(177, 140, "START:BIND", MIST, 1);
+    frame.rect(0, 143, WIDTH as i32, 17, VOID);
+    frame.text(5, 148, oracle_status, CYAN, 1);
+    frame.text(174, 148, "START:BIND", MIST, 1);
 }
 
 fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
@@ -1913,24 +1873,21 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
 
 fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
     let tier = state.visual_tier();
-    let energy = match tier {
-        PresentationTier::Initiate => 1,
-        PresentationTier::Adept => 2,
-        PresentationTier::OracleBound => 3,
+    match tier {
+        PresentationTier::Initiate => frame.blit_rgb_graded(ORACLE_SANCTUM, 218, 238, 172),
+        PresentationTier::Adept => frame.blit_rgb_graded(ORACLE_SANCTUM, 236, 250, 226),
+        PresentationTier::OracleBound => frame.blit_rgb(ORACLE_SANCTUM),
     };
-    draw_oracle_backdrop(frame, tier, energy, state.screen_ticks);
-    draw_oracle_eye(frame, 120, 64, tier, energy.saturating_sub(1));
-
-    frame.rect(0, 0, WIDTH as i32, 14, VOID);
-    frame.rect(0, 13, WIDTH as i32, 1, CYAN_DIM);
-    frame.text(4, 3, "DATAFALL", AMBER, 1);
+    frame.rect(0, 0, WIDTH as i32, 15, VOID);
+    frame.rect(0, 143, WIDTH as i32, 17, VOID);
+    frame.text(5, 5, "DATAFALL", AMBER, 1);
     frame.text(
         60,
-        3,
+        5,
         tier.label(),
         match tier {
             PresentationTier::Initiate => CYAN_DIM,
-            PresentationTier::Adept => AMBER_DIM,
+            PresentationTier::Adept => AMBER,
             PresentationTier::OracleBound => MAGENTA,
         },
         1,
@@ -1945,7 +1902,24 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         "CLAUDE:CHANNEL"
     };
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
-    frame.text(235 - status_width, 3, status, CYAN, 1);
+    frame.text(235 - status_width, 5, status, CYAN, 1);
+
+    if tier == PresentationTier::OracleBound {
+        for (x, y) in [
+            (120, 28),
+            (104, 38),
+            (136, 38),
+            (96, 52),
+            (144, 52),
+            (104, 66),
+            (136, 66),
+            (120, 76),
+        ] {
+            frame.rect(x - 2, y - 2, 5, 5, VOID);
+            frame.outline(x - 2, y - 2, 5, 5, VIOLET);
+            frame.pixel(x, y, MAGENTA);
+        }
+    }
 
     for drop in &state.oracle_drops {
         match drop.kind {
@@ -1954,38 +1928,22 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         }
     }
 
-    frame.rect(0, 127, WIDTH as i32, 33, VOID);
-    frame.rect(
-        0,
-        127,
-        WIDTH as i32,
-        2,
-        if tier == PresentationTier::Initiate {
-            CYAN_DIM
-        } else {
-            AMBER_DIM
-        },
-    );
-    for x in (5..236).step_by(12) {
-        frame.pixel(x, 132, if x % 24 == 5 { CYAN_DIM } else { INDIGO });
-    }
-    draw_hero(frame, state.oracle_hero_x, 108, 1, state);
+    draw_hero(frame, state.oracle_hero_x, 106, 1, state);
     frame.text(
         5,
-        143,
+        149,
         &format!("DATA {:02}", state.oracle_data.min(99)),
         GREEN,
         1,
     );
-    frame.centered_text(143, "L/R:MOVE  B:LEAVE", PARCH, 1);
+    frame.centered_text(149, "L/R:MOVE  B:LEAVE", PARCH, 1);
     frame.text(
         198,
-        143,
+        149,
         &format!("BUG {:02}", state.oracle_bug_hits.min(99)),
         RED,
         1,
     );
-    frame.centered_text(152, "COLLECT SIGNAL / EVADE CORRUPTION", ASH, 1);
 }
 
 fn draw_oracle_data(frame: &mut Framebuffer, x: i32, y: i32) {
@@ -2066,22 +2024,39 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         return;
     };
     let tier = state.visual_tier();
-    draw_oracle_backdrop(
-        frame,
-        tier,
-        match tier {
-            PresentationTier::Initiate => 1,
-            PresentationTier::Adept => 2,
-            PresentationTier::OracleBound => 3,
-        },
-        state.screen_ticks,
-    );
-    frame.rect(0, 0, WIDTH as i32, 18, VOID);
-    frame.rect(0, 17, WIDTH as i32, 1, CYAN_DIM);
-    frame.text(5, 5, &format!("TRIAL {:02}", run.question + 1), CYAN, 1);
-    draw_hero_token(frame, 63, 2, state);
-    frame.centered_text(
+    match tier {
+        PresentationTier::Initiate => frame.blit_rgb_graded(ORACLE_TRIAL, 226, 244, 188),
+        PresentationTier::Adept => frame.blit_rgb_graded(ORACLE_TRIAL, 240, 250, 230),
+        PresentationTier::OracleBound => frame.blit_rgb(ORACLE_TRIAL),
+    };
+    frame.blit_rgba(
+        ORACLE_PORTRAITS[state.hero_style],
+        HERO_PORTRAIT_SIZE,
+        HERO_PORTRAIT_SIZE,
+        8,
         5,
+        1,
+    );
+    frame.rect(37, 2, 203, 28, VOID);
+    frame.outline(37, 2, 203, 28, CYAN_DIM);
+    frame.text(
+        44,
+        7,
+        &format!("TRIAL {:02}", (run.question + 1).min(99)),
+        CYAN,
+        1,
+    );
+    frame.text(
+        151,
+        7,
+        &format!("HP {}", "*".repeat(run.hearts.min(3) as usize)),
+        RED,
+        1,
+    );
+    frame.text(215, 7, &format!("{:04}", run.score.min(9999)), AMBER, 1);
+    frame.text(
+        44,
+        20,
         tier.label(),
         if tier == PresentationTier::Initiate {
             CYAN_DIM
@@ -2091,13 +2066,16 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         1,
     );
     frame.text(
-        167,
-        5,
-        &format!("HP {}", "*".repeat(run.hearts as usize)),
-        RED,
+        126,
+        20,
+        if run.feedback.is_some() {
+            "REVIEW"
+        } else {
+            "A:ANSWER B:LEAVE"
+        },
+        if run.feedback.is_some() { AMBER } else { MIST },
         1,
     );
-    frame.text(215, 5, &format!("{:04}", run.score), AMBER, 1);
 
     let Some(cart) = state.cartridge.as_ref() else {
         return;
@@ -2105,10 +2083,9 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
     let Some(question) = cart.questions.get(run.question) else {
         return;
     };
-    draw_oracle_panel(frame, 5, 23, 230, 42, false);
-    frame.wrapped_text(
-        11,
-        30,
+    frame.wrapped_compact_text(
+        28,
+        35,
         &question.question,
         PARCH,
         QUIZ_QUESTION_COLUMNS,
@@ -2116,16 +2093,11 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
     );
 
     for (index, choice) in question.choices.iter().take(4).enumerate() {
-        let y = 70 + index as i32 * 19;
+        let y = 69 + index as i32 * 22;
         let focused = run.selected == index;
-        draw_oracle_panel(frame, 5, y, 230, 16, focused);
-        frame.text(
-            10,
-            y + 4,
-            if focused { ">" } else { "+" },
-            if focused { AMBER } else { ASH },
-            1,
-        );
+        if focused {
+            draw_asset_focus(frame, 23, y, 204, 20);
+        }
         let mut color = if focused { PARCH } else { MIST };
         let mut label = "";
         if let Some((correct, _)) = run.feedback {
@@ -2142,16 +2114,10 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         } else {
             24
         };
-        frame.text(21, y + 4, &truncate(choice, max_choice), color, 1);
+        frame.compact_text(31, y + 7, &truncate(choice, max_choice), color);
         if !label.is_empty() {
-            frame.text(185, y + 4, label, color, 1);
+            frame.text(173, y + 7, label, color, 1);
         }
-    }
-    if run.feedback.is_some() {
-        frame.centered_text(150, "~ ANSWER RECORDED ~", AMBER, 1);
-    } else {
-        frame.text(6, 150, "A:ANSWER", PARCH, 1);
-        frame.text(190, 150, "B:LEAVE", MIST, 1);
     }
 }
 
@@ -2185,32 +2151,12 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
 
 fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
     let tier = state.visual_tier();
-    draw_oracle_backdrop(frame, tier, 3, state.screen_ticks);
-    draw_circuit_frame(frame, tier, 6);
-    let growth = (state.screen_ticks / 10).min(3) as u8;
-    draw_oracle_eye(frame, 120, 67, tier, growth);
-    for offset in [0, 12, 24] {
-        if state.screen_ticks >= offset {
-            let spread = 38 + offset as i32;
-            frame.line(
-                120 - spread,
-                67,
-                120 - spread - 9,
-                58,
-                if offset == 24 { MAGENTA } else { AMBER },
-            );
-            frame.line(
-                120 + spread,
-                67,
-                120 + spread + 9,
-                58,
-                if offset == 24 { MAGENTA } else { AMBER },
-            );
-        }
-    }
-    frame.centered_text(14, "ORACLE BOND ASCENDS", AMBER, 1);
+    frame.blit_rgb(ORACLE_ASCENSION);
+    frame.rect(47, 68, 146, 34, VOID);
+    frame.outline(47, 68, 146, 34, AMBER);
+    frame.centered_text(73, "ORACLE BOND ASCENDS", AMBER, 1);
     frame.centered_text(
-        26,
+        84,
         tier.label(),
         if tier == PresentationTier::OracleBound {
             MAGENTA
@@ -2220,20 +2166,35 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         2,
     );
     let rise = (state.screen_ticks.min(45) / 5) as i32;
-    draw_hero(frame, 106, 94 - rise, 1, state);
+    draw_hero(frame, 108, 105 - rise, 1, state);
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text(
-            118,
-            &format!("LEVEL {} / {} BATCHES", run.level, run.completed_batches),
+        frame.rect(22, 117, 70, 16, VOID);
+        frame.outline(22, 117, 70, 16, CYAN_DIM);
+        frame.centered_text_in(
+            22,
+            122,
+            70,
+            &format!("LEVEL {}", run.level.min(99)),
+            PARCH,
+            1,
+        );
+        frame.rect(158, 117, 75, 16, VOID);
+        frame.outline(158, 117, 75, 16, CYAN_DIM);
+        frame.centered_text_in(
+            158,
+            122,
+            75,
+            &format!("BATCH {}", run.completed_batches.min(99)),
             PARCH,
             1,
         );
     }
+    frame.rect(39, 144, 162, 16, VOID);
+    frame.outline(39, 144, 162, 16, CYAN_DIM);
     if state.screen_ticks >= LEVEL_UP_HOLD_TICKS {
-        draw_oracle_panel(frame, 54, 137, 132, 16, true);
-        frame.centered_text(142, "A / START:CONTINUE", PARCH, 1);
+        frame.centered_text(149, "A / START:CONTINUE", PARCH, 1);
     } else {
-        frame.centered_text(143, "THE NEW CREST TAKES HOLD", MIST, 1);
+        frame.centered_text(149, "THE NEW CREST TAKES HOLD", MIST, 1);
     }
 }
 
@@ -2260,18 +2221,15 @@ fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
 
 fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
     let tier = state.visual_tier();
-    draw_oracle_backdrop(frame, tier, 1, state.screen_ticks);
-    draw_circuit_frame(frame, tier, 7);
-    draw_oracle_eye(frame, 120, 39, tier, 0);
-    frame.centered_text(60, "THE VISION CLOSES", RED, 1);
+    frame.blit_rgb(ORACLE_AFTERMATH);
+    frame.text(149, 24, "VISION CLOSED", RED, 1);
     if let Some(run) = state.quiz.as_ref() {
-        draw_oracle_panel(frame, 28, 74, 184, 48, false);
-        frame.text(39, 83, "FINAL SCORE", ASH, 1);
-        frame.text(144, 83, &format!("{:04}", run.score), AMBER, 1);
-        frame.text(39, 95, "BOND REACHED", ASH, 1);
+        frame.text(148, 49, "FINAL SCORE", MIST, 1);
+        frame.text(197, 59, &format!("{:04}", run.score.min(9999)), AMBER, 1);
+        frame.text(148, 76, "BOND REACHED", MIST, 1);
         frame.text(
-            135,
-            95,
+            148,
+            87,
             tier.label(),
             if tier == PresentationTier::Initiate {
                 CYAN
@@ -2280,14 +2238,13 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
             },
             1,
         );
-        frame.text(39, 107, "LEVEL", ASH, 1);
-        frame.text(144, 107, &run.level.to_string(), PARCH, 1);
-        draw_defeated_hero(frame, 103, 120, state);
+        frame.text(148, 104, &format!("LEVEL {}", run.level.min(99)), PARCH, 1);
+        draw_defeated_hero(frame, 52, 106, state);
     } else {
-        frame.centered_text(91, "NO QUESTIONS FOUND", AMBER, 1);
+        frame.text(148, 79, "NO QUESTIONS", AMBER, 1);
     }
     if (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(148, "A / B / START:RETURN", PARCH, 1);
+        frame.text(144, 126, "A/B/START:MENU", PARCH, 1);
     }
 }
 
@@ -2384,48 +2341,149 @@ fn draw_oracle_hero(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, state: 
         3 => AMBER,
         _ => VIOLET,
     };
-    draw_weapon(frame, x, y, scale, state.hero_class, accent);
-    frame.rect(x + 7 * scale, y + 2 * scale, 14 * scale, 11 * scale, CRAB);
-    frame.rect(x + 4 * scale, y + 10 * scale, 20 * scale, 6 * scale, accent);
-    frame.rect(x + 2 * scale, y + 15 * scale, 24 * scale, 5 * scale, INDIGO);
-    frame.rect(x + 5 * scale, y + 20 * scale, 7 * scale, 4 * scale, accent);
-    frame.rect(x + 16 * scale, y + 20 * scale, 7 * scale, 4 * scale, accent);
-    frame.rect(x + 3 * scale, y + 8 * scale, 3 * scale, 7 * scale, CRAB);
-    frame.rect(x + 22 * scale, y + 8 * scale, 3 * scale, 7 * scale, CRAB);
-    frame.rect(x + 9 * scale, y + 6 * scale, 3 * scale, 2 * scale, CYAN);
-    frame.rect(x + 16 * scale, y + 6 * scale, 3 * scale, 2 * scale, CYAN);
-    frame.rect(x + 12 * scale, y + 10 * scale, 4 * scale, 2 * scale, AMBER);
-    frame.line(
-        x + 5 * scale,
-        y + 15 * scale,
-        x + 23 * scale,
-        y + 15 * scale,
-        AMBER_DIM,
+    frame.blit_rgba(
+        ORACLE_HEROES[state.hero_style],
+        HERO_SPRITE_WIDTH,
+        HERO_SPRITE_HEIGHT,
+        x,
+        y,
+        scale,
     );
-    draw_accessory(frame, x, y, scale, state.hero_name, accent);
+    draw_oracle_weapon(frame, x, y, scale, state.hero_class, accent);
+    draw_oracle_accessory(frame, x, y, scale, state.hero_name, accent);
 }
 
-fn draw_hero_token(frame: &mut Framebuffer, x: i32, y: i32, state: &GameState) {
-    let accent = match state.hero_style {
-        0 => MAGENTA,
-        1 => CYAN,
-        2 => GREEN,
-        3 => AMBER,
-        _ => VIOLET,
-    };
-    frame.rect(x, y, 14, 13, INDIGO);
-    frame.outline(x, y, 14, 13, accent);
-    frame.rect(x + 3, y + 3, 8, 7, CRAB);
-    frame.pixel(x + 5, y + 5, CYAN);
-    frame.pixel(x + 8, y + 5, CYAN);
-    frame.rect(x + 4, y + 9, 6, 2, accent);
+fn draw_oracle_weapon(
+    frame: &mut Framebuffer,
+    x: i32,
+    y: i32,
+    scale: i32,
+    weapon: usize,
+    accent: Color,
+) {
+    let edge_x = x + 25 * scale;
+    match weapon {
+        0 => {
+            frame.rect(edge_x, y + 10 * scale, scale, 12 * scale, PARCH);
+            frame.rect(edge_x - 2 * scale, y + 20 * scale, 5 * scale, scale, AMBER);
+        }
+        1 => {
+            frame.rect(edge_x, y + 12 * scale, scale, 13 * scale, AMBER);
+            frame.rect(
+                edge_x - 2 * scale,
+                y + 8 * scale,
+                5 * scale,
+                5 * scale,
+                accent,
+            );
+            frame.pixel(edge_x, y + 10 * scale, PARCH);
+        }
+        2 => {
+            frame.line(
+                x - 4 * scale,
+                y + 18 * scale,
+                x + 2 * scale,
+                y + 18 * scale,
+                accent,
+            );
+            frame.line(
+                x - 4 * scale,
+                y + 18 * scale,
+                x - 4 * scale,
+                y + 23 * scale,
+                accent,
+            );
+            frame.line(x - 4 * scale, y + 23 * scale, x, y + 23 * scale, PARCH);
+        }
+        3 => {
+            frame.rect(edge_x, y + 13 * scale, 2 * scale, 12 * scale, AMBER);
+            frame.rect(
+                edge_x - 3 * scale,
+                y + 9 * scale,
+                7 * scale,
+                5 * scale,
+                accent,
+            );
+        }
+        4 => {
+            frame.line(edge_x, y + 8 * scale, edge_x, y + 25 * scale, AMBER);
+            frame.line(
+                edge_x,
+                y + 8 * scale,
+                edge_x + 4 * scale,
+                y + 16 * scale,
+                accent,
+            );
+            frame.line(
+                edge_x + 4 * scale,
+                y + 16 * scale,
+                edge_x,
+                y + 25 * scale,
+                accent,
+            );
+        }
+        _ => {
+            frame.outline(x - 5 * scale, y + 13 * scale, 6 * scale, 11 * scale, accent);
+            frame.rect(x - 3 * scale, y + 16 * scale, 2 * scale, 5 * scale, AMBER);
+        }
+    }
+}
+
+fn draw_oracle_accessory(
+    frame: &mut Framebuffer,
+    x: i32,
+    y: i32,
+    scale: i32,
+    accessory: usize,
+    accent: Color,
+) {
+    match accessory {
+        0 => {
+            frame.rect(x + 8 * scale, y + 13 * scale, 3 * scale, scale, INK);
+            frame.rect(x + 13 * scale, y + 13 * scale, 3 * scale, scale, INK);
+        }
+        1 => {
+            frame.rect(x + 4 * scale, y + 2 * scale, 16 * scale, scale, AMBER);
+            frame.rect(x + 8 * scale, y, 9 * scale, 3 * scale, accent);
+        }
+        2 => {
+            frame.rect(x + 8 * scale, y + 20 * scale, 3 * scale, 3 * scale, accent);
+            frame.rect(x + 13 * scale, y + 20 * scale, 3 * scale, 3 * scale, accent);
+        }
+        3 => {
+            frame.outline(x + 13 * scale, y + 10 * scale, 5 * scale, 5 * scale, AMBER);
+            frame.line(
+                x + 17 * scale,
+                y + 14 * scale,
+                x + 19 * scale,
+                y + 18 * scale,
+                AMBER,
+            );
+        }
+        4 => {
+            for offset in [0, 6, 12] {
+                frame.rect(
+                    x + (5 + offset) * scale,
+                    y + 2 * scale,
+                    3 * scale,
+                    3 * scale,
+                    AMBER,
+                );
+            }
+        }
+        _ => {
+            frame.rect(x + 5 * scale, y + 10 * scale, 14 * scale, 3 * scale, INK);
+            frame.pixel(x + 8 * scale, y + 11 * scale, accent);
+            frame.pixel(x + 15 * scale, y + 11 * scale, accent);
+        }
+    }
 }
 
 fn draw_defeated_hero(frame: &mut Framebuffer, x: i32, y: i32, state: &GameState) {
     draw_hero(frame, x, y, 1, state);
-    frame.rect(x + 8, y + 6, 12, 2, VOID);
-    frame.line(x + 7, y + 23, x + 21, y + 23, ASH);
-    frame.line(x - 10, y + 24, x + 35, y + 24, INDIGO);
+    frame.rect(x + 5, y + 12, 14, 2, VOID);
+    frame.line(x + 4, y + 35, x + 20, y + 35, ASH);
+    frame.line(x - 7, y + 36, x + 31, y + 36, INDIGO);
 }
 
 fn draw_weapon(frame: &mut Framebuffer, x: i32, y: i32, scale: i32, weapon: usize, accent: Color) {
@@ -2684,6 +2742,12 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
+fn text_width(text: &str, scale: i32) -> i32 {
+    let characters = text.chars().count() as i32;
+    let trailing_space = if characters > 0 { 1 } else { 0 };
+    (characters * GLYPH_ADVANCE - trailing_space) * scale
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
@@ -2900,6 +2964,473 @@ mod tests {
             .flat_map(|y| x_range.clone().map(move |x| (y * WIDTH + x) * 4))
             .filter(|&offset| frame[offset..offset + 4] == [color.0, color.1, color.2, 255])
             .count()
+    }
+
+    fn total_luminance(frame: &[u8]) -> u64 {
+        frame
+            .chunks_exact(4)
+            .map(|pixel| pixel[0] as u64 + pixel[1] as u64 + pixel[2] as u64)
+            .sum()
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct LayoutBounds {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    }
+
+    fn text_bounds(x: i32, y: i32, text: &str, scale: i32) -> LayoutBounds {
+        LayoutBounds {
+            x,
+            y,
+            width: text_width(text, scale),
+            height: 7 * scale,
+        }
+    }
+
+    fn compact_text_bounds(x: i32, y: i32, text: &str) -> LayoutBounds {
+        LayoutBounds {
+            x,
+            y,
+            width: text.chars().count() as i32 * GLYPH_WIDTH,
+            height: 7,
+        }
+    }
+
+    fn centered_text_bounds(y: i32, text: &str, scale: i32) -> LayoutBounds {
+        let width = text_width(text, scale);
+        text_bounds((WIDTH as i32 - width) / 2, y, text, scale)
+    }
+
+    fn centered_text_in_bounds(
+        container: LayoutBounds,
+        y: i32,
+        text: &str,
+        scale: i32,
+    ) -> LayoutBounds {
+        let width = text_width(text, scale);
+        text_bounds(container.x + (container.width - width) / 2, y, text, scale)
+    }
+
+    fn centered_compact_text_in_bounds(
+        container: LayoutBounds,
+        y: i32,
+        text: &str,
+    ) -> LayoutBounds {
+        let width = text.chars().count() as i32 * GLYPH_WIDTH;
+        compact_text_bounds(container.x + (container.width - width) / 2, y, text)
+    }
+
+    fn bounds_contains(container: LayoutBounds, child: LayoutBounds) -> bool {
+        child.x >= container.x
+            && child.y >= container.y
+            && child.x + child.width <= container.x + container.width
+            && child.y + child.height <= container.y + container.height
+    }
+
+    fn bounds_are_disjoint(left: LayoutBounds, right: LayoutBounds) -> bool {
+        left.x + left.width <= right.x
+            || right.x + right.width <= left.x
+            || left.y + left.height <= right.y
+            || right.y + right.height <= left.y
+    }
+
+    fn relative_luminance(color: Color) -> f64 {
+        fn linear(channel: u8) -> f64 {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        0.2126 * linear(color.0) + 0.7152 * linear(color.1) + 0.0722 * linear(color.2)
+    }
+
+    fn contrast_ratio(foreground: Color, background: Color) -> f64 {
+        let foreground = relative_luminance(foreground);
+        let background = relative_luminance(background);
+        let (lighter, darker) = if foreground > background {
+            (foreground, background)
+        } else {
+            (background, foreground)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn oracle_live_ui_stays_contained_disjoint_and_readable() {
+        let screen = LayoutBounds {
+            x: 0,
+            y: 0,
+            width: WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        let chronicle_body = LayoutBounds {
+            x: 42,
+            y: 34,
+            width: 156,
+            height: 88,
+        };
+        let chronicle_footer = LayoutBounds {
+            x: 42,
+            y: 122,
+            width: 156,
+            height: 17,
+        };
+        let chronicle_skip = LayoutBounds {
+            x: 74,
+            y: 141,
+            width: 92,
+            height: 16,
+        };
+        let title_panel = LayoutBounds {
+            x: 49,
+            y: 39,
+            width: 142,
+            height: 43,
+        };
+        let menu_panel = LayoutBounds {
+            x: 59,
+            y: 92,
+            width: 121,
+            height: 20,
+        };
+        let atelier_row = LayoutBounds {
+            x: 116,
+            y: 17,
+            width: 98,
+            height: 29,
+        };
+        let quiz_question = LayoutBounds {
+            x: 20,
+            y: 30,
+            width: 200,
+            height: 36,
+        };
+        let quiz_choice = LayoutBounds {
+            x: 23,
+            y: 69,
+            width: 204,
+            height: 20,
+        };
+        let aftermath_panel = LayoutBounds {
+            x: 136,
+            y: 14,
+            width: 96,
+            height: 123,
+        };
+        let opening_skip = LayoutBounds {
+            x: 164,
+            y: 149,
+            width: 76,
+            height: 11,
+        };
+        let menu_footer = LayoutBounds {
+            x: 39,
+            y: 144,
+            width: 162,
+            height: 16,
+        };
+        let atelier_header = LayoutBounds {
+            x: 8,
+            y: 4,
+            width: 126,
+            height: 16,
+        };
+        let atelier_accessory = LayoutBounds {
+            x: 8,
+            y: 119,
+            width: 100,
+            height: 16,
+        };
+        let full_header = LayoutBounds {
+            x: 0,
+            y: 0,
+            width: 240,
+            height: 15,
+        };
+        let full_footer = LayoutBounds {
+            x: 0,
+            y: 143,
+            width: 240,
+            height: 17,
+        };
+        let ascension_title = LayoutBounds {
+            x: 47,
+            y: 68,
+            width: 146,
+            height: 34,
+        };
+        let trial_header = LayoutBounds {
+            x: 37,
+            y: 2,
+            width: 203,
+            height: 28,
+        };
+        let ascension_level = LayoutBounds {
+            x: 22,
+            y: 117,
+            width: 70,
+            height: 16,
+        };
+        let ascension_batch = LayoutBounds {
+            x: 158,
+            y: 117,
+            width: 75,
+            height: 16,
+        };
+
+        for (name, container, child) in [
+            (
+                "chronicle title",
+                chronicle_body,
+                centered_text_bounds(53, "REPOSITORY CHRONICL", 1),
+            ),
+            (
+                "chronicle third author",
+                chronicle_body,
+                centered_text_bounds(115, "A TWENTY CHAR NAME", 1),
+            ),
+            (
+                "chronicle copyright",
+                chronicle_body,
+                centered_compact_text_in_bounds(chronicle_body, 75, "(C) 2020-2024 ADA LOVELACE"),
+            ),
+            (
+                "chronicle history",
+                chronicle_footer,
+                centered_text_bounds(126, "ARCHIVE 1234 > 56789012", 1),
+            ),
+            (
+                "chronicle skip",
+                chronicle_skip,
+                centered_text_bounds(145, "A / START:SKIP", 1),
+            ),
+            (
+                "title first line",
+                title_panel,
+                centered_text_bounds(49, "1234567890", 2),
+            ),
+            (
+                "title second line",
+                title_panel,
+                centered_text_bounds(67, "1234567890", 2),
+            ),
+            (
+                "awakening skip",
+                opening_skip,
+                text_bounds(166, 151, "A/START:SKIP", 1),
+            ),
+            (
+                "menu option",
+                menu_panel,
+                centered_text_bounds(95, "RETURN TO TITLE", 1),
+            ),
+            (
+                "menu detail",
+                menu_panel,
+                centered_text_bounds(103, "CLOSE ARCHIVE", 1),
+            ),
+            (
+                "menu controls",
+                menu_footer,
+                centered_text_bounds(148, "D-PAD  A:CHOOSE  B:BACK", 1),
+            ),
+            (
+                "atelier heading",
+                atelier_header,
+                text_bounds(13, 8, "BIND YOUR CODE-SEER", 1),
+            ),
+            (
+                "atelier accessory",
+                atelier_accessory,
+                centered_text_in_bounds(atelier_accessory, 124, "MUSTACHE", 1),
+            ),
+            (
+                "atelier row label",
+                atelier_row,
+                text_bounds(126, 23, "PATH", 1),
+            ),
+            (
+                "atelier longest value",
+                atelier_row,
+                compact_text_bounds(122, 33, "<MERGE PALADIN>"),
+            ),
+            (
+                "atelier retry status",
+                full_footer,
+                text_bounds(5, 148, "VISION CLOUDY - RETRYING", 1),
+            ),
+            (
+                "atelier controls",
+                full_footer,
+                text_bounds(174, 148, "START:BIND", 1),
+            ),
+            (
+                "sanctum status",
+                full_header,
+                text_bounds(152, 5, "CLAUDE:SCRYING", 1),
+            ),
+            (
+                "sanctum controls",
+                full_footer,
+                centered_text_bounds(149, "L/R:MOVE  B:LEAVE", 1),
+            ),
+            (
+                "quiz longest question line",
+                quiz_question,
+                compact_text_bounds(28, 35, &"Q".repeat(QUIZ_QUESTION_COLUMNS)),
+            ),
+            (
+                "trial number",
+                trial_header,
+                text_bounds(44, 7, "TRIAL 99", 1),
+            ),
+            (
+                "trial hearts",
+                trial_header,
+                text_bounds(151, 7, "HP ***", 1),
+            ),
+            ("trial score", trial_header, text_bounds(215, 7, "9999", 1)),
+            (
+                "trial tier",
+                trial_header,
+                text_bounds(44, 20, "ORACLE-BOUND", 1),
+            ),
+            (
+                "trial controls",
+                trial_header,
+                text_bounds(126, 20, "A:ANSWER B:LEAVE", 1),
+            ),
+            (
+                "quiz longest choice",
+                quiz_choice,
+                compact_text_bounds(31, 76, &"C".repeat(QUIZ_CHOICE_CHARS)),
+            ),
+            (
+                "quiz feedback choice",
+                quiz_choice,
+                compact_text_bounds(31, 76, &"C".repeat(24)),
+            ),
+            (
+                "quiz feedback label",
+                quiz_choice,
+                text_bounds(173, 76, "CORRECT", 1),
+            ),
+            (
+                "ascension heading",
+                ascension_title,
+                centered_text_bounds(73, "ORACLE BOND ASCENDS", 1),
+            ),
+            (
+                "ascension tier",
+                ascension_title,
+                centered_text_bounds(84, "ORACLE-BOUND", 2),
+            ),
+            (
+                "ascension level",
+                ascension_level,
+                centered_text_in_bounds(ascension_level, 122, "LEVEL 99", 1),
+            ),
+            (
+                "ascension batch",
+                ascension_batch,
+                centered_text_in_bounds(ascension_batch, 122, "BATCH 99", 1),
+            ),
+            (
+                "ascension controls",
+                menu_footer,
+                centered_text_bounds(149, "A / START:CONTINUE", 1),
+            ),
+            (
+                "aftermath tier",
+                aftermath_panel,
+                text_bounds(148, 87, "ORACLE-BOUND", 1),
+            ),
+            (
+                "aftermath title",
+                aftermath_panel,
+                text_bounds(149, 24, "VISION CLOSED", 1),
+            ),
+            (
+                "aftermath controls",
+                aftermath_panel,
+                text_bounds(144, 126, "A/B/START:MENU", 1),
+            ),
+        ] {
+            assert!(
+                bounds_contains(container, child),
+                "{name} {child:?} exceeds its container {container:?}"
+            );
+            assert!(
+                bounds_contains(screen, child),
+                "{name} {child:?} exceeds the native frame"
+            );
+        }
+
+        for (name, left, right) in [
+            (
+                "menu label and detail",
+                centered_text_bounds(95, "RETURN TO TITLE", 1),
+                centered_text_bounds(103, "CLOSE ARCHIVE", 1),
+            ),
+            (
+                "atelier label and value",
+                text_bounds(126, 23, "PATH", 1),
+                compact_text_bounds(122, 33, "<MERGE PALADIN>"),
+            ),
+            (
+                "atelier status and controls",
+                text_bounds(5, 148, "VISION CLOUDY - RETRYING", 1),
+                text_bounds(174, 148, "START:BIND", 1),
+            ),
+            (
+                "quiz choice and result",
+                compact_text_bounds(31, 76, &"C".repeat(24)),
+                text_bounds(173, 76, "CORRECT", 1),
+            ),
+            (
+                "trial tier and controls",
+                text_bounds(44, 20, "ORACLE-BOUND", 1),
+                text_bounds(126, 20, "A:ANSWER B:LEAVE", 1),
+            ),
+            (
+                "sanctum tier and status",
+                text_bounds(60, 5, "ORACLE-BOUND", 1),
+                text_bounds(152, 5, "CLAUDE:SCRYING", 1),
+            ),
+            (
+                "ascension heading and tier",
+                centered_text_bounds(73, "ORACLE BOND ASCENDS", 1),
+                centered_text_bounds(84, "ORACLE-BOUND", 2),
+            ),
+        ] {
+            assert!(
+                bounds_are_disjoint(left, right),
+                "{name} overlap: {left:?} and {right:?}"
+            );
+        }
+
+        for (name, foreground) in [
+            ("parchment", PARCH),
+            ("mist", MIST),
+            ("green", GREEN),
+            ("red", RED),
+            ("cyan", CYAN),
+            ("secondary cyan", CYAN_DIM),
+            ("amber", AMBER),
+            ("magenta", MAGENTA),
+        ] {
+            let ratio = contrast_ratio(foreground, VOID);
+            assert!(
+                ratio >= 4.5,
+                "{name} foreground contrast {ratio:.2}:1 is below 4.5:1"
+            );
+        }
     }
 
     fn frame_region(
@@ -4291,15 +4822,24 @@ mod tests {
         let opening_bright = color_pixels_in_region(&frame.pixels, CYAN, 0..WIDTH, 0..HEIGHT)
             + color_pixels_in_region(&frame.pixels, AMBER, 0..WIDTH, 0..HEIGHT);
         assert_eq!(opening_bright, 0, "the fanfare also starts dormant");
+        let opening_luminance = total_luminance(&frame.pixels);
+
+        state.screen_ticks = 96;
+        render_opening_fanfare(&mut frame, &state);
+        let cyan_signal_luminance = total_luminance(&frame.pixels);
+
+        state.screen_ticks = 168;
+        render_opening_fanfare(&mut frame, &state);
+        let convergence_luminance = total_luminance(&frame.pixels);
 
         state.screen_ticks = 260;
         render_opening_fanfare(&mut frame, &state);
-        let crescendo_bright = color_pixels_in_region(&frame.pixels, CYAN, 0..WIDTH, 0..HEIGHT)
-            + color_pixels_in_region(&frame.pixels, AMBER, 0..WIDTH, 0..HEIGHT)
-            + color_pixels_in_region(&frame.pixels, MAGENTA, 0..WIDTH, 0..HEIGHT);
+        let crescendo_luminance = total_luminance(&frame.pixels);
         assert!(
-            crescendo_bright > 80,
-            "the Oracle crescendo should visibly exceed the dormant frames"
+            opening_luminance < cyan_signal_luminance
+                && cyan_signal_luminance < convergence_luminance
+                && convergence_luminance < crescendo_luminance,
+            "the Oracle luminance must climb through dormant, cyan signal, convergence, and crescendo"
         );
     }
 
@@ -4324,6 +4864,17 @@ mod tests {
         };
 
         let mut previews = Vec::new();
+        for (name, ticks) in [
+            ("02a-awakening-dormant", 0),
+            ("02b-awakening-cyan", 96),
+            ("02c-awakening-convergence", 168),
+            ("02d-awakening-crescendo", 260),
+        ] {
+            state.screen_ticks = ticks;
+            let mut frame = Framebuffer::default();
+            render_oracle_awakening(&mut frame, &state);
+            maybe_write_preview(name, &frame.pixels);
+        }
         for (name, renderer) in [
             (
                 "01-chronicle",
