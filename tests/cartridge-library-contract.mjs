@@ -11,6 +11,7 @@ import {
 const cartridge = (path, title = path.toUpperCase()) => ({
   path,
   title,
+  branch: "story/cartridge-label",
   color: "#6a6fd1",
 });
 
@@ -56,6 +57,21 @@ const refreshed = upsertCartridge(fullRack, cartridge("/two", "REFRESHED"));
 assert.equal(refreshed.accepted, true, "Refreshing an existing cartridge remains allowed");
 assert.equal(refreshed.items[1].title, "REFRESHED");
 assert.equal(
+  refreshed.items[1].branch,
+  "story/cartridge-label",
+  "The visible current branch should be cached with the cartridge",
+);
+assert.equal(
+  normalizeCartridges([{ path: "/legacy", title: "LEGACY" }])[0].branch,
+  "BRANCH UNKNOWN",
+  "Older saved cartridges should get a clear branch fallback",
+);
+assert.equal(
+  normalizeCartridges([{ path: "/branch", branch: "story/intro\u0000hidden" }])[0].branch,
+  "story/introhidden",
+  "Persisted branch labels must discard control characters",
+);
+assert.equal(
   upsertCartridge([], { path: "/unsafe", title: "UNSAFE", color: "red; opacity: 0" })
     .items[0].color,
   "#6a6fd1",
@@ -91,5 +107,7 @@ assert.match(styles, /\.cc-gesture \{[^}]*font-size: 9px;/);
 assert.match(styles, /\.cc-sub \{[^}]*white-space: nowrap;/);
 assert.match(styles, /\.cc-gesture \{[^}]*white-space: nowrap;/);
 assert.match(mainSource, /current \? "EJECT FIRST" : "↑ LOAD · ↓ RECYCLE"/);
+assert.match(mainSource, /escapeHtml\(value\.branch\)/);
+assert.doesNotMatch(mainSource, /shortPath/);
 
 console.log("Cartridge library contract OK: three slots with up/load and down/recycle gestures");

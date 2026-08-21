@@ -39,6 +39,7 @@ fn quest(id: &str, name: &str, description: &str, boss: &str, command: &str) -> 
 struct Cartridge {
     id: String,
     title: String,
+    branch: String,
     color: String,
     path: String,
     mode: String,
@@ -63,6 +64,20 @@ fn is_git_repo(path: &std::path::Path) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+fn repository_branch(path: &std::path::Path) -> String {
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|branch| sanitized_metadata(&branch, 48))
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or_else(|| "DETACHED HEAD".to_string())
 }
 
 fn sanitized_metadata(value: &str, max_chars: usize) -> String {
@@ -242,9 +257,11 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
         None => "quiz",
     };
     let provenance = repository_provenance(&canon);
+    let branch = repository_branch(&canon);
     Ok(Cartridge {
         id: p.clone(),
         title: name,
+        branch,
         color: palette[h % palette.len()].to_string(),
         path: p,
         mode: mode.to_string(),
@@ -293,6 +310,15 @@ async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
         return Ok(None);
     }
     build_cartridge(std::path::Path::new(&path)).map(Some)
+}
+
+#[tauri::command]
+fn cartridge_branch(path: String) -> Result<String, String> {
+    let canon = std::fs::canonicalize(path).map_err(|_| "DIRECTORY NOT FOUND".to_string())?;
+    if !is_git_repo(&canon) {
+        return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
+    }
+    Ok(repository_branch(&canon))
 }
 
 struct QuizFile {
@@ -603,6 +629,7 @@ pub fn run() {
         .manage(EngineState(engine::EngineRuntime::spawn(question_loader)))
         .invoke_handler(tauri::generate_handler![
             pick_cartridge,
+            cartridge_branch,
             engine_set_cartridge,
             engine_power,
             engine_finish_boot,
@@ -641,6 +668,7 @@ mod question_policy_tests {
         Cartridge {
             id: path.to_string(),
             title: title.to_string(),
+            branch: "test-branch".to_string(),
             color: "#000000".to_string(),
             path: path.to_string(),
             mode: "quiz".to_string(),
@@ -713,6 +741,23 @@ mod question_policy_tests {
         assert_eq!(spec.title, "CONFIGURED ADVENTURE");
         assert_eq!(spec.mode, engine::CartridgeMode::Custom);
         assert!(spec.codequest.is_some());
+
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_reports_the_repositorys_current_branch() {
+        let repo = temporary_git_repo();
+        let switched = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["switch", "--quiet", "-c", "story/cartridge-label"])
+            .status()
+            .unwrap();
+        assert!(switched.success());
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.branch, "story/cartridge-label");
 
         std::fs::remove_dir_all(repo).unwrap();
     }

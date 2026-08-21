@@ -27,9 +27,10 @@ pick a directory with the native folder dialog. If the directory is a git
 repo it loads as a cartridge — title from the directory name, label color
 from a path hash — and is cached in the three-slot rack for future launches.
 Drag a cached cartridge upward toward the device to load it; drag it downward
-to recycle its rack entry without touching the repository on disk. Click or
-Enter still loads, and Delete provides a keyboard recycle action. If it isn't
-a git repo, the cartridge is refused with a message. The loaded cart
+to recycle its rack entry without touching the repository on disk. Each label
+shows the repository's current branch under its title and refreshes when the
+rack opens. Click or Enter still loads, and Delete provides a keyboard recycle
+action. If it isn't a git repo, the cartridge is refused with a message. The loaded cart
 peeks out of the top-back slot GBA-style and is remembered between launches;
 powering on with an empty slot halts on the boot logo, like real hardware.
 

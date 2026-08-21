@@ -170,7 +170,12 @@ import {
 
   function persistCartridges() {
     cartridges = normalizeCartridges(cartridges);
-    const metadata = cartridges.map(({ path, title, color }) => ({ path, title, color }));
+    const metadata = cartridges.map(({ path, title, branch, color }) => ({
+      path,
+      title,
+      branch,
+      color,
+    }));
     localStorage.setItem("cqa-repo-carts", JSON.stringify(metadata));
   }
 
@@ -185,6 +190,27 @@ import {
   function forgetCartridge(path) {
     cartridges = cartridges.filter((entry) => entry.path !== path);
     persistCartridges();
+  }
+
+  async function refreshCartridgeBranches() {
+    const updates = await Promise.all(cartridges.map(async ({ path }) => {
+      try {
+        return { path, branch: await invoke("cartridge_branch", { path }) };
+      } catch (_) {
+        return null;
+      }
+    }));
+    let changed = false;
+    for (const update of updates) {
+      if (!update) continue;
+      const index = cartridges.findIndex(({ path }) => path === update.path);
+      if (index < 0 || cartridges[index].branch === update.branch) continue;
+      cartridges[index] = { ...cartridges[index], branch: update.branch };
+      changed = true;
+    }
+    if (!changed) return;
+    persistCartridges();
+    if (trayOpen) buildTray();
   }
 
   function showTrayMessage(message, tone = "error") {
@@ -373,11 +399,10 @@ import {
           : "Drag up or press Enter to load. Drag down or press Delete to recycle.";
       card.setAttribute(
         "aria-label",
-        `${value.title}. ${accessibilityAction}`,
+        `${value.title}, branch ${value.branch}. ${accessibilityAction}`,
       );
-      const shortPath = value.path.length > 26 ? `…${value.path.slice(-25)}` : value.path;
       const gesture = current ? "EJECT FIRST" : "↑ LOAD · ↓ RECYCLE";
-      card.innerHTML = `<span class="cc-strip">CODEQUEST ADVANCE</span><span class="cc-label" style="--cc:${escapeHtml(value.color || "#6a6fd1")}"><span class="cc-title">${escapeHtml(value.title)}</span><span class="cc-sub">${escapeHtml(shortPath)}</span><span class="cc-gesture">${gesture}</span></span>`;
+      card.innerHTML = `<span class="cc-strip">CODEQUEST ADVANCE</span><span class="cc-label" style="--cc:${escapeHtml(value.color || "#6a6fd1")}"><span class="cc-title">${escapeHtml(value.title)}</span><span class="cc-sub">${escapeHtml(value.branch)}</span><span class="cc-gesture">${gesture}</span></span>`;
       bindCartridgeDrag(card, value, current);
       list.appendChild(card);
     }
@@ -417,6 +442,7 @@ import {
     buildTray();
     $("cart-tray").classList.remove("hidden");
     trayOpen = true;
+    refreshCartridgeBranches().catch(() => {});
     updateControlGuides();
   }
 
@@ -584,6 +610,7 @@ import {
       if (command === "engine_set_cartridge" && args?.path == null) return null;
       if (command === "engine_set_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");
       if (command === "pick_cartridge") return null;
+      if (command === "cartridge_branch") return "BRANCH UNKNOWN";
       throw new Error(`UNKNOWN COMMAND ${command}`);
     };
   }

@@ -5,9 +5,13 @@ function cartridgeMetadata(value) {
   if (!value || typeof value.path !== "string" || !value.path.trim()) return null;
   const path = value.path;
   const fallbackTitle = path.split(/[\\/]/).filter(Boolean).at(-1) || "UNTITLED";
+  const branch = typeof value.branch === "string"
+    ? value.branch.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 48)
+    : "";
   return {
     path,
     title: typeof value.title === "string" && value.title.trim() ? value.title : fallbackTitle,
+    branch: branch || "BRANCH UNKNOWN",
     color: typeof value.color === "string" && /^#[0-9a-f]{6}$/i.test(value.color)
       ? value.color
       : "#6a6fd1",
