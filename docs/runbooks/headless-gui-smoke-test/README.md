@@ -14,7 +14,7 @@ Durable state: three small X11 utility RPMs installed on this Fedora 43 host
 via local passwordless `sudo dnf` (no credentials involved): `xwd`, `scrot`,
 and `xorg-x11-server-Xvfb`. They exist so this repo's GUI can be launched,
 driven, and screenshot-verified without touching the user's desktop session.
-The app under test is `/home/jskrzype/workdir/scratch/code-quest-advance-bevy`
+The app under test is `/home/jskrzype/workdir/scratch/code-quest-advance`
 (release binary at `src-tauri/target/release/code-quest-advance`);
 verification screenshots live in `docs/screenshots/`.
 
@@ -26,22 +26,14 @@ Xvfb :99 virtual framebuffer -> xwd root capture -> docs/screenshots/*.png
 
 ```bash
 sudo dnf install -y xwd scrot xorg-x11-server-Xvfb   # idempotent
-cd ~/workdir/scratch/code-quest-advance-bevy
+cd ~/workdir/scratch/code-quest-advance
 Xvfb :99 -screen 0 1024x720x24 & XPID=$!
 DISPLAY=:99 GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
-  LIBGL_ALWAYS_SOFTWARE=1 CQA_NO_AI=1 \
-  ./src-tauri/target/release/code-quest-advance & PID=$!
+  LIBGL_ALWAYS_SOFTWARE=1 ./src-tauri/target/release/code-quest-advance & PID=$!
 sleep 8
-WID=$(DISPLAY=:99 xdotool search --name "CODE QUEST ADVANCE" | tail -1)
+WID=$(DISPLAY=:99 xdotool search --name "QUEST" | head -1)
 DISPLAY=:99 xdotool windowfocus --sync "$WID"      # focus FIRST — see Decisions
-DISPLAY=:99 xdotool key p                          # power on
-sleep 5                                            # device boot → title
-DISPLAY=:99 xdotool key Return                     # title → menu
-sleep 1
-DISPLAY=:99 xdotool key Return                     # menu → hero
-sleep 1
-DISPLAY=:99 xdotool key Return                     # hero → town
-sleep .15                                          # catch the hero mid-route
+DISPLAY=:99 xdotool key Return                     # XTEST, NOT `key --window`
 DISPLAY=:99 xwd -root -silent | magick xwd:- png:shot.png
 kill $PID $XPID
 ```
@@ -49,12 +41,10 @@ kill $PID $XPID
 ### Verify and recover
 
 Health check: the pipeline above yields a ~100 KB PNG showing the GBA shell
-and the filesystem-generated town (a bare Xvfb capture is a few KB of black).
-For a quiz cartridge, capture immediately after the third Return to see the
-hero walking toward the highlighted landmark. For a `CODEQUEST.md` cartridge,
-send Return (title → quest select), then `d` (starts a quest), and screenshot
-after each — the battle log must show streamed command output. Failure
-diagnosis: an unchanged title screen across shots means key events were ignored — you used
+(a bare Xvfb capture is a few KB of black). Full gameplay verification: send
+Return (title → quest select), then `x` (starts a quest), and screenshot after
+each — battle log must show streamed command output. Failure diagnosis: an
+unchanged title screen across shots means key events were ignored — you used
 `xdotool key --window` (synthetic events WebKit drops) or skipped
 `windowfocus`; `BadMatch` on `X_GetImage` means you tried to screenshot on the
 real Wayland desktop instead of inside Xvfb. Recovery: kill stray `Xvfb :99`

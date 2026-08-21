@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
@@ -17,11 +17,6 @@ pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 35;
 const QUESTION_BATCH_SIZE: usize = 6;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
-const TOWN_WIDTH: i32 = 30;
-const TOWN_HEIGHT: i32 = 20;
-const TOWN_ROAD_Y: i32 = 10;
-const TOWN_SLOT_X: [i32; 5] = [1, 7, 13, 19, 25];
-const MAX_TOWN_LANDMARKS: usize = TOWN_SLOT_X.len() * 2;
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -34,14 +29,6 @@ const GREEN: Color = Color::rgb(56, 183, 100);
 const RED: Color = Color::rgb(177, 62, 83);
 const PLUM: Color = Color::rgb(93, 39, 93);
 const CRAB: Color = Color::rgb(206, 142, 107);
-const GRASS: Color = Color::rgb(116, 193, 93);
-const GRASS_ALT: Color = Color::rgb(105, 185, 87);
-const ROAD: Color = Color::rgb(222, 197, 123);
-const ROAD_ALT: Color = Color::rgb(212, 185, 109);
-const TREE: Color = Color::rgb(37, 121, 66);
-const TREE_HIGHLIGHT: Color = Color::rgb(56, 166, 83);
-const BROWN: Color = Color::rgb(118, 83, 59);
-const WALL: Color = Color::rgb(240, 212, 154);
 const HERO_NAMES: [&str; 6] = ["SUDO", "GREP", "VIM", "FORK", "ASYNC", "PATCH"];
 const HERO_CLASSES: [&str; 6] = [
     "CODE KNIGHT",
@@ -113,205 +100,6 @@ pub enum CartridgeMode {
     Custom,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TownLandmarkKind {
-    Root,
-    Code,
-    Tests,
-    Docs,
-    Assets,
-    Config,
-    Archive,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TownLandmark {
-    pub id: String,
-    pub name: String,
-    pub kind: TownLandmarkKind,
-    pub file_count: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TownSpec {
-    pub name: String,
-    pub seed: u32,
-    pub landmarks: Vec<TownLandmark>,
-}
-
-fn fnv1a(value: &str) -> u32 {
-    value.bytes().fold(0x811c9dc5, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x01000193)
-    })
-}
-
-fn normalized_name(value: &str) -> String {
-    let base = value
-        .split('/')
-        .rfind(|part| !part.is_empty())
-        .unwrap_or("REPO")
-        .trim_start_matches('.');
-    let name = base
-        .chars()
-        .map(|character| match character {
-            '-' | '_' | '.' => ' ',
-            other => other.to_ascii_uppercase(),
-        })
-        .collect::<String>();
-    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
-    if name.is_empty() {
-        "REPO".to_string()
-    } else {
-        name
-    }
-}
-
-fn compact_name(value: &str, max_length: usize) -> String {
-    let mut result = String::new();
-    for word in value.split_whitespace() {
-        let candidate = if result.is_empty() {
-            word.to_string()
-        } else {
-            format!("{result} {word}")
-        };
-        if candidate.chars().count() > max_length {
-            break;
-        }
-        result = candidate;
-    }
-    if result.is_empty() {
-        value.chars().take(max_length).collect()
-    } else {
-        result
-    }
-}
-
-fn has_extension(path: &str, extensions: &[&str]) -> bool {
-    extensions.iter().any(|extension| path.ends_with(extension))
-}
-
-fn landmark_kind(group: &str, files: &[String]) -> TownLandmarkKind {
-    if group == "$root" {
-        return TownLandmarkKind::Root;
-    }
-    let group_lower = group.to_ascii_lowercase();
-    let group_words = group_lower.split(['-', '_']).collect::<HashSet<_>>();
-    let lower = files
-        .iter()
-        .map(|path| path.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    let contains_segment = |names: &[&str]| {
-        lower
-            .iter()
-            .any(|path| path.split('/').any(|segment| names.contains(&segment)))
-    };
-    if ["test", "tests", "spec", "specs"]
-        .iter()
-        .any(|word| group_words.contains(word))
-        || contains_segment(&["test", "tests", "spec", "specs"])
-    {
-        TownLandmarkKind::Tests
-    } else if ["doc", "docs", "guide", "guides"]
-        .iter()
-        .any(|word| group_words.contains(word))
-        || lower
-            .iter()
-            .any(|path| has_extension(path, &[".md", ".mdx", ".rst", ".txt"]))
-    {
-        TownLandmarkKind::Docs
-    } else if [
-        "asset", "assets", "public", "static", "image", "images", "icon", "icons",
-    ]
-    .iter()
-    .any(|word| group_words.contains(word))
-        || lower.iter().any(|path| {
-            has_extension(
-                path,
-                &[
-                    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".woff", ".woff2",
-                    ".ttf",
-                ],
-            )
-        })
-    {
-        TownLandmarkKind::Assets
-    } else if lower.iter().any(|path| {
-        let base = path.rsplit('/').next().unwrap_or(path);
-        matches!(
-            base,
-            "package.json" | "cargo.toml" | "makefile" | "dockerfile"
-        ) || has_extension(base, &[".yaml", ".yml", ".toml", ".json"])
-    }) {
-        TownLandmarkKind::Config
-    } else if lower.iter().any(|path| {
-        has_extension(
-            path,
-            &[
-                ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".go", ".rb", ".java",
-                ".kt", ".c", ".cc", ".cpp", ".h", ".hpp", ".sh", ".css", ".html",
-            ],
-        )
-    }) {
-        TownLandmarkKind::Code
-    } else {
-        TownLandmarkKind::Archive
-    }
-}
-
-pub fn filesystem_town(repo_title: &str, files: &[String]) -> TownSpec {
-    let mut grouped = BTreeMap::<String, Vec<String>>::new();
-    for path in files.iter().filter(|path| !path.is_empty()) {
-        let group = path
-            .split_once('/')
-            .map_or("$root", |(directory, _)| directory);
-        grouped
-            .entry(group.to_string())
-            .or_default()
-            .push(path.clone());
-    }
-    if grouped.is_empty() {
-        grouped.insert("$root".to_string(), Vec::new());
-    }
-    let mut grouped = grouped.into_iter().collect::<Vec<_>>();
-    grouped.sort_by(|(left_name, left_files), (right_name, right_files)| {
-        match (left_name.as_str(), right_name.as_str()) {
-            ("$root", "$root") => std::cmp::Ordering::Equal,
-            ("$root", _) => std::cmp::Ordering::Less,
-            (_, "$root") => std::cmp::Ordering::Greater,
-            _ => right_files
-                .len()
-                .cmp(&left_files.len())
-                .then_with(|| left_name.cmp(right_name)),
-        }
-    });
-    grouped.truncate(MAX_TOWN_LANDMARKS);
-
-    let repo_name = normalized_name(repo_title);
-    let town_name = compact_name(&repo_name, 12);
-    let landmarks = grouped
-        .into_iter()
-        .map(|(group, mut paths)| {
-            paths.sort();
-            let name = if group == "$root" {
-                format!("{town_name} HALL")
-            } else {
-                compact_name(&normalized_name(&group), 12)
-            };
-            TownLandmark {
-                id: group.clone(),
-                name,
-                kind: landmark_kind(&group, &paths),
-                file_count: paths.len(),
-            }
-        })
-        .collect();
-    TownSpec {
-        name: format!("{town_name} TOWN"),
-        seed: fnv1a(repo_title),
-        landmarks,
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct CartridgeSpec {
     pub id: String,
@@ -319,7 +107,6 @@ pub struct CartridgeSpec {
     pub mode: CartridgeMode,
     pub quests: Vec<QuestSpec>,
     pub questions: Vec<QuizQuestion>,
-    pub town: TownSpec,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -361,7 +148,7 @@ enum Screen {
     Title,
     QuizMenu,
     CharacterCreation,
-    Town,
+    Oracle,
     Quiz,
     LevelUp,
     GameOver,
@@ -513,73 +300,6 @@ struct QuizRun {
     feedback: Option<(bool, u16)>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TownPoint {
-    x: i32,
-    y: i32,
-}
-
-#[derive(Clone, Debug)]
-struct TownJourney {
-    target: usize,
-    route: Vec<TownPoint>,
-}
-
-fn town_plot(index: usize) -> (i32, i32, TownPoint) {
-    let row = index / TOWN_SLOT_X.len();
-    let x = TOWN_SLOT_X[index % TOWN_SLOT_X.len()];
-    let y = if row == 0 { 2 } else { 14 };
-    let door_y = if row == 0 { y + 4 } else { y - 1 };
-    (
-        x,
-        y,
-        TownPoint {
-            x: x + 2,
-            y: door_y,
-        },
-    )
-}
-
-fn town_route_between(from: TownPoint, to: TownPoint) -> Vec<TownPoint> {
-    let mut route = vec![from];
-    let mut point = from;
-    while point.y != TOWN_ROAD_Y {
-        point.y += if point.y < TOWN_ROAD_Y { 1 } else { -1 };
-        route.push(point);
-    }
-    while point.x != to.x {
-        point.x += if point.x < to.x { 1 } else { -1 };
-        route.push(point);
-    }
-    while point.y != to.y {
-        point.y += if point.y < to.y { 1 } else { -1 };
-        route.push(point);
-    }
-    route
-}
-
-fn town_journey(town: &TownSpec, question: usize) -> TownJourney {
-    let target = question % town.landmarks.len();
-    let from = if question == 0 {
-        TownPoint {
-            x: TOWN_WIDTH / 2,
-            y: TOWN_ROAD_Y,
-        }
-    } else {
-        town_plot((question - 1) % town.landmarks.len()).2
-    };
-    let to = town_plot(target).2;
-    TownJourney {
-        target,
-        route: town_route_between(from, to),
-    }
-}
-
-fn town_travel_ticks(town: &TownSpec, question: usize) -> u64 {
-    let steps = town_journey(town, question).route.len().saturating_sub(1) as u64;
-    75.max(steps * 3)
-}
-
 #[derive(Resource)]
 struct GameState {
     powered: bool,
@@ -598,7 +318,7 @@ struct GameState {
     pending_questions: Option<(String, Vec<QuizQuestion>)>,
     questions_loading: bool,
     question_retry_ticks: u16,
-    town_jump: u16,
+    oracle_jump: u16,
     logs: VecDeque<(String, bool)>,
     active_boss: String,
 }
@@ -622,7 +342,7 @@ impl Default for GameState {
             pending_questions: None,
             questions_loading: false,
             question_retry_ticks: 0,
-            town_jump: 0,
+            oracle_jump: 0,
             logs: VecDeque::new(),
             active_boss: String::new(),
         }
@@ -654,13 +374,6 @@ impl GameState {
         self.cartridge
             .as_ref()
             .is_some_and(|cartridge| cartridge.questions.get(question).is_some())
-    }
-
-    fn town_travel_ticks(&self) -> u64 {
-        let question = self.quiz.as_ref().map_or(0, |run| run.question);
-        self.cartridge
-            .as_ref()
-            .map_or(75, |cartridge| town_travel_ticks(&cartridge.town, question))
     }
 }
 
@@ -698,7 +411,7 @@ fn begin_quiz_run(state: &mut GameState) {
         leveled_up: false,
         feedback: None,
     });
-    state.transition(Screen::Town);
+    state.transition(Screen::Oracle);
 }
 
 fn cycle_index(index: &mut usize, count: usize, direction: isize) {
@@ -987,9 +700,9 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             Button::A | Button::Start => begin_quiz_run(state),
             _ => {}
         },
-        Screen::Town => {
+        Screen::Oracle => {
             if button == Button::A {
-                state.town_jump = 25;
+                state.oracle_jump = 25;
             } else if button == Button::B {
                 state.transition(Screen::QuizMenu);
             }
@@ -1031,7 +744,12 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
         }
         Screen::LevelUp => {
             if matches!(button, Button::A | Button::Start) {
-                state.transition(Screen::Town);
+                let questions_ready = state.has_unanswered_question();
+                state.transition(if questions_ready {
+                    Screen::Quiz
+                } else {
+                    Screen::Oracle
+                });
             }
         }
         Screen::GameOver => {
@@ -1083,10 +801,10 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
 
 fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
     state.screen_ticks = state.screen_ticks.saturating_add(1);
-    if state.town_jump > 0 {
-        state.town_jump -= 1;
+    if state.oracle_jump > 0 {
+        state.oracle_jump -= 1;
     }
-    if matches!(state.screen, Screen::Town | Screen::LevelUp) {
+    if matches!(state.screen, Screen::Oracle | Screen::LevelUp) {
         if let Some((cartridge_id, questions)) = state.pending_questions.take() {
             let batch_end = if let Some(cartridge) = state.cartridge.as_mut() {
                 if cartridge.id == cartridge_id && !questions.is_empty() {
@@ -1104,17 +822,14 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
         }
     }
     match state.screen {
-        Screen::Town if !state.has_unanswered_question() && !state.questions_loading => {
+        Screen::Oracle if !state.has_unanswered_question() && !state.questions_loading => {
             let level = state.quiz.as_ref().map_or(1, |run| run.level);
             request_question_batch(&mut state, &mut effects, level);
         }
-        Screen::Town
-            if state.screen_ticks >= state.town_travel_ticks()
-                && state.has_unanswered_question() =>
-        {
+        Screen::Oracle if state.screen_ticks >= 75 && state.has_unanswered_question() => {
             state.transition(Screen::Quiz);
         }
-        Screen::Quiz if !state.has_unanswered_question() => state.transition(Screen::Town),
+        Screen::Quiz if !state.has_unanswered_question() => state.transition(Screen::Oracle),
         Screen::Quiz => {
             let prefetch_level = state.quiz.as_ref().and_then(|run| {
                 let remaining = state.question_count().saturating_sub(run.question);
@@ -1126,6 +841,7 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
             if let Some(level) = prefetch_level {
                 request_question_batch(&mut state, &mut effects, level);
             }
+            let question_count = state.question_count();
             let next_batch_end = state
                 .quiz
                 .as_ref()
@@ -1150,8 +866,8 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
                             if run.leveled_up {
                                 run.leveled_up = false;
                                 next_screen = Some(Screen::LevelUp);
-                            } else {
-                                next_screen = Some(Screen::Town);
+                            } else if run.question >= question_count {
+                                next_screen = Some(Screen::Oracle);
                             }
                         }
                     }
@@ -1162,7 +878,12 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
             }
         }
         Screen::LevelUp if state.screen_ticks >= 180 => {
-            state.transition(Screen::Town);
+            let questions_ready = state.has_unanswered_question();
+            state.transition(if questions_ready {
+                Screen::Quiz
+            } else {
+                Screen::Oracle
+            });
         }
         _ => {}
     }
@@ -1176,7 +897,7 @@ fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
         Screen::Title => render_title(&mut frame, &state),
         Screen::QuizMenu => render_quiz_menu(&mut frame, &state),
         Screen::CharacterCreation => render_character_creation(&mut frame, &state),
-        Screen::Town => render_town(&mut frame, &state),
+        Screen::Oracle => render_oracle(&mut frame, &state),
         Screen::Quiz => render_quiz(&mut frame, &state),
         Screen::LevelUp => render_level_up(&mut frame, &state),
         Screen::GameOver => render_game_over(&mut frame, &state),
@@ -1286,157 +1007,25 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
     frame.centered_text(150, "START:BEGIN  B:BACK", MIST, 1);
 }
 
-fn is_town_road(town: &TownSpec, x: i32, y: i32) -> bool {
-    if (TOWN_ROAD_Y - 1..=TOWN_ROAD_Y + 1).contains(&y) {
-        return true;
+fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
+    frame.clear(INK);
+    for index in 0..30 {
+        let x = ((index * 71 + state.screen_ticks as usize * 2) % WIDTH) as i32;
+        frame.pixel(x, 28 + (index * 29 % 82) as i32, MIST);
     }
-    town.landmarks.iter().enumerate().any(|(index, _)| {
-        let door = town_plot(index).2;
-        x == door.x && (door.y.min(TOWN_ROAD_Y)..=door.y.max(TOWN_ROAD_Y)).contains(&y)
-    })
-}
-
-fn is_town_building(town: &TownSpec, x: i32, y: i32) -> bool {
-    town.landmarks.iter().enumerate().any(|(index, _)| {
-        let (building_x, building_y, _) = town_plot(index);
-        (building_x - 1..=building_x + 4).contains(&x)
-            && (building_y - 1..=building_y + 4).contains(&y)
-    })
-}
-
-fn town_roof_color(kind: TownLandmarkKind) -> Color {
-    match kind {
-        TownLandmarkKind::Root => SKY,
-        TownLandmarkKind::Code => ROYAL,
-        TownLandmarkKind::Tests => RED,
-        TownLandmarkKind::Docs => GOLD,
-        TownLandmarkKind::Assets => GREEN,
-        TownLandmarkKind::Config => PLUM,
-        TownLandmarkKind::Archive => MIST,
-    }
-}
-
-fn draw_town_tree(frame: &mut Framebuffer, x: i32, y: i32) {
-    frame.rect(x + 3, y + 5, 2, 3, BROWN);
-    frame.rect(x + 1, y + 2, 6, 4, TREE);
-    frame.rect(x + 2, y + 1, 4, 3, TREE_HIGHLIGHT);
-    frame.pixel(x + 3, y + 1, GRASS_ALT);
-}
-
-fn draw_town_building(
-    frame: &mut Framebuffer,
-    landmark: &TownLandmark,
-    index: usize,
-    target: bool,
-) {
-    let (tile_x, tile_y, _) = town_plot(index);
-    let x = tile_x * 8;
-    let y = tile_y * 8;
-    let roof = town_roof_color(landmark.kind);
-    frame.rect(x + 3, y + 3, 32, 32, NAVY);
-    frame.rect(x + 2, y + 14, 28, 18, WALL);
-    frame.rect(x, y + 4, 32, 13, roof);
-    frame.rect(x + 2, y + 2, 28, 3, INK);
-    frame.rect(x + 4, y, 24, 4, roof);
-    frame.rect(x + 3, y + 7, 26, 2, PARCH);
-    frame.rect(x + 5, y + 20, 5, 5, SKY);
-    frame.rect(x + 22, y + 20, 5, 5, SKY);
-    let door_y = if tile_y < TOWN_ROAD_Y { y + 23 } else { y + 14 };
-    frame.rect(x + 14, door_y, 6, 9, BROWN);
-    if target {
-        frame.outline(x - 1, y - 1, 34, 34, GOLD);
-        frame.outline(x - 2, y - 2, 36, 36, PARCH);
-    }
-    let label = landmark.name.chars().take(5).collect::<String>();
-    frame.text(x + 2, y + 9, &label, INK, 1);
-}
-
-fn render_town(frame: &mut Framebuffer, state: &GameState) {
-    let Some(cartridge) = state.cartridge.as_ref() else {
-        frame.clear(GRASS);
-        return;
-    };
-    let question = state.quiz.as_ref().map_or(0, |run| run.question);
-    let journey = town_journey(&cartridge.town, question);
-    let step = (state.screen_ticks / 3) as usize;
-    let route_index = step.min(journey.route.len().saturating_sub(1));
-    let arrived = route_index + 1 == journey.route.len();
-
-    for tile_y in 0..TOWN_HEIGHT {
-        for tile_x in 0..TOWN_WIDTH {
-            let x = tile_x * 8;
-            let y = tile_y * 8;
-            frame.rect(
-                x,
-                y,
-                8,
-                8,
-                if (tile_x + tile_y).rem_euclid(2) == 0 {
-                    GRASS
-                } else {
-                    GRASS_ALT
-                },
-            );
-            if is_town_road(&cartridge.town, tile_x, tile_y) {
-                frame.rect(
-                    x,
-                    y,
-                    8,
-                    8,
-                    if (tile_x + tile_y).rem_euclid(3) == 0 {
-                        ROAD_ALT
-                    } else {
-                        ROAD
-                    },
-                );
-                if (tile_x * 7 + tile_y * 11 + cartridge.town.seed as i32).rem_euclid(9) == 0 {
-                    frame.rect(x + 2, y + 3, 2, 1, BROWN);
-                }
-            } else if !is_town_building(&cartridge.town, tile_x, tile_y)
-                && (tile_x * 29 + tile_y * 47 + cartridge.town.seed as i32).rem_euclid(31) == 0
-            {
-                draw_town_tree(frame, x, y);
-            }
-        }
-    }
-
-    for (index, landmark) in cartridge.town.landmarks.iter().enumerate() {
-        draw_town_building(frame, landmark, index, index == journey.target);
-    }
-
-    frame.rect(68, 2, 104, 11, PARCH);
-    frame.outline(68, 2, 104, 11, INK);
-    frame.centered_text(4, &cartridge.town.name, INK, 1);
-
-    let point = journey.route[route_index];
-    let jump = if state.town_jump > 0 {
-        let time = state.town_jump as i32 - 12;
-        12 - time.abs() / 2
+    frame.centered_text(20, "ORACLE LOADING", SKY, 1);
+    let phase = (state.screen_ticks % 60) / 15;
+    frame.centered_text(34, &".".repeat(phase as usize + 1), GOLD, 1);
+    frame.rect(0, 132, WIDTH as i32, 28, PLUM);
+    frame.rect(0, 128, WIDTH as i32, 4, GREEN);
+    let jump = if state.oracle_jump > 0 {
+        let t = state.oracle_jump as i32 - 12;
+        12 - (t.abs() / 2)
     } else {
         0
     };
-    let bob = if arrived { 0 } else { route_index as i32 % 2 };
-    draw_hero(
-        frame,
-        point.x * 8 - 14,
-        point.y * 8 - 14 - jump - bob,
-        1,
-        state,
-    );
-
-    frame.rect(3, 145, 234, 13, INK);
-    frame.outline(3, 145, 234, 13, PARCH);
-    let target = &cartridge.town.landmarks[journey.target];
-    let message = if !arrived {
-        format!("{} WALKS TO {}", HERO_NAMES[state.hero_name], target.name)
-    } else if state.has_unanswered_question() {
-        format!("{} - {} FILES - QUIZ AHEAD", target.name, target.file_count)
-    } else if state.questions_loading {
-        format!("{} - ORACLE IS WRITING", target.name)
-    } else {
-        format!("{} - ORACLE WILL RETRY", target.name)
-    };
-    frame.centered_text(148, &truncate(&message, 38), PARCH, 1);
+    draw_hero(frame, 104, 111 - jump, 1, state);
+    frame.centered_text(150, "A:JUMP", PARCH, 1);
 }
 
 fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
@@ -1886,14 +1475,6 @@ mod tests {
     use super::*;
 
     fn quiz_cartridge() -> CartridgeSpec {
-        let town = filesystem_town(
-            "ENGINE TEST",
-            &[
-                "README.md".into(),
-                "src-tauri/src/engine.rs".into(),
-                "tests/engine.rs".into(),
-            ],
-        );
         CartridgeSpec {
             id: "/tmp/engine-test".into(),
             title: "ENGINE TEST".into(),
@@ -1904,23 +1485,12 @@ mod tests {
                 choices: vec!["BEVY".into(), "CSS".into(), "WEBKIT".into(), "HTML".into()],
                 answer: 0,
             }],
-            town,
         }
     }
 
     fn issue(engine: &mut GameEngine, command: EngineCommand) {
         engine.command(command);
         engine.update();
-    }
-
-    fn advance_until_screen(engine: &mut GameEngine, expected: Screen, max_ticks: usize) {
-        for _ in 0..max_ticks {
-            if engine.screen() == expected {
-                return;
-            }
-            engine.update();
-        }
-        assert_eq!(engine.screen(), expected);
     }
 
     fn hero_pixels(engine: &GameEngine) -> Vec<u8> {
@@ -1933,75 +1503,6 @@ mod tests {
                 })
             })
             .collect()
-    }
-
-    #[test]
-    fn filesystem_town_is_deterministic_and_groups_top_level_paths() {
-        let files = vec![
-            "README.md".into(),
-            "package.json".into(),
-            "src-tauri/src/engine.rs".into(),
-            "src-tauri/src/lib.rs".into(),
-            "docs/guide.md".into(),
-            "test-utils/helpers.js".into(),
-        ];
-        let first = filesystem_town("code-quest-advance", &files);
-        let second = filesystem_town(
-            "code-quest-advance",
-            &files.iter().cloned().rev().collect::<Vec<_>>(),
-        );
-
-        assert_eq!(first, second);
-        assert_eq!(first.name, "CODE QUEST TOWN");
-        assert_eq!(
-            first
-                .landmarks
-                .iter()
-                .map(|landmark| landmark.id.as_str())
-                .collect::<Vec<_>>(),
-            ["$root", "src-tauri", "docs", "test-utils"]
-        );
-        assert_eq!(first.landmarks[0].name, "CODE QUEST HALL");
-        assert_eq!(first.landmarks[0].kind, TownLandmarkKind::Root);
-        assert_eq!(first.landmarks[1].kind, TownLandmarkKind::Code);
-        assert_eq!(first.landmarks[2].kind, TownLandmarkKind::Docs);
-        assert_eq!(first.landmarks[3].kind, TownLandmarkKind::Tests);
-    }
-
-    #[test]
-    fn filesystem_town_caps_landmarks_to_available_building_plots() {
-        let files = (0..14)
-            .map(|index| format!("district-{index}/main.rs"))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            filesystem_town("many-folders", &files).landmarks.len(),
-            MAX_TOWN_LANDMARKS
-        );
-    }
-
-    #[test]
-    fn empty_repositories_still_receive_a_town_hall() {
-        let town = filesystem_town("empty-repository-with-a-long-name", &[]);
-
-        assert_eq!(town.name, "EMPTY TOWN");
-        assert_eq!(town.landmarks.len(), 1);
-        assert_eq!(town.landmarks[0].id, "$root");
-        assert_eq!(town.landmarks[0].name, "EMPTY HALL");
-    }
-
-    #[test]
-    fn town_route_connects_landmark_doors_via_the_main_road() {
-        let from = town_plot(0).2;
-        let to = town_plot(6).2;
-        let route = town_route_between(from, to);
-
-        assert_eq!(route.first(), Some(&from));
-        assert_eq!(route.last(), Some(&to));
-        assert!(route.iter().any(|point| point.y == TOWN_ROAD_Y));
-        assert!(route
-            .windows(2)
-            .all(|step| { (step[0].x - step[1].x).abs() + (step[0].y - step[1].y).abs() == 1 }));
     }
 
     #[test]
@@ -2056,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn jumping_in_town_cannot_change_resolution() {
+    fn jumping_on_oracle_screen_cannot_change_resolution() {
         let mut engine = GameEngine::new();
         issue(
             &mut engine,
@@ -2099,7 +1600,7 @@ mod tests {
                 pressed: true,
             },
         );
-        assert_eq!(engine.screen(), Screen::Town);
+        assert_eq!(engine.screen(), Screen::Oracle);
         for _ in 0..30 {
             engine.update();
             assert_eq!(engine.frame().len(), FRAME_BYTES);
@@ -2199,12 +1700,12 @@ mod tests {
                 pressed: true,
             },
         );
-        assert_eq!(engine.screen(), Screen::Town);
+        assert_eq!(engine.screen(), Screen::Oracle);
 
         for _ in 0..180 {
             engine.update();
         }
-        assert_eq!(engine.screen(), Screen::Town);
+        assert_eq!(engine.screen(), Screen::Oracle);
 
         issue(
             &mut engine,
@@ -2246,7 +1747,7 @@ mod tests {
                 leveled_up: false,
                 feedback: None,
             });
-            state.transition(Screen::Town);
+            state.transition(Screen::Oracle);
         }
 
         engine.update();
@@ -2257,7 +1758,7 @@ mod tests {
         for _ in 1..75 {
             engine.update();
         }
-        assert_eq!(engine.screen(), Screen::Town);
+        assert_eq!(engine.screen(), Screen::Oracle);
 
         issue(
             &mut engine,
@@ -2471,7 +1972,7 @@ mod tests {
                 },
             );
         }
-        assert_eq!(engine.screen(), Screen::Town);
+        assert_eq!(engine.screen(), Screen::Oracle);
         issue(
             &mut engine,
             EngineCommand::Questions {
@@ -2484,7 +1985,7 @@ mod tests {
             engine.update();
         }
 
-        assert_eq!(engine.screen(), Screen::Town);
+        assert_eq!(engine.screen(), Screen::Oracle);
         assert!(engine.take_effects().iter().any(|effect| matches!(
             effect,
             EngineEffect::RequestQuestions {
@@ -2663,8 +2164,7 @@ mod tests {
                 engine.update();
             }
             if index + 1 < QUESTION_BATCH_SIZE {
-                assert_eq!(engine.screen(), Screen::Town);
-                advance_until_screen(&mut engine, Screen::Quiz, 250);
+                assert_eq!(engine.screen(), Screen::Quiz);
             }
         }
 
@@ -2717,7 +2217,7 @@ mod tests {
             engine.update();
         }
 
-        for index in 0..3 {
+        for _ in 0..3 {
             for button in [Button::Down, Button::A] {
                 issue(
                     &mut engine,
@@ -2736,10 +2236,6 @@ mod tests {
             }
             for _ in 0..45 {
                 engine.update();
-            }
-            if index < 2 {
-                assert_eq!(engine.screen(), Screen::Town);
-                advance_until_screen(&mut engine, Screen::Quiz, 250);
             }
         }
 
@@ -2797,8 +2293,6 @@ mod tests {
             for _ in 0..45 {
                 engine.update();
             }
-            assert_eq!(engine.screen(), Screen::Town);
-            advance_until_screen(&mut engine, Screen::Quiz, 250);
         }
 
         assert_eq!(engine.screen(), Screen::Quiz);
@@ -2814,65 +2308,6 @@ mod tests {
                 count: 6,
             } if cartridge_id == "/tmp/engine-test"
         )));
-    }
-
-    #[test]
-    fn hero_walks_through_town_before_every_quiz() {
-        let mut engine = GameEngine::new();
-        let mut cartridge = quiz_cartridge();
-        cartridge.questions = vec![cartridge.questions[0].clone(); 2];
-        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
-        issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
-        for button in [Button::Start, Button::A, Button::Start] {
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button,
-                    pressed: true,
-                },
-            );
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button,
-                    pressed: false,
-                },
-            );
-        }
-        advance_until_screen(&mut engine, Screen::Quiz, 250);
-
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::A,
-                pressed: true,
-            },
-        );
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::A,
-                pressed: false,
-            },
-        );
-        for _ in 0..45 {
-            engine.update();
-        }
-
-        assert_eq!(engine.screen(), Screen::Town);
-        assert_eq!(
-            engine
-                .app
-                .world()
-                .resource::<GameState>()
-                .quiz
-                .as_ref()
-                .unwrap()
-                .question,
-            1
-        );
-        advance_until_screen(&mut engine, Screen::Quiz, 250);
     }
 
     #[test]
@@ -2902,7 +2337,7 @@ mod tests {
             );
             assert!(state.pending_questions.is_some());
         }
-        engine.app.world_mut().resource_mut::<GameState>().screen = Screen::Town;
+        engine.app.world_mut().resource_mut::<GameState>().screen = Screen::Oracle;
         engine.update();
         let state = engine.app.world().resource::<GameState>();
         assert_eq!(state.cartridge.as_ref().unwrap().questions.len(), 2);
