@@ -136,6 +136,15 @@ inherited by GUI applications before looking for them. Quest mode also needs
 Folder selection uses each operating system's native dialog and has no external
 helper.
 
+On Windows, the app discovers Git for Windows and the native Claude executable
+from `PATH` and their standard installation directories, so launching from the
+Start menu does not depend on a terminal's environment. Portable or custom
+installs can be selected with `CQA_GIT`, `CQA_CLAUDE`, and `CQA_SHELL`; each
+value may be an executable name on `PATH` or an absolute path. The Windows quest
+runner deliberately ignores the WSL `bash.exe` launcher because WSL cannot use
+the Windows repository paths embedded in cartridge commands. Git, Claude, and
+quest commands run as background processes without opening console windows.
+
 ## Build & run
 
 ```bash
@@ -143,6 +152,11 @@ npm ci
 npm run tauri -- dev
 npm run tauri -- build
 ```
+
+For local Windows development, run those commands from PowerShell with Node.js,
+the stable Rust MSVC toolchain, Microsoft C++ Build Tools plus a Windows SDK,
+and the WebView2 runtime installed. A release build creates the application and
+Windows bundles under `src-tauri/target/release/`.
 
 Tauri produces native packages for the host operating system, so Windows and
 macOS bundles must be built on their corresponding runners. For a universal

@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use bevy::prelude::*;
 
 use crate::codequest::{CodeQuestConfig, GameType};
+use crate::external_tools;
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
 use crate::scene_machine::{
     SceneEvent, SceneHandler, SceneMachine, SceneMachineDefinition, SceneSignal,
@@ -264,7 +265,7 @@ impl Default for Framebuffer {
 
 impl Framebuffer {
     fn clear(&mut self, color: Color) {
-        for pixel in self.pixels.chunks_exact_mut(4) {
+        for pixel in self.pixels.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&[color.0, color.1, color.2, 255]);
         }
     }
@@ -1709,36 +1710,6 @@ fn handle_effect(
     }
 }
 
-fn quest_shell_command() -> Command {
-    if let Some(shell) = std::env::var_os("CQA_SHELL") {
-        return Command::new(shell);
-    }
-    #[cfg(target_os = "windows")]
-    if let Some(shell) = windows_git_bash() {
-        return Command::new(shell);
-    }
-    Command::new("bash")
-}
-
-#[cfg(target_os = "windows")]
-fn windows_git_bash() -> Option<std::path::PathBuf> {
-    let output = Command::new("where.exe").arg("git.exe").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(std::path::PathBuf::from)
-        .flat_map(|git| {
-            git.ancestors()
-                .map(|ancestor| ancestor.join("bin").join("bash.exe"))
-                .collect::<Vec<_>>()
-        })
-        .find(|candidate| candidate.is_file())
-}
-
 fn run_quest(
     command: String,
     sender: mpsc::Sender<EngineCommand>,
@@ -1756,7 +1727,15 @@ fn run_quest(
         let _ = sender.send(EngineCommand::QuestDone { success: false });
         return;
     }
-    let mut child = match quest_shell_command()
+    let Some(mut shell) = external_tools::quest_shell_command() else {
+        let _ = sender.send(EngineCommand::QuestOutput {
+            line: "FAILED TO START: INSTALL GIT FOR WINDOWS OR SET CQA_SHELL".into(),
+            stderr: true,
+        });
+        let _ = sender.send(EngineCommand::QuestDone { success: false });
+        return;
+    };
+    let mut child = match shell
         .arg("-c")
         .arg(command)
         .stdout(Stdio::piped())
@@ -2032,7 +2011,12 @@ mod tests {
         assert_eq!((WIDTH, HEIGHT), (240, 160));
         assert_eq!(FRAME_BYTES, 153_600);
         assert_eq!(engine.frame().len(), FRAME_BYTES);
-        assert!(engine.frame().chunks_exact(4).all(|pixel| pixel[3] == 255));
+        assert!(engine
+            .frame()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255));
         issue(
             &mut engine,
             EngineCommand::Cartridge(Some(quiz_cartridge())),
