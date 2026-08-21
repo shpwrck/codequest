@@ -36,6 +36,14 @@ powering on with an empty slot halts on the boot logo, like real hardware.
 Git trust is scoped to each command for the selected cartridge, allowing Windows
 checkouts owned by an administrator account without changing global Git settings.
 
+Loading a valid cartridge also creates an emulator-style save beside it. For
+example, `/games/demo` uses `/games/demo.sav`; the git repository itself stays
+untouched. The versioned JSON save is a generic namespaced data store so each
+game style can own independent state without changing the file format. Quiz
+mode currently uses one namespace for validated Claude question batches, which
+lets later runs reuse generated results while retaining their level boundaries.
+Ejecting or recycling a cartridge does not delete its save.
+
 A repo cartridge's quests are generated from its contents: repo scrying
 (`git status`), history (`git log`), and drift (`git diff`) always; plus a
 Lint Gauntlet / Forge / Test Dungeon for `package.json` scripts, a Crate
@@ -83,6 +91,8 @@ and are started, streamed, and stopped by the Bevy runtime.
 - `src-tauri/src/lib.rs` — the platform adapter. It validates git-repo
   cartridges, prepares data, and exposes only power, boot completion,
   cartridge, input, and framebuffer operations to the device UI.
+- `src-tauri/src/save.rs` — the versioned, game-style-independent cartridge
+  save store. It preserves namespaced payloads with atomic file replacement.
 - `src/` — the JavaScript device shell. It owns the physical controls,
   cartridge tray, window fitting, the fixed device-firmware boot overlay, and
   copies the fixed-size Rust framebuffer into one canvas. It contains no

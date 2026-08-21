@@ -125,9 +125,10 @@ pub struct CartridgeSpec {
     pub mode: CartridgeMode,
     pub provenance: RepositoryProvenance,
     pub codequest: Option<Box<CodeQuestConfig>>,
-    pub machine: SceneMachineDefinition,
+    pub machine: Box<SceneMachineDefinition>,
     pub quests: Vec<QuestSpec>,
     pub questions: Vec<QuizQuestion>,
+    pub question_batch_ends: Vec<usize>,
 }
 
 impl CartridgeSpec {
@@ -726,21 +727,28 @@ fn apply_commands(
             EngineCommand::Cartridge(cartridge) => {
                 state.machine = cartridge
                     .as_ref()
-                    .map(|cartridge| SceneMachine::new(cartridge.machine.clone()));
+                    .map(|cartridge| SceneMachine::new((*cartridge.machine).clone()));
                 state.cartridge = cartridge;
                 state.quest_selected = 0;
                 state.menu_selected = 0;
                 state.quiz = None;
-                state.batch_ends.clear();
+                state.batch_ends = state
+                    .cartridge
+                    .as_ref()
+                    .filter(|cartridge| cartridge.mode() == CartridgeMode::Quiz)
+                    .map(|cartridge| cartridge.question_batch_ends.clone())
+                    .unwrap_or_default();
+                if state.batch_ends.is_empty() {
+                    if let Some(batch_end) = state.cartridge.as_ref().and_then(|cartridge| {
+                        (cartridge.mode() == CartridgeMode::Quiz && !cartridge.questions.is_empty())
+                            .then_some(cartridge.questions.len())
+                    }) {
+                        state.batch_ends.push(batch_end);
+                    }
+                }
                 state.pending_questions = None;
                 state.questions_loading = false;
                 state.question_retry_ticks = 0;
-                if let Some(batch_end) = state.cartridge.as_ref().and_then(|cartridge| {
-                    (cartridge.mode() == CartridgeMode::Quiz && !cartridge.questions.is_empty())
-                        .then_some(cartridge.questions.len())
-                }) {
-                    state.batch_ends.push(batch_end);
-                }
                 if state.cartridge.as_ref().is_some_and(|cartridge| {
                     cartridge.mode() == CartridgeMode::Quiz && cartridge.questions.is_empty()
                 }) {
@@ -1866,13 +1874,14 @@ mod tests {
                 copyright: Some("Copyright (c) 2020-2024 Ada Lovelace".into()),
             },
             codequest: None,
-            machine: SceneMachineDefinition::template(SceneMachineTemplate::Quiz),
+            machine: Box::new(SceneMachineDefinition::template(SceneMachineTemplate::Quiz)),
             quests: vec![],
             questions: vec![QuizQuestion {
                 question: "WHO OWNS THE GAME LOOP?".into(),
                 choices: vec!["BEVY".into(), "CSS".into(), "WEBKIT".into(), "HTML".into()],
                 answer: 0,
             }],
+            question_batch_ends: Vec::new(),
         }
     }
 
@@ -3161,7 +3170,7 @@ mod tests {
         )
         .unwrap();
         let mut cartridge = quiz_cartridge();
-        cartridge.machine = machine;
+        cartridge.machine = Box::new(machine);
         let mut engine = GameEngine::new();
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         issue(&mut engine, EngineCommand::Power(true));
@@ -3202,7 +3211,7 @@ mod tests {
         .unwrap();
         let mut cartridge = quiz_cartridge();
         cartridge.mode = CartridgeMode::Custom;
-        cartridge.machine = machine;
+        cartridge.machine = Box::new(machine);
         cartridge.quests = vec![QuestSpec {
             name: "SAFE ROUTE".into(),
             boss: "NONE".into(),
