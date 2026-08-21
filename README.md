@@ -53,8 +53,9 @@ requires ejecting first — remove and insert animations included.
 **Game modes.** A repo may declare a versioned `CODEQUEST.toml` to select
 `quiz` or `quest` mode, override its cartridge title, and define the finite-state
 scene graph that the Bevy engine executes. Each scene chooses a trusted built-in
-handler and routes its semantic events to other scenes; mechanics and art remain
-linked design requirements. This repository's root
+handler and routes its semantic events to other scenes. Mechanics remain linked
+design requirements, while typed art templates can select trusted built-in
+renderers. This repository's root
 [`CODEQUEST.toml`](CODEQUEST.toml) makes CODE QUEST itself the reference
 cartridge for exercising that contract. See the
 [v2 contract](docs/reference/codequest-toml.md), its

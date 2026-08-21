@@ -7,7 +7,8 @@ manifest at the root makes CODE QUEST itself the reference cartridge for
 dogfooding engine, scene-graph, and future presentation-template changes. The
 brief explains intent and implementation status; the manifest supplies stable
 scene, mechanic, and art IDs. Its schema-v2 handlers and transitions compile
-into the engine's scene machine; mechanics and art remain linked production
+into the engine's scene machine; typed visual templates select trusted built-in
+renderer assets, while mechanics and template-less art remain production
 metadata.
 
 ## Experience frame
@@ -82,11 +83,10 @@ difficulty:
 | Adept — levels 2–3 | Component interactions and tradeoffs | Gold branches join the cyan frame; transitions gain one extra anticipation beat. | A second motif voice and stronger correct-answer cadence enter. | The expanded crest remains visible in the next Oracle and quiz frames. |
 | Oracle-bound — level 4+ | Invariants and design rationale | Cyan and gold converge into the complete Oracle crest; reward motion reaches its maximum controlled intensity. | Full constrained arrangement and final reward cadence. | The complete crest holds until game-over or a clearly signaled new-run reset. |
 
-Crossing a tier is telegraphed before the last question, celebrated on
-`level-up`, and established as the new baseline afterward. A new run visibly and
-audibly returns to Initiate. This presentation progression is proposed until the
-runtime owns template selection and audio playback; question difficulty and the
-numeric level are implemented today.
+Crossing a tier is celebrated on `level-up` and established as the new visual
+baseline afterward. A new run visibly returns to Initiate. Typed template
+selection and the three visual tiers are implemented; audio progression remains
+proposed until the runtime owns sound playback.
 
 ## Scene storyboard
 
@@ -250,17 +250,17 @@ and Claude retries.
 
 | ID | Kind | Used by scenes | Purpose and required states | Constraints | Status |
 |---|---|---|---|---|---|
-| `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and overflow page. | Legible at 240×160; never infer legal ownership; body text stays at native size. | Procedural base implemented; overflow polish needed |
-| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation from a completely dormant cathedral through first signal, sigil propagation, one collision, repository crest, and Oracle crescendo. | Original characters/composition; five-to-seven seconds; maximum cyan/gold only at the climax; no full-frame flashes; reduced-motion equivalent; clean title handoff. | Procedural base implemented; full art and reduced-motion polish needed |
-| `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | Basic renderer implemented; art polish needed |
-| `menu-frame` | UI | `quiz-menu` | Carry the cathedral/rune language into focused and idle menu states. | Focus differs by pointer, shape, and color; no unowned empty space. | Needed |
-| `character-frame` | UI/scene | `character-creation` | Stage the customizable hero inside the same world with readable name, class, style, equipment, loading, retry, and ready states. | Preview updates immediately; text remains native-scale; status is truthful. | Needed |
-| `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, dodge, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural identity now appears in every listed scene; expressive state variants needed |
-| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, ready, and B-back as one place: moving hero, boxed packets, crossed bugs, counters, animated dots, and a crest that reflects run tier. | Fits 240×160; objects differ by shape and color; Oracle/loading information stays in the top header while gameplay counters and move/back controls stay in the bottom strip. | Procedural Datafall renderer implemented; back/progression presentation needed |
-| `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | Core frame implemented; accessibility polish needed |
-| `reward-frame` | Scene/UI | `level-up` | Telegraph the threshold, celebrate it once, and establish the new Oracle-bond baseline. | No rapid full-background flashing; tier and reward remain readable in reduced motion. | Stable-background renderer and one-second hold implemented; tier assets needed |
-| `result-frame` | Scene/UI | `game-over` | Resolve the run with hero state, final score, level, completed crest, and an obvious reset/replay path. | Defeat is clear without erasing earned progress; all accepted replay inputs are visible. | Hero, score, level, crest, and A/B/Start prompt implemented; expressive defeat state needed |
-| `run-progression` | Presentation system | `oracle`, `quiz`, `level-up`, `game-over` | Select Initiate, Adept, and Oracle-bound frame/crest states so progression survives through the final result. | At least two non-numeric channels change; resets deterministically on a new run. | Proposed; requires runtime template selection |
+| `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and missing-data states. | Legible at 240×160; never infer legal ownership; body text stays at native size. | `oracle-chronicle` implemented; dormant luminance and staged reveal tested. |
+| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation from a completely dormant cathedral through first signal, sigil propagation, one collision, repository crest, and Oracle crescendo. | Original characters/composition; five-to-seven seconds; maximum cyan/gold only at the climax; no full-frame flashes; clean title handoff. | `oracle-awakening` implemented; dormant-to-crescendo luminance tested. |
+| `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | `oracle-title` implemented. |
+| `menu-frame` | UI | `quiz-menu` | Carry the cathedral/rune language into focused and idle menu states. | Focus differs by pointer, shape, and color; no unowned empty space. | `oracle-menu` implemented. |
+| `character-frame` | UI/scene | `character-creation` | Stage the customizable hero inside the same world with readable name, class, style, equipment, loading, retry, and ready states. | Preview updates immediately; text remains native-scale; status is truthful. | `oracle-atelier` implemented. |
+| `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, dodge, reward, and defeat variants. | Consistent silhouette across palettes/backgrounds. | `oracle-hero` implemented with palette, equipment, portrait, and defeat variants. |
+| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, ready, and B-back as one place: moving hero, boxed packets, crossed bugs, counters, and a crest that reflects run tier. | Fits 240×160; objects differ by shape and color; Oracle/loading information stays in the top header while gameplay counters and move/back controls stay in the bottom strip. | `oracle-sanctum` implemented with three visual tiers. |
+| `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | `oracle-trial` implemented with shaped focus and explicit correct/wrong labels. |
+| `reward-frame` | Scene/UI | `level-up` | Telegraph the threshold, celebrate it once, and establish the new Oracle-bond baseline. | No rapid full-background flashing; tier and reward remain readable. | `oracle-ascension` implemented with tiered crest and readable hold. |
+| `result-frame` | Scene/UI | `game-over` | Resolve the run with hero state, final score, level, completed crest, and an obvious reset/replay path. | Defeat is clear without erasing earned progress; all accepted replay inputs are visible. | `oracle-aftermath` implemented with preserved tier and defeated hero. |
+| `run-progression` | Presentation system | `oracle`, `quiz`, `level-up`, `game-over` | Select Initiate, Adept, and Oracle-bound frame/crest states so progression survives through the final result. | At least two non-numeric channels change; resets deterministically on a new run. | `oracle-progression` implemented; palette, circuit density, and crest geometry change by level. |
 
 ## Sound requirement ledger
 
@@ -279,15 +279,15 @@ engine does not load or play them yet.
 
 | Scene | Static | Motion | Sound | Mechanical closure | Felt progression | Evidence/status |
 |---|---|---|---|---|---|---|
-| `copyright` | Dim archive frame with hierarchy equal to gameplay; no glow. | Credits reveal in fixed readable steps, then clear cleanly. | Intentional near-silence plus dry archival ticks. | A/Start after minimum dwell or timed exit; missing/overflow provenance has explicit copy. | Establishes the dormant baseline and repository identity. | Base implemented; expression proposed. |
-| `opening-fanfare` | Cathedral, sigils, hero, and crest use the shared code-fantasy language. | Dormant → first node → propagation → collision → complete Oracle → title handoff. | One pulse grows into the full Oracle cadence. | Skip and elapsed paths perform the same initialization and land on a fresh title frame. | Establishes the full visual/audio range the run later earns back. | Base implemented; expression proposed. |
-| `title` | Restrained Oracle motif and legible title at native scale. | One controlled idle pulse; prompt motion never competes with title. | Fanfare tail resolves, then a sparse title loop and start cue. | A/Start continues; unavailable cartridge state remains honest. | Returns to a low baseline while preserving the Oracle promise. | Base implemented; expression proposed. |
-| `quiz-menu` | Rune frame and shaped focus for both choices. | Focus moves on input edge; confirm/cancel have short anticipation and recovery. | Distinct navigate, confirm, and cancel cues. | Begin and back are explicit; held input cannot double-confirm. | New run previews the Initiate palette and reset. | Functional; presentation/audio proposed. |
-| `character-creation` | Hero, equipment, rows, and Oracle status form one staged composition. | Hero and changed trait react immediately; begin has one clean handoff. | Trait variants, unavailable, back, and begin cues. | Every row wraps safely; B returns; loading/retry/ready states are truthful. | Establishes identity that remains visible across the run. | Functional; presentation/audio proposed. |
-| `oracle` | Sanctum, playfield, status, counters, controls, and tier crest remain distinct. | Datafall, status changes, and tier motif have owned loops and exits. | Ambience plus data, bug, retry, ready, and back cues. | Questions-ready enters quiz; B abandons safely; all other controls are intentionally inactive. | Crest/environment/audio reflect Initiate, Adept, or Oracle-bound. | Datafall implemented; B-back and expression in this pass; audio/tier assets proposed. |
-| `quiz` | Question, choices, header hero, score, hearts, streak, and tier frame remain readable. | Cursor, commit, 45-tick review hold, correct/wrong, heart loss, and batch threshold have causal timing. | Cursor, commit, result, danger, streak, and batch cues. | Active answer/back prompts become `REVIEW ANSWER` while inputs are intentionally locked; every automatic outcome routes visibly. | Question concepts deepen and the earned tier persists. | Result lock and identity implemented; labels/audio/tier expression proposed. |
-| `level-up` | Hero and newly expanded crest dominate; level text supports rather than carries reward. | Telegraph → crest expansion → hero response → one-second hold → continue; stable background avoids flashing. | Tier-specific reward cadence establishes the next baseline. | A/Start is inactive for 60 ticks, then routes to ready quiz or Oracle wait; held confirmation cannot answer the next question. | This is the explicit threshold celebration and carry-forward moment. | Hold and stable presentation implemented; tier/audio expression proposed. |
-| `game-over` | Hero, final score, level, and earned crest share one conclusive frame. | Energy recedes without erasing the crest; replay visibly resets it. | Defeat fall, result hold, and reset cadence. | The visible A/B/Start prompt returns to menu; the next new run resets all run state. | Shows how far the player reached before returning to the dormant baseline. | Identity and controls implemented; tier/audio expression proposed. |
+| `copyright` | Dim archive frame with hierarchy equal to gameplay; no glow. | Credits reveal in fixed readable steps, then clear cleanly. | Intentional near-silence; archival ticks remain proposed. | A/Start after minimum dwell or timed exit; missing provenance has explicit copy. | Establishes the dormant baseline and repository identity. | Visual template implemented and native-frame tested; audio proposed. |
+| `opening-fanfare` | Cathedral, sigils, commit path, and crest use the shared code-fantasy language. | Dormant → first node → propagation → collision → complete Oracle → title handoff. | Layered cadence remains proposed. | Skip and elapsed paths land on a fresh title frame. | Establishes the visual range the run later earns back. | Visual template and luminance arc implemented/tested; audio proposed. |
+| `title` | Restrained Oracle motif and legible title at native scale. | One controlled eye/prompt pulse never competes with title. | Title loop and start cue remain proposed. | A/Start continues; unavailable cartridge state remains honest. | Returns to an Initiate baseline while preserving the Oracle promise. | Visual template implemented/tested; audio proposed. |
+| `quiz-menu` | Rune frame and shaped focus for both choices. | Focus moves on input edge. | Navigate, confirm, and cancel cues remain proposed. | Begin and back are explicit; held input cannot double-confirm. | New run previews the Initiate palette and reset. | Visual template implemented/tested; audio proposed. |
+| `character-creation` | Hero, equipment, rows, and Oracle status form one staged composition. | Hero and changed trait react immediately; begin has one clean handoff. | Trait and begin cues remain proposed. | Every row wraps safely; B returns; loading/retry/ready states are truthful. | Establishes identity that remains visible across the run. | Visual template implemented/tested; audio proposed. |
+| `oracle` | Sanctum, playfield, status, counters, controls, and tier crest remain distinct. | Datafall, status changes, and tier motif have owned loops and exits. | Ambience and action cues remain proposed. | Questions-ready enters quiz; B abandons safely; all other controls are intentionally inactive. | Crest, circuit density, and palette reflect all three tiers. | Visual template/progression implemented/tested; audio proposed. |
+| `quiz` | Question, choices, hero token, score, hearts, and tier frame remain readable. | Cursor, commit, 45-tick review hold, correct/wrong, heart loss, and batch threshold have causal timing. | Quiz cues remain proposed. | Result labels replace ambiguous color-only feedback; every automatic outcome routes visibly. | Question concepts deepen and the earned tier persists. | Visual template/result labels implemented/tested; audio proposed. |
+| `level-up` | Hero and newly expanded crest dominate; level text supports rather than carries reward. | Crest growth → hero rise → one-second hold → continue; stable background avoids flashing. | Reward cadence remains proposed. | A/Start is inactive for 60 ticks, then routes to ready quiz or Oracle wait. | Explicit threshold celebration establishes the new visual baseline. | Visual template/progression implemented/tested; audio proposed. |
+| `game-over` | Defeated hero, final score, level, and earned crest share one conclusive frame. | Energy recedes without erasing the crest; replay resets it on the next run. | Defeat/result/reset cues remain proposed. | The visible A/B/Start prompt returns to menu; the next new run resets all run state. | Shows the exact visual tier reached before reset. | Visual template/progression implemented/tested; audio proposed. |
 
 ## Runtime traceability
 
@@ -295,7 +295,7 @@ engine does not load or play them yet.
 |---|---|---|
 | Manifest title and `quiz`/`quest` type | Implemented | Parsed at cartridge load and used by the engine. |
 | Scene graph | Configured/executable | Schema-v2 handlers and semantic transitions are validated, compiled, and executed by the engine. |
-| Mechanic and presentation graph | Configured/metadata | Mechanics plus visual, animation, audio, and progression entries are parsed, cross-reference validated, and retained as production requirements. They do not load assets. |
+| Mechanic and presentation graph | Mixed | Mechanics and audio remain metadata; typed visual templates are parsed, validated, and executed by scene renderers. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
 | Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
 | Copyright and opening-fanfare screens | Implemented in basic form | Trusted Bevy handlers render before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
@@ -305,10 +305,10 @@ engine does not load or play them yet.
 | Safe Oracle-to-quiz input boundary | Implemented | A/Start are ignored in Oracle; B exits to the menu; held D-pad controls have no answer action after the automatic transition. |
 | Quiz result and reward input boundaries | Implemented in this pass | The 45-tick answer reveal replaces active controls, and level-up enforces a 60-tick hold before A/Start can leave. |
 | Truthful multi-state Oracle presentation | Implemented in basic form | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
-| Non-color-only result labels and reduced motion | Partially implemented | Level-up no longer flashes the full background and review controls are explicit; correctness labels and a user-selectable reduced-motion mode remain proposed. |
-| Art selected from manifest metadata | Proposed | Requires a future engine/schema decision; art entries are requirements only today. |
+| Non-color-only result labels and reduced motion | Partially implemented | Correct/wrong labels, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
+| Visual templates selected from manifest | Implemented in this pass | Eleven typed built-in templates are selected by `art[].template`; unknown names fail validation and untemplated cartridges keep their legacy renderers. |
 | Whole-game sound design and playback | Configured/metadata; runtime proposed | Every scene references an audio requirement, but the current engine has no sound asset selection or playback system. |
-| Felt presentation progression | Configured/metadata; runtime proposed | Initiate, Adept, and Oracle-bound states are specified across environment, motion, and sound; current runtime exposes only question difficulty and numeric level. |
+| Felt presentation progression | Visual runtime implemented; audio proposed | Initiate, Adept, and Oracle-bound change palette, circuit density, crest geometry, and reward/result presentation; native-frame tests verify a non-numeric final-tier channel. |
 
 ## Implementation slices
 
@@ -324,18 +324,19 @@ engine does not load or play them yet.
 4. **Completed — FSM closure pass:** Add Oracle B-back recovery, own the quiz
    answer-review lock, enforce the level-up hold, display every accepted
    game-over input, and test runtime/template/manifest routes.
-5. **Feedback/accessibility pass:** Add correctness labels, reduced-motion
-   Oracle behavior, and native-scale screenshot assertions.
+5. **Partially completed — Feedback/accessibility pass:** Correctness labels,
+   shaped focus, staged motion, and native-scale assertions are implemented; a
+   user-facing reduced-motion setting remains.
 6. **Continuity pass:** Show the previous lesson and batch status during a wait
    using state the engine already owns.
-7. **Whole-game presentation pass:** Produce and verify every visual entry—not
-   only gameplay frames—against the 240×160 ledger, beginning with the dormant
+7. **Completed — Whole-game presentation pass:** Eleven typed built-in visual
+   templates cover all nine scenes, beginning with the dormant
    `copyright-card` and culminating in the Oracle crescendo.
 8. **Sound runtime pass:** Add bounded template-audio selection and playback,
    then implement every entry in the sound ledger with scene-owned loop exits.
-9. **Felt-progression pass:** Select tiered templates from run level, carry the
-   crest/environment/audio state across Oracle, quiz, and rewards, and verify a
-   deterministic reset on replay.
+9. **Partially completed — Felt-progression pass:** Tiered visuals carry the
+   crest, palette, circuit density, and hero identity across Oracle, quiz,
+   reward, and results; tiered audio remains part of the sound runtime pass.
 10. **Completed — Executable scene graph:** Add schema v2 handlers, semantic
    transitions, timing gates, reachability validation, built-in quiz/quest
    templates, and schema-v1 compatibility.

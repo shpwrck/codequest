@@ -75,8 +75,35 @@ pub struct ArtRequirement {
     pub id: String,
     pub kind: String,
     pub summary: String,
+    pub template: Option<VisualTemplate>,
     #[serde(default)]
     pub requirements: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum VisualTemplate {
+    #[serde(rename = "oracle-chronicle")]
+    Chronicle,
+    #[serde(rename = "oracle-awakening")]
+    Awakening,
+    #[serde(rename = "oracle-title")]
+    Title,
+    #[serde(rename = "oracle-menu")]
+    Menu,
+    #[serde(rename = "oracle-atelier")]
+    Atelier,
+    #[serde(rename = "oracle-hero")]
+    Hero,
+    #[serde(rename = "oracle-sanctum")]
+    Sanctum,
+    #[serde(rename = "oracle-trial")]
+    Trial,
+    #[serde(rename = "oracle-ascension")]
+    Ascension,
+    #[serde(rename = "oracle-aftermath")]
+    Aftermath,
+    #[serde(rename = "oracle-progression")]
+    Progression,
 }
 
 impl CodeQuestConfig {
@@ -433,8 +460,55 @@ mod tests {
         assert!(oracle.transitions.iter().any(|transition| {
             transition.signal == SceneSignal::Back && transition.target == "quiz-menu"
         }));
+        assert_eq!(
+            config
+                .art
+                .iter()
+                .filter_map(|art| art.template)
+                .collect::<HashSet<_>>()
+                .len(),
+            11,
+            "the dogfood cartridge should exercise every built-in Oracle visual template"
+        );
         assert!(config.scenes.iter().any(|scene| scene.id == "quiz"));
         assert!(config.runtime_machine().unwrap().is_some());
+    }
+
+    #[test]
+    fn visual_templates_are_typed_and_unknown_names_are_rejected() {
+        let config = CodeQuestConfig::parse(
+            r#"
+                schema_version = 1
+
+                [game]
+                type = "quiz"
+
+                [[art]]
+                id = "frame"
+                kind = "ui"
+                summary = "A built-in frame."
+                template = "oracle-trial"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.art[0].template, Some(VisualTemplate::Trial));
+
+        let error = CodeQuestConfig::parse(
+            r#"
+                schema_version = 1
+
+                [game]
+                type = "quiz"
+
+                [[art]]
+                id = "frame"
+                kind = "ui"
+                summary = "A misspelled frame."
+                template = "oracle-trail"
+            "#,
+        )
+        .expect_err("template misspellings must not silently fall back");
+        assert!(error.contains("unknown variant `oracle-trail`"));
     }
 
     #[test]
