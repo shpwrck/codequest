@@ -11,7 +11,7 @@ start_scene = "copyright"
 id = "present-copyright"
 summary = "Credit the repository's authors and establish its real development timeline while the first questions are requested."
 inputs = ["a", "start"]
-rules = ["Read authors and earliest/latest commit dates from repository data.", "Credit up to three git authors by commit count, using first-commit order to break ties.", "Show an explicit copyright owner only when the repository declares one.", "Begin question generation when the cartridge is accepted; this scene must not delay it.", "A or Start may skip after a readable minimum dwell, and the scene otherwise advances automatically."]
+rules = ["Read authors and earliest/latest commit dates from repository data.", "Credit up to three git authors using git shortlog's commit-count ranking.", "Show an explicit copyright owner only when the repository declares one.", "Begin question generation when the cartridge is accepted; this scene must not delay it.", "A or Start may skip after a readable minimum dwell, and the scene otherwise advances automatically."]
 feedback = ["Reveal author names and timeline landmarks in a short, legible sequence.", "Use no progress percentage or claim that questions are ready."]
 
 [[mechanics]]
@@ -71,7 +71,7 @@ requirements = ["Fits inside a 240x160 frame.", "Remains legible at native resol
 id = "hero-set"
 kind = "sprite-set"
 summary = "Modular hero sprites that reflect the customization choices."
-requirements = ["Consistent silhouette across variants.", "Readable on town and quiz backgrounds."]
+requirements = ["Consistent silhouette across variants.", "Readable on Oracle and quiz backgrounds."]
 
 [[art]]
 id = "oracle-sanctum"

@@ -110,8 +110,8 @@ model, or hides a failed request behind invented progress.
 - **Decision:** Read the repository provenance or advance after a minimum dwell.
 - **Inputs:** A or Start.
 - **Rules:** Use repository-derived author names and earliest/latest commit
-  dates. Credit up to three git authors by commit count and break ties by first
-  commit. Display explicit copyright ownership only when a repository notice
+  dates. Credit up to three git authors using git shortlog's commit-count
+  ranking. Display explicit copyright ownership only when a repository notice
   provides it. Begin generation at cartridge acceptance, not at scene exit.
 - **Feedback:** Reveal authors and timeline landmarks with fixed, readable
   timing; do not present generation progress.
@@ -163,9 +163,9 @@ model, or hides a failed request behind invented progress.
 
 | ID | Kind | Used by scenes | Purpose and required states | Constraints | Status |
 |---|---|---|---|---|---|
-| `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and overflow page. | Legible at 240×160; never infer legal ownership; body text stays at native size. | Needed |
-| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes. | Needed |
-| `title-mark` | Logo/UI | `opening-fanfare`, `title` | Identify the cartridge and Oracle motif; fanfare reveal, idle, and prompt-pulse states. | Legible at 240×160 without glow. | Needed |
+| `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and overflow page. | Legible at 240×160; never infer legal ownership; body text stays at native size. | Procedural base implemented; overflow polish needed |
+| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes. | Procedural base implemented; reduced-motion polish needed |
+| `title-mark` | Logo/UI | `opening-fanfare`, `title` | Identify the cartridge and Oracle motif; fanfare reveal, idle, and prompt-pulse states. | Legible at 240×160 without glow. | Basic renderer implemented; art polish needed |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, jump, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base implemented; state polish needed |
 | `oracle-sanctum` | Scene/UI | `oracle` | Make arrival, scrying, retry, ready, and long-wait states feel like one place. | Reserve clear status, hero, and Oracle regions; reduced-motion state required. | Basic renderer implemented; redesign needed |
 | `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | Core frame implemented; accessibility polish needed |
@@ -177,8 +177,8 @@ model, or hides a failed request behind invented progress.
 | Manifest title and `quiz`/`quest` type | Implemented | Parsed at cartridge load and used by the engine. |
 | Scene, mechanic, and art graph | Configured | Parsed, cross-reference validated, and retained; not executed dynamically in schema v1. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
-| Repository authors, timeline, and explicit copyright extraction | Proposed | Extend cartridge preparation with bounded, sanitized git-history and notice metadata. |
-| Copyright and opening-fanfare screens | Configured / Proposed | Present in the validated storyboard; add hard-coded Bevy states and rendering before `Title`. |
+| Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
+| Copyright and opening-fanfare screens | Implemented in basic form | Hard-coded Bevy states render before `Title`, enforce minimum skip times, auto-advance, and remain independent of question readiness. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Hard-coded `Screen` states, input handling, advancement, and render functions. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
 | Truthful multi-state Oracle presentation | Proposed | Add distinct in-flight/retry/ready/AI-disabled UI and tests to the existing Oracle state. |
@@ -187,12 +187,12 @@ model, or hides a failed request behind invented progress.
 
 ## Implementation slices
 
-1. **Repository provenance pass:** Derive bounded author credits,
+1. **Completed — Repository provenance pass:** Derive bounded author credits,
    earliest/latest commit dates, and any explicit copyright notice during
    cartridge preparation; add parser/sanitization tests.
-2. **Opening state pass:** Add hard-coded `Copyright` and `OpeningFanfare`
+2. **Completed — Opening state pass:** Add hard-coded `Copyright` and `OpeningFanfare`
    screens before `Title`, preserve the already-early question request, and
-   test minimum dwell, auto-advance, skip, and reduced-motion paths.
+   test minimum dwell, auto-advance, skip, and distinct rendered phases.
 3. **Oracle state pass:** Keep the hard-coded Oracle screen; add distinct
    in-flight, retry, ready, and AI-disabled presentation using actual engine
    state and retain the B exit.

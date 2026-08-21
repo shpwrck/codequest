@@ -18,6 +18,10 @@ pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 35;
 const QUESTION_BATCH_SIZE: usize = 6;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
+const COPYRIGHT_MIN_TICKS: u64 = 60;
+const COPYRIGHT_AUTO_TICKS: u64 = 180;
+const FANFARE_MIN_SKIP_TICKS: u64 = 90;
+const FANFARE_AUTO_TICKS: u64 = 330;
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -101,11 +105,20 @@ pub enum CartridgeMode {
     Custom,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RepositoryProvenance {
+    pub authors: Vec<String>,
+    pub first_year: Option<u16>,
+    pub latest_year: Option<u16>,
+    pub copyright: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CartridgeSpec {
     pub id: String,
     pub title: String,
     pub mode: CartridgeMode,
+    pub provenance: RepositoryProvenance,
     pub codequest: Option<Box<CodeQuestConfig>>,
     pub quests: Vec<QuestSpec>,
     pub questions: Vec<QuizQuestion>,
@@ -157,6 +170,8 @@ impl Button {
 enum Screen {
     Off,
     Boot,
+    Copyright,
+    OpeningFanfare,
     Title,
     QuizMenu,
     CharacterCreation,
@@ -250,6 +265,29 @@ impl Framebuffer {
         self.rect(x, y + height - 1, width, 1, color);
         self.rect(x, y, 1, height, color);
         self.rect(x + width - 1, y, 1, height, color);
+    }
+
+    fn line(&mut self, mut x0: i32, mut y0: i32, x1: i32, y1: i32, color: Color) {
+        let dx = (x1 - x0).abs();
+        let step_x = if x0 < x1 { 1 } else { -1 };
+        let dy = -(y1 - y0).abs();
+        let step_y = if y0 < y1 { 1 } else { -1 };
+        let mut error = dx + dy;
+        loop {
+            self.pixel(x0, y0, color);
+            if x0 == x1 && y0 == y1 {
+                break;
+            }
+            let doubled = error * 2;
+            if doubled >= dy {
+                error += dy;
+                x0 += step_x;
+            }
+            if doubled <= dx {
+                error += dx;
+                y0 += step_y;
+            }
+        }
     }
 
     fn text(&mut self, x: i32, y: i32, text: &str, color: Color, scale: i32) {
@@ -584,7 +622,7 @@ fn apply_commands(
             }
             EngineCommand::BootComplete => {
                 if state.screen == Screen::Boot && state.has_game() {
-                    state.transition(Screen::Title);
+                    state.transition(Screen::Copyright);
                 }
             }
             EngineCommand::Cartridge(cartridge) => {
@@ -680,6 +718,20 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
     match state.screen {
         Screen::Off => {}
         Screen::Boot => {}
+        Screen::Copyright => {
+            if state.screen_ticks >= COPYRIGHT_MIN_TICKS
+                && matches!(button, Button::A | Button::Start)
+            {
+                state.transition(Screen::OpeningFanfare);
+            }
+        }
+        Screen::OpeningFanfare => {
+            if state.screen_ticks >= FANFARE_MIN_SKIP_TICKS
+                && matches!(button, Button::A | Button::Start)
+            {
+                state.transition(Screen::Title);
+            }
+        }
         Screen::Title => {
             if matches!(button, Button::A | Button::Start) {
                 match state.cartridge_mode() {
@@ -834,6 +886,12 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
         }
     }
     match state.screen {
+        Screen::Copyright if state.screen_ticks >= COPYRIGHT_AUTO_TICKS => {
+            state.transition(Screen::OpeningFanfare);
+        }
+        Screen::OpeningFanfare if state.screen_ticks >= FANFARE_AUTO_TICKS => {
+            state.transition(Screen::Title);
+        }
         Screen::Oracle if !state.has_unanswered_question() && !state.questions_loading => {
             let level = state.quiz.as_ref().map_or(1, |run| run.level);
             request_question_batch(&mut state, &mut effects, level);
@@ -906,6 +964,8 @@ fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
     match state.screen {
         Screen::Off => frame.clear(INK),
         Screen::Boot => render_boot(&mut frame, &state),
+        Screen::Copyright => render_copyright(&mut frame, &state),
+        Screen::OpeningFanfare => render_opening_fanfare(&mut frame, &state),
         Screen::Title => render_title(&mut frame, &state),
         Screen::QuizMenu => render_quiz_menu(&mut frame, &state),
         Screen::CharacterCreation => render_character_creation(&mut frame, &state),
@@ -927,6 +987,135 @@ fn render_boot(frame: &mut Framebuffer, state: &GameState) {
     frame.rect(68, 96, 104, 2, MIST);
     if !state.has_game() && state.screen_ticks > 50 && (state.screen_ticks / 30).is_multiple_of(2) {
         frame.centered_text(115, "INSERT CARTRIDGE", RED, 1);
+    }
+}
+
+fn render_copyright(frame: &mut Framebuffer, state: &GameState) {
+    frame.clear(INK);
+    frame.outline(8, 8, 224, 144, GOLD);
+    frame.outline(12, 12, 216, 136, NAVY);
+    frame.centered_text(20, "REPOSITORY CHRONICLE", GOLD, 1);
+
+    let title = state
+        .cartridge
+        .as_ref()
+        .map_or("NO CARTRIDGE", |cartridge| cartridge.title.as_str());
+    let lines = title_lines(title);
+    frame.centered_text(40, &lines[0], PARCH, 1);
+    if let Some(line) = lines.get(1) {
+        frame.centered_text(51, line, PARCH, 1);
+    }
+
+    if let Some(provenance) = state
+        .cartridge
+        .as_ref()
+        .map(|cartridge| &cartridge.provenance)
+    {
+        let notice = provenance
+            .copyright
+            .as_deref()
+            .map(|notice| notice.replace('©', "(C)"))
+            .unwrap_or_else(|| "NO COPYRIGHT NOTICE FOUND".into());
+        frame.centered_text(66, &truncate(&notice, 35), MIST, 1);
+        frame.rect(42, 79, 156, 1, PLUM);
+        frame.centered_text(86, "AUTHORS", SKY, 1);
+
+        if provenance.authors.is_empty() {
+            frame.centered_text(99, "NO COMMIT AUTHORS YET", PARCH, 1);
+        } else {
+            for (index, author) in provenance.authors.iter().take(3).enumerate() {
+                frame.centered_text(98 + index as i32 * 10, &truncate(author, 32), PARCH, 1);
+            }
+        }
+
+        let history = match (provenance.first_year, provenance.latest_year) {
+            (Some(first), Some(latest)) if first == latest => format!("HISTORY {first}"),
+            (Some(first), Some(latest)) => format!("HISTORY {first}-{latest}"),
+            _ => "HISTORY NOT YET WRITTEN".into(),
+        };
+        frame.centered_text(129, &history, GOLD, 1);
+    }
+    if state.screen_ticks >= COPYRIGHT_MIN_TICKS && (state.screen_ticks / 20).is_multiple_of(2) {
+        frame.centered_text(141, "START:SKIP", PARCH, 1);
+    }
+}
+
+fn draw_code_sigil(frame: &mut Framebuffer, x: i32, y: i32, mirrored: bool) {
+    let edge = if mirrored { -1 } else { 1 };
+    frame.line(x, y - 16, x + edge * 12, y, SKY);
+    frame.line(x + edge * 12, y, x, y + 16, SKY);
+    frame.line(x + edge * 5, y - 16, x + edge * 17, y, ROYAL);
+    frame.line(x + edge * 17, y, x + edge * 5, y + 16, ROYAL);
+    frame.rect(x + edge.min(0) * 18, y - 2, 18, 4, GOLD);
+}
+
+fn draw_oracle_sigil(frame: &mut Framebuffer, center_x: i32, center_y: i32, pulse: i32) {
+    let radius = 24 + pulse;
+    frame.line(center_x - radius, center_y, center_x, center_y - 13, SKY);
+    frame.line(center_x, center_y - 13, center_x + radius, center_y, SKY);
+    frame.line(center_x + radius, center_y, center_x, center_y + 13, ROYAL);
+    frame.line(center_x, center_y + 13, center_x - radius, center_y, ROYAL);
+    frame.outline(center_x - 7, center_y - 7, 15, 15, GOLD);
+    frame.rect(center_x - 2, center_y - 2, 5, 5, PARCH);
+}
+
+fn draw_commit_constellation(frame: &mut Framebuffer, ticks: u64) {
+    let nodes = [
+        (36, 98),
+        (70, 72),
+        (106, 91),
+        (142, 62),
+        (178, 80),
+        (208, 48),
+    ];
+    for pair in nodes.windows(2) {
+        frame.line(pair[0].0, pair[0].1, pair[1].0, pair[1].1, PLUM);
+    }
+    for (index, (x, y)) in nodes.into_iter().enumerate() {
+        let color = if ((ticks / 10) as usize + index).is_multiple_of(3) {
+            GOLD
+        } else {
+            SKY
+        };
+        frame.rect(x - 2, y - 2, 5, 5, color);
+    }
+}
+
+fn render_opening_fanfare(frame: &mut Framebuffer, state: &GameState) {
+    let ticks = state.screen_ticks;
+    if ticks >= 240 {
+        render_title(frame, state);
+        draw_oracle_sigil(frame, 120, 111, ((ticks / 10) % 2) as i32);
+        frame.centered_text(145, "THE ORACLE AWAKENS", GOLD, 1);
+        return;
+    }
+
+    frame.clear(INK);
+    for index in 0..24 {
+        let x = ((index * 67 + ticks as usize) % WIDTH) as i32;
+        let y = ((index * 43 + 17) % HEIGHT) as i32;
+        frame.pixel(x, y, if index % 4 == 0 { GOLD } else { MIST });
+    }
+
+    if ticks < 120 {
+        let travel = (ticks.min(110) as i32 * 70) / 110;
+        draw_code_sigil(frame, 24 + travel, 78, false);
+        draw_code_sigil(frame, 216 - travel, 78, true);
+        if ticks >= 100 {
+            let flare = ((ticks - 100) as i32 / 4).min(8);
+            frame.rect(120 - flare, 78 - 1, flare * 2 + 1, 3, PARCH);
+            frame.rect(119, 79 - flare, 3, flare * 2 + 1, GOLD);
+        }
+        frame.centered_text(132, "TWO PATHS CONVERGE", SKY, 1);
+    } else {
+        draw_commit_constellation(frame, ticks);
+        draw_oracle_sigil(frame, 120, 78, ((ticks / 10) % 3) as i32);
+        frame.centered_text(20, "HISTORY BECOMES POWER", GOLD, 1);
+        frame.centered_text(135, "THE ORACLE OPENS", PARCH, 1);
+    }
+
+    if ticks >= FANFARE_MIN_SKIP_TICKS {
+        frame.text(176, 149, "START:SKIP", MIST, 1);
     }
 }
 
@@ -1491,6 +1680,12 @@ mod tests {
             id: "/tmp/engine-test".into(),
             title: "ENGINE TEST".into(),
             mode: CartridgeMode::Quiz,
+            provenance: RepositoryProvenance {
+                authors: vec!["ADA LOVELACE".into(), "GRACE HOPPER".into()],
+                first_year: Some(2020),
+                latest_year: Some(2024),
+                copyright: Some("Copyright (c) 2020-2024 Ada Lovelace".into()),
+            },
             codequest: None,
             quests: vec![],
             questions: vec![QuizQuestion {
@@ -1522,6 +1717,45 @@ mod tests {
     fn issue(engine: &mut GameEngine, command: EngineCommand) {
         engine.command(command);
         engine.update();
+    }
+
+    fn finish_opening(engine: &mut GameEngine) {
+        issue(engine, EngineCommand::BootComplete);
+        for _ in 0..59 {
+            engine.update();
+        }
+        issue(
+            engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+        issue(
+            engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: false,
+            },
+        );
+        for _ in 0..89 {
+            engine.update();
+        }
+        issue(
+            engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+        issue(
+            engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: false,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::Title);
     }
 
     fn hero_pixels(engine: &GameEngine) -> Vec<u8> {
@@ -1595,7 +1829,7 @@ mod tests {
             EngineCommand::Cartridge(Some(quiz_cartridge())),
         );
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -1694,7 +1928,7 @@ mod tests {
         cartridge.questions.clear();
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -1818,7 +2052,7 @@ mod tests {
             EngineCommand::Cartridge(Some(quiz_cartridge())),
         );
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -1868,7 +2102,7 @@ mod tests {
             EngineCommand::Cartridge(Some(quiz_cartridge())),
         );
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         for button in [Button::Start, Button::A] {
             issue(
                 &mut engine,
@@ -1986,7 +2220,7 @@ mod tests {
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         let _ = engine.take_effects();
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         for button in [Button::Start, Button::A, Button::Start] {
             issue(
                 &mut engine,
@@ -2034,7 +2268,7 @@ mod tests {
         cartridge.questions = vec![cartridge.questions[0].clone(); 4];
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         let _ = engine.take_effects();
         for button in [Button::Start, Button::A, Button::Start] {
             issue(
@@ -2087,7 +2321,7 @@ mod tests {
         cartridge.questions = vec![cartridge.questions[0].clone(); 6];
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         let _ = engine.take_effects();
         for button in [Button::Start, Button::A, Button::Start] {
             issue(
@@ -2128,7 +2362,7 @@ mod tests {
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         let _ = engine.take_effects();
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         for button in [Button::Start, Button::A, Button::Start] {
             issue(
                 &mut engine,
@@ -2220,7 +2454,7 @@ mod tests {
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         let _ = engine.take_effects();
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         for button in [Button::Start, Button::A, Button::Start] {
             issue(
                 &mut engine,
@@ -2284,7 +2518,7 @@ mod tests {
         cartridge.questions = vec![cartridge.questions[0].clone(); 6];
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         for button in [Button::Start, Button::A, Button::Start] {
             issue(
                 &mut engine,
@@ -2379,7 +2613,7 @@ mod tests {
     }
 
     #[test]
-    fn bevy_owns_boot_and_navigation_state() {
+    fn boot_runs_provenance_and_fanfare_before_title_navigation() {
         let mut engine = GameEngine::new();
         issue(
             &mut engine,
@@ -2388,7 +2622,58 @@ mod tests {
         issue(&mut engine, EngineCommand::Power(true));
         assert_eq!(engine.screen(), Screen::Boot);
         issue(&mut engine, EngineCommand::BootComplete);
+        assert_eq!(engine.screen(), Screen::Copyright);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::Copyright);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: false,
+            },
+        );
+        for _ in 0..59 {
+            engine.update();
+        }
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::OpeningFanfare);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: false,
+            },
+        );
+        for _ in 0..89 {
+            engine.update();
+        }
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
         assert_eq!(engine.screen(), Screen::Title);
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: false,
+            },
+        );
         issue(
             &mut engine,
             EngineCommand::Input {
@@ -2397,6 +2682,86 @@ mod tests {
             },
         );
         assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn opening_scenes_auto_advance_to_title() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+
+        for _ in 0..179 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::OpeningFanfare);
+
+        for _ in 0..330 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Title);
+    }
+
+    #[test]
+    fn opening_scenes_render_distinct_frames() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        let boot = engine.frame().to_vec();
+
+        issue(&mut engine, EngineCommand::BootComplete);
+        let copyright = engine.frame().to_vec();
+        assert_ne!(copyright, boot);
+
+        for _ in 0..179 {
+            engine.update();
+        }
+        let fanfare_impact = engine.frame().to_vec();
+        assert_ne!(fanfare_impact, copyright);
+
+        for _ in 0..120 {
+            engine.update();
+        }
+        let fanfare_oracle = engine.frame().to_vec();
+        assert_ne!(fanfare_oracle, fanfare_impact);
+
+        for _ in 0..210 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Title);
+        assert_ne!(engine.frame(), fanfare_oracle);
+    }
+
+    #[test]
+    fn copyright_frame_reflects_cartridge_provenance() {
+        let mut first_cartridge = quiz_cartridge();
+        first_cartridge.provenance.authors = vec!["ADA LOVELACE".into()];
+        first_cartridge.provenance.first_year = Some(1842);
+        first_cartridge.provenance.latest_year = Some(1843);
+        let mut first = GameEngine::new();
+        issue(&mut first, EngineCommand::Cartridge(Some(first_cartridge)));
+        issue(&mut first, EngineCommand::Power(true));
+        issue(&mut first, EngineCommand::BootComplete);
+
+        let mut second_cartridge = quiz_cartridge();
+        second_cartridge.provenance.authors = vec!["GRACE HOPPER".into()];
+        second_cartridge.provenance.first_year = Some(1944);
+        second_cartridge.provenance.latest_year = Some(1992);
+        let mut second = GameEngine::new();
+        issue(
+            &mut second,
+            EngineCommand::Cartridge(Some(second_cartridge)),
+        );
+        issue(&mut second, EngineCommand::Power(true));
+        issue(&mut second, EngineCommand::BootComplete);
+
+        assert_ne!(first.frame(), second.frame());
     }
 
     #[test]
@@ -2429,7 +2794,7 @@ mod tests {
             EngineCommand::Cartridge(Some(quiz_cartridge())),
         );
         issue(&mut engine, EngineCommand::Power(true));
-        issue(&mut engine, EngineCommand::BootComplete);
+        finish_opening(&mut engine);
         issue(
             &mut engine,
             EngineCommand::Input {

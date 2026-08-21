@@ -19,7 +19,7 @@ without failing CI.
 | `game.title` | Overrides the repository-directory cartridge title when present. |
 | `game.summary` | Validated and retained as design metadata. |
 | `game.start_scene` | Validated against `scenes` and retained as design metadata. |
-| `scenes`, `mechanics`, `art` | Validated as a connected storyboard and passed to the engine, but do not construct screens dynamically yet. |
+| `scenes`, `mechanics`, `art` | Validated as a connected storyboard and passed to the engine, but do not construct screens dynamically yet. The current copyright/fanfare sequence is implemented as hard-coded engine states. |
 
 Without `CODEQUEST.toml`, existing behavior remains unchanged: a repository
 with `CODEQUEST.md` uses quest-battle mode and any other repository uses quiz

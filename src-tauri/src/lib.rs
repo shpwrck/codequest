@@ -3,6 +3,7 @@ mod codequest;
 mod engine;
 mod font5x7;
 
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -41,6 +42,8 @@ struct Cartridge {
     mode: String,
     quests: Vec<Quest>,
     #[serde(skip)]
+    provenance: engine::RepositoryProvenance,
+    #[serde(skip)]
     codequest: Option<CodeQuestConfig>,
 }
 
@@ -58,6 +61,80 @@ fn is_git_repo(path: &std::path::Path) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+fn sanitized_metadata(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
+fn explicit_copyright_notice(path: &std::path::Path) -> Option<String> {
+    const NOTICE_FILES: [&str; 9] = [
+        "COPYRIGHT",
+        "COPYRIGHT.txt",
+        "COPYRIGHT.md",
+        "LICENSE",
+        "LICENSE.txt",
+        "LICENSE.md",
+        "NOTICE",
+        "NOTICE.txt",
+        "NOTICE.md",
+    ];
+
+    NOTICE_FILES.iter().find_map(|name| {
+        let file = std::fs::File::open(path.join(name)).ok()?;
+        let mut bytes = Vec::new();
+        file.take(16 * 1024).read_to_end(&mut bytes).ok()?;
+        String::from_utf8_lossy(&bytes).lines().find_map(|line| {
+            let notice = sanitized_metadata(line, 96);
+            let lowercase = notice.to_ascii_lowercase();
+            let declares_copyright = lowercase.starts_with("copyright ")
+                || lowercase.starts_with("copyright(")
+                || lowercase.starts_with("(c) ")
+                || lowercase.starts_with("spdx-filecopyrighttext:")
+                || notice.starts_with('©');
+            declares_copyright.then_some(notice)
+        })
+    })
+}
+
+fn repository_provenance(path: &std::path::Path) -> engine::RepositoryProvenance {
+    let authors = git_out(path, &["shortlog", "-sne", "--all"])
+        .lines()
+        .filter_map(|line| {
+            let author = line
+                .trim_start()
+                .trim_start_matches(|ch: char| ch.is_ascii_digit())
+                .trim();
+            let name = author
+                .rsplit_once(" <")
+                .map_or(author, |(name, _)| name)
+                .trim();
+            let name = sanitized_metadata(name, 64);
+            (!name.is_empty()).then_some(name)
+        })
+        .take(3)
+        .collect();
+
+    let years: Vec<u16> = git_out(path, &["log", "--all", "--format=%cd", "--date=format:%Y"])
+        .lines()
+        .filter_map(|year| year.parse().ok())
+        .collect();
+
+    engine::RepositoryProvenance {
+        authors,
+        first_year: years.iter().min().copied(),
+        latest_year: years.iter().max().copied(),
+        copyright: explicit_copyright_notice(path),
+    }
 }
 
 fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
@@ -162,6 +239,7 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
         None if canon.join("CODEQUEST.md").exists() => "custom",
         None => "quiz",
     };
+    let provenance = repository_provenance(&canon);
     Ok(Cartridge {
         id: p.clone(),
         title: name,
@@ -169,6 +247,7 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
         path: p,
         mode: mode.to_string(),
         quests,
+        provenance,
         codequest,
     })
 }
@@ -438,6 +517,7 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
         id: cartridge.path,
         title: cartridge.title,
         mode,
+        provenance: cartridge.provenance,
         codequest: cartridge.codequest.map(Box::new),
         quests: cartridge
             .quests
@@ -550,8 +630,40 @@ mod question_policy_tests {
             path: path.to_string(),
             mode: "quiz".to_string(),
             quests: Vec::new(),
+            provenance: engine::RepositoryProvenance::default(),
             codequest: None,
         }
+    }
+
+    fn commit_as(repo: &std::path::Path, name: &str, email: &str, date: &str, message: &str) {
+        std::fs::write(repo.join("history.txt"), format!("{message}\n")).unwrap();
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["add", "history.txt"])
+            .status()
+            .unwrap();
+        assert!(add.success());
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                message,
+            ])
+            .env("GIT_AUTHOR_NAME", name)
+            .env("GIT_AUTHOR_EMAIL", email)
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_NAME", name)
+            .env("GIT_COMMITTER_EMAIL", email)
+            .env("GIT_COMMITTER_DATE", date)
+            .status()
+            .unwrap();
+        assert!(commit.success());
     }
 
     fn question(text: &str, choices: &[&str]) -> QQuestion {
@@ -586,6 +698,76 @@ mod question_policy_tests {
         assert_eq!(spec.title, "CONFIGURED ADVENTURE");
         assert_eq!(spec.mode, engine::CartridgeMode::Custom);
         assert!(spec.codequest.is_some());
+
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_loads_ranked_authors_timeline_and_explicit_copyright() {
+        let repo = temporary_git_repo();
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2020-01-02T03:04:05Z",
+            "first",
+        );
+        commit_as(
+            &repo,
+            "Grace Hopper",
+            "grace@example.com",
+            "2022-02-03T04:05:06Z",
+            "second",
+        );
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2024-03-04T05:06:07Z",
+            "third",
+        );
+        std::fs::write(
+            repo.join("LICENSE"),
+            "MIT License\n\nCopyright (c) 2020-2024 Ada Lovelace\n",
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(
+            cartridge.provenance.authors,
+            vec!["Ada Lovelace", "Grace Hopper"]
+        );
+        assert_eq!(cartridge.provenance.first_year, Some(2020));
+        assert_eq!(cartridge.provenance.latest_year, Some(2024));
+        assert_eq!(
+            cartridge.provenance.copyright.as_deref(),
+            Some("Copyright (c) 2020-2024 Ada Lovelace")
+        );
+
+        let spec = engine_cartridge(cartridge);
+        assert_eq!(spec.provenance.authors[0], "Ada Lovelace");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_does_not_infer_copyright_from_commit_authors() {
+        let repo = temporary_git_repo();
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2020-01-02T03:04:05Z",
+            "first",
+        );
+        std::fs::write(
+            repo.join("LICENSE"),
+            "The above copyright notice and this permission notice shall be included.\n",
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.provenance.authors, vec!["Ada Lovelace"]);
+        assert_eq!(cartridge.provenance.copyright, None);
 
         std::fs::remove_dir_all(repo).unwrap();
     }
