@@ -1,0 +1,123 @@
+# CODEQUEST.toml schema version 1
+schema_version = 1
+
+[game]
+type = "quiz"
+title = "CODE QUEST ADVANCE"
+summary = "Learn a software project by exploring its world and answering conceptual questions."
+start_scene = "title"
+
+[[mechanics]]
+id = "navigate-menu"
+summary = "Move through a short list and confirm or go back."
+inputs = ["d-pad", "a", "b", "start"]
+rules = ["The current choice is always visible.", "Confirm advances to the selected destination."]
+feedback = ["Highlight the current choice.", "Play a short confirmation response."]
+
+[[mechanics]]
+id = "customize-hero"
+summary = "Choose the hero name, class, and visual style before beginning a run."
+inputs = ["d-pad", "a", "b", "start"]
+rules = ["Each row edits one hero trait.", "The selected hero persists for the run."]
+feedback = ["Update the hero preview immediately."]
+
+[[mechanics]]
+id = "consult-oracle"
+summary = "Bring the hero to the Oracle while the next question is prepared."
+inputs = []
+rules = ["The Oracle holds the run until a valid question exists.", "A failed generation attempt is retried instead of replaced with filler."]
+feedback = ["Show question-generation status while waiting.", "Animate the hero while the Oracle is working."]
+
+[[mechanics]]
+id = "answer-question"
+summary = "Choose one of four answers to a conceptual project question."
+inputs = ["d-pad", "a", "b"]
+rules = ["Exactly one answer is correct.", "A wrong answer costs one heart.", "Correct answers increase score and streak."]
+feedback = ["Reveal whether the answer was correct.", "Show the correct answer after a mistake."]
+
+[[art]]
+id = "title-mark"
+kind = "logo"
+summary = "A readable pixel-art title treatment for the opening scene."
+requirements = ["Fits inside a 240x160 frame.", "Remains legible at native resolution."]
+
+[[art]]
+id = "hero-set"
+kind = "sprite-set"
+summary = "Modular hero sprites that reflect the customization choices."
+requirements = ["Consistent silhouette across variants.", "Readable on town and quiz backgrounds."]
+
+[[art]]
+id = "oracle-sanctum"
+kind = "scene"
+summary = "A mysterious waiting space that makes question generation feel like part of the game."
+requirements = ["Supports the customized hero sprite.", "Has clear loading, retry, and ready states."]
+
+[[art]]
+id = "quiz-frame"
+kind = "ui"
+summary = "Question, answer, score, streak, and heart presentation."
+requirements = ["Supports four 35-character choices.", "Keeps focus visible in every state."]
+
+[[scenes]]
+id = "title"
+title = "Title"
+kind = "title"
+summary = "Introduce the cartridge and invite the player to begin."
+mechanics = ["navigate-menu"]
+art = ["title-mark"]
+next = ["quiz-menu"]
+
+[[scenes]]
+id = "quiz-menu"
+title = "Quiz Menu"
+kind = "menu"
+summary = "Explain the run at a glance and offer start or return."
+mechanics = ["navigate-menu"]
+art = []
+next = ["character-creation", "title"]
+
+[[scenes]]
+id = "character-creation"
+title = "Create Hero"
+kind = "character-creation"
+summary = "Let the player establish a small identity before the first question."
+mechanics = ["customize-hero"]
+art = ["hero-set"]
+next = ["oracle"]
+
+[[scenes]]
+id = "oracle"
+title = "Oracle"
+kind = "interstitial"
+summary = "Turn question-generation latency into anticipation between challenges."
+mechanics = ["consult-oracle"]
+art = ["hero-set", "oracle-sanctum"]
+next = ["quiz"]
+
+[[scenes]]
+id = "quiz"
+title = "Quiz"
+kind = "challenge"
+summary = "Test one durable concept about the project."
+mechanics = ["answer-question"]
+art = ["hero-set", "quiz-frame"]
+next = ["oracle", "level-up", "game-over"]
+
+[[scenes]]
+id = "level-up"
+title = "Level Up"
+kind = "reward"
+summary = "Mark mastery and raise the next question batch's difficulty."
+mechanics = ["navigate-menu"]
+art = ["hero-set"]
+next = ["oracle"]
+
+[[scenes]]
+id = "game-over"
+title = "Game Over"
+kind = "result"
+summary = "Close the run with the final score and a replay path."
+mechanics = ["navigate-menu"]
+art = ["hero-set"]
+next = ["quiz-menu"]

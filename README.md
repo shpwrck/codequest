@@ -36,11 +36,17 @@ Lint Gauntlet / Forge / Test Dungeon for `package.json` scripts, a Crate
 Forge when `Cargo.toml` exists, and Make Mines for a `Makefile`. Swapping
 requires ejecting first — remove and insert animations included.
 
-**Game modes.** A repo with a `CODEQUEST.md` loads the quest-battle mode;
-without one, it loads the **ENDLESS REPO QUIZ**. Cartridge contents are data
-only: Rust derives a title, mode, and quest list from the repo, then gives
-that data to Bevy. A cartridge cannot add JavaScript or replace the game
-loop.
+**Game modes.** A repo may declare a versioned `CODEQUEST.toml` to select
+`quiz` or `quest` mode, override its cartridge title, and carry a connected
+storyboard of scenes, mechanics, and art requirements into the engine. See
+the [v1 contract](docs/reference/codequest-toml.md) and its
+[complete example](docs/examples/CODEQUEST.toml), plus the
+[Oracle quiz storyboard](docs/game-design/oracle-quiz.md). Today the storyboard is
+validated design metadata; title and mode are the fields that change runtime
+behavior. Without the manifest, a repo with `CODEQUEST.md` loads the legacy
+quest-battle mode and any other repo loads the **ENDLESS REPO QUIZ**.
+Cartridge contents are data only: a cartridge cannot add JavaScript or
+replace the game loop.
 
 Quiz cartridges contain no preloaded questions. Inserting one makes the Bevy
 engine ask the `claude` CLI for the first batch immediately. Character
@@ -61,6 +67,8 @@ and are started, streamed, and stopped by the Bevy runtime.
 - `src-tauri/src/engine.rs` — the game. A headless Bevy app owns navigation,
   input edges, fixed-step timing, quiz/battle state, command execution, and a
   CPU-rendered 240×160 RGBA framebuffer.
+- `src-tauri/src/codequest.rs` — the versioned `CODEQUEST.toml` data contract,
+  parser, and cross-reference validation.
 - `src-tauri/src/lib.rs` — the platform adapter. It validates git-repo
   cartridges, prepares data, and exposes only power, boot completion,
   cartridge, input, and framebuffer operations to the device UI.

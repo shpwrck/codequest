@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 
+use crate::codequest::{CodeQuestConfig, GameType};
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
 
 pub const WIDTH: usize = 240;
@@ -105,8 +106,19 @@ pub struct CartridgeSpec {
     pub id: String,
     pub title: String,
     pub mode: CartridgeMode,
+    pub codequest: Option<Box<CodeQuestConfig>>,
     pub quests: Vec<QuestSpec>,
     pub questions: Vec<QuizQuestion>,
+}
+
+impl CartridgeSpec {
+    fn mode(&self) -> CartridgeMode {
+        match self.codequest.as_ref().map(|config| config.game.game_type) {
+            Some(GameType::Quiz) => CartridgeMode::Quiz,
+            Some(GameType::Quest) => CartridgeMode::Custom,
+            None => self.mode,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -360,7 +372,7 @@ impl GameState {
     }
 
     fn cartridge_mode(&self) -> Option<CartridgeMode> {
-        self.cartridge.as_ref().map(|cart| cart.mode)
+        self.cartridge.as_ref().map(CartridgeSpec::mode)
     }
 
     fn question_count(&self) -> usize {
@@ -387,7 +399,7 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
     let Some(cartridge) = state
         .cartridge
         .as_ref()
-        .filter(|cartridge| cartridge.mode == CartridgeMode::Quiz)
+        .filter(|cartridge| cartridge.mode() == CartridgeMode::Quiz)
     else {
         return;
     };
@@ -585,13 +597,13 @@ fn apply_commands(
                 state.questions_loading = false;
                 state.question_retry_ticks = 0;
                 if let Some(batch_end) = state.cartridge.as_ref().and_then(|cartridge| {
-                    (cartridge.mode == CartridgeMode::Quiz && !cartridge.questions.is_empty())
+                    (cartridge.mode() == CartridgeMode::Quiz && !cartridge.questions.is_empty())
                         .then_some(cartridge.questions.len())
                 }) {
                     state.batch_ends.push(batch_end);
                 }
                 if state.cartridge.as_ref().is_some_and(|cartridge| {
-                    cartridge.mode == CartridgeMode::Quiz && cartridge.questions.is_empty()
+                    cartridge.mode() == CartridgeMode::Quiz && cartridge.questions.is_empty()
                 }) {
                     request_question_batch(&mut state, &mut effects, 1);
                 }
@@ -604,7 +616,7 @@ fn apply_commands(
                 questions,
             } => {
                 let is_current_quiz = state.cartridge.as_ref().is_some_and(|cartridge| {
-                    cartridge.id == cartridge_id && cartridge.mode == CartridgeMode::Quiz
+                    cartridge.id == cartridge_id && cartridge.mode() == CartridgeMode::Quiz
                 });
                 if !is_current_quiz {
                     continue;
@@ -1479,6 +1491,7 @@ mod tests {
             id: "/tmp/engine-test".into(),
             title: "ENGINE TEST".into(),
             mode: CartridgeMode::Quiz,
+            codequest: None,
             quests: vec![],
             questions: vec![QuizQuestion {
                 question: "WHO OWNS THE GAME LOOP?".into(),
@@ -1486,6 +1499,24 @@ mod tests {
                 answer: 0,
             }],
         }
+    }
+
+    #[test]
+    fn codequest_game_type_controls_the_engine_mode() {
+        let mut cartridge = quiz_cartridge();
+        cartridge.codequest = Some(Box::new(
+            CodeQuestConfig::parse(
+                r#"
+                    schema_version = 1
+
+                    [game]
+                    type = "quest"
+                "#,
+            )
+            .unwrap(),
+        ));
+
+        assert_eq!(cartridge.mode(), CartridgeMode::Custom);
     }
 
     fn issue(engine: &mut GameEngine, command: EngineCommand) {

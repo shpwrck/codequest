@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod codequest;
 mod engine;
 mod font5x7;
 
@@ -7,6 +8,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+
+use codequest::{CodeQuestConfig, GameType};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Quest {
@@ -35,8 +38,10 @@ struct Cartridge {
     title: String,
     color: String,
     path: String,
-    mode: String, // "custom" when CODEQUEST.md exists (schema TBD), else "quiz"
+    mode: String,
     quests: Vec<Quest>,
+    #[serde(skip)]
+    codequest: Option<CodeQuestConfig>,
 }
 
 fn shquote(p: &str) -> String {
@@ -60,11 +65,16 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     if !is_git_repo(&canon) {
         return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
     }
+    let codequest = CodeQuestConfig::load(&canon)?;
     let p = canon.to_string_lossy().to_string();
-    let name = canon
+    let default_name = canon
         .file_name()
         .map(|n| n.to_string_lossy().to_uppercase())
         .unwrap_or_else(|| "REPO".into());
+    let name = codequest
+        .as_ref()
+        .and_then(|config| config.game.title.clone())
+        .unwrap_or(default_name);
     let q = shquote(&p);
     let mut quests = vec![
         quest(
@@ -146,10 +156,11 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     let h: usize = p
         .bytes()
         .fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
-    let mode = if canon.join("CODEQUEST.md").exists() {
-        "custom"
-    } else {
-        "quiz"
+    let mode = match codequest.as_ref().map(|config| config.game.game_type) {
+        Some(GameType::Quiz) => "quiz",
+        Some(GameType::Quest) => "custom",
+        None if canon.join("CODEQUEST.md").exists() => "custom",
+        None => "quiz",
     };
     Ok(Cartridge {
         id: p.clone(),
@@ -158,6 +169,7 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
         path: p,
         mode: mode.to_string(),
         quests,
+        codequest,
     })
 }
 
@@ -412,6 +424,7 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
         id: cartridge.path,
         title: cartridge.title,
         mode,
+        codequest: cartridge.codequest.map(Box::new),
         quests: cartridge
             .quests
             .into_iter()
@@ -495,6 +508,26 @@ pub fn run() {
 mod question_policy_tests {
     use super::*;
 
+    fn temporary_git_repo() -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "codequest-config-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        path
+    }
+
     fn cartridge(path: &str, title: &str) -> Cartridge {
         Cartridge {
             id: path.to_string(),
@@ -503,6 +536,7 @@ mod question_policy_tests {
             path: path.to_string(),
             mode: "quiz".to_string(),
             quests: Vec::new(),
+            codequest: None,
         }
     }
 
@@ -512,6 +546,34 @@ mod question_policy_tests {
             choices: choices.iter().map(|choice| (*choice).to_string()).collect(),
             answer: 0,
         }
+    }
+
+    #[test]
+    fn cartridge_loads_codequest_title_type_and_storyboard() {
+        let repo = temporary_git_repo();
+        std::fs::write(
+            repo.join(codequest::FILE_NAME),
+            r#"
+                schema_version = 1
+
+                [game]
+                type = "quest"
+                title = "CONFIGURED ADVENTURE"
+            "#,
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.title, "CONFIGURED ADVENTURE");
+        assert_eq!(cartridge.mode, "custom");
+        assert!(cartridge.codequest.is_some());
+
+        let spec = engine_cartridge(cartridge);
+        assert_eq!(spec.title, "CONFIGURED ADVENTURE");
+        assert_eq!(spec.mode, engine::CartridgeMode::Custom);
+        assert!(spec.codequest.is_some());
+
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]
