@@ -425,6 +425,14 @@ mod tests {
             .transitions
             .iter()
             .all(|transition| transition.target == "title"));
+        let oracle = config
+            .scenes
+            .iter()
+            .find(|scene| scene.id == "oracle")
+            .expect("the storyboard should include the Oracle wait");
+        assert!(oracle.transitions.iter().any(|transition| {
+            transition.signal == SceneSignal::Back && transition.target == "quiz-menu"
+        }));
         assert!(config.scenes.iter().any(|scene| scene.id == "quiz"));
         assert!(config.runtime_machine().unwrap().is_some());
     }

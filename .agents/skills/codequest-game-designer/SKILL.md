@@ -1,7 +1,6 @@
 ---
 name: codequest-game-designer
-description: Design and revise CODE QUEST game experiences as connected storyboards, gameplay mechanics, art requirements, and valid CODEQUEST.toml manifests. Use this skill whenever the user asks to storyboard a quiz or quest, invent or change a game type, plan scenes or game flow, define gameplay rules, identify art or UI needs, or author/revise CODEQUEST.toml—even when they call it a game concept, flow, pitch, or content plan instead of a design task.
-compatibility: Requires repository file access and Python 3.11+ for the bundled TOML validator.
+description: Design, revise, and polish CODE QUEST game experiences as connected storyboards, closed finite-state machines, gameplay and progression systems, visual and sound requirements, and valid CODEQUEST.toml manifests. Use this skill whenever the user asks to storyboard a quiz or quest, invent or change a game type, plan scenes or game flow, define gameplay rules, identify art, animation, audio, or UI needs, audit whether a game feels finished, remove dead or open states, make progression perceptible, or author/revise CODEQUEST.toml—even when they call it a game concept, flow, pitch, finishing pass, or content plan instead of a design task.
 ---
 
 # CODE QUEST game designer
@@ -19,6 +18,10 @@ Before designing, read these files from the repository root when present:
 3. An existing `CODEQUEST.toml` — preserve compatible IDs and user decisions
 4. Relevant game code or screenshots — only when needed to distinguish current
    behavior from a proposal
+
+When the request includes polish, finishing, animation, sound, game feel, or
+progression, also read `references/polish.md` in this skill completely before
+editing the design.
 
 If the repository contract differs from examples in this skill, the repository
 contract wins. Never invent fields or game types that the current schema rejects.
@@ -92,7 +95,21 @@ Do not claim an asset exists merely because the design names it. If the user
 asks to generate art, invoke the available image-generation workflow separately
 and update the ledger with the actual output path and status.
 
-### 6. Audit design versus runtime
+### 6. Run the whole-game polish audit
+
+For a polish or finishing pass, audit every reachable scene—including credits,
+loading/interstitial, failure, and replay scenes—across the five surfaces in
+`references/polish.md`: static presentation, motion, sound, mechanical closure,
+and felt progression. A silent or visually restrained scene can pass only when
+that restraint is specified as an intentional state.
+
+Inventory repository-owned template assets before proposing new ones. Map each
+selected asset and required state to stable manifest art IDs, but distinguish
+production metadata from assets the runtime actually loads. Add a polish matrix
+to the brief. Do not call the game polished while any reachable scene has an
+unspecified surface, an unhandled player/system event, or an unowned handoff.
+
+### 7. Audit design versus runtime
 
 Classify each important element as:
 
@@ -125,6 +142,10 @@ production status, and implementation gaps; the manifest is the stable graph
 the engine can validate. Preserve unrelated existing design decisions and show
 material changes clearly.
 
+When the runtime contract has no dedicated sound or presentation schema, retain
+those needs as referenced production entries (for example `art.kind = "audio"`)
+instead of inventing fields. State plainly that metadata does not load assets.
+
 ## Validate before handoff
 
 Run the bundled fast validator:
@@ -149,6 +170,12 @@ Then perform a traceability pass:
 - Every art item names at least one player-facing need.
 - Every scene appears in the brief and manifest with the same ID.
 - Implemented/configured/proposed claims match repository evidence.
+- Every reachable scene has explicit static, motion, and sound intent.
+- Every player input and asynchronous outcome is handled, ignored deliberately,
+  or routed to a visible recovery state; no FSM state is left open.
+- Loops, one-shots, held inputs, skip paths, and scene exits hand off cleanly.
+- The beginning, middle, and end of a run differ through perceivable feedback,
+  not only a larger number.
 
 End with a short handoff: the experience designed, files changed, what the
 engine can run today, and the smallest next implementation/art decisions.

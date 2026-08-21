@@ -24,6 +24,19 @@
       "prompt": "Our existing quiz storyboard needs an accessibility pass. Add a reduced-motion Oracle state, non-color-only answer feedback, and clearer retry behavior. Preserve existing IDs wherever possible and update both the brief and manifest.",
       "expected_output": "An incremental, traceable revision that preserves stable IDs, updates mechanics and art requirements, and keeps all manifest references valid.",
       "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Polish this CODE QUEST cartridge end to end. The best gameplay screen already looks good, but the credits, opening, menus, failure states, and level progression still feel like a prototype. Reuse repository template assets where possible, close every FSM state, and cover animation and sound as well as static art.",
+      "expected_output": "A whole-game polish pass that covers every reachable scene and distinguishes executable behavior, production metadata, available assets, and proposed runtime work.",
+      "expectations": [
+        "Audits credits and every other reachable scene across static presentation, motion, sound, mechanical closure, and felt progression.",
+        "Finds possible loading, failure, held-input, back, replay, and terminal open states rather than checking reachability alone.",
+        "Defines perceptible beginning, middle, and end progression through at least two feedback channels beyond a level number.",
+        "Inventories real template assets and does not claim that manifest metadata dynamically loads them unless the repository contract supports it.",
+        "Keeps the brief and CODEQUEST.toml valid, linked, and honest about implemented versus proposed work."
+      ],
+      "files": []
     }
   ]
 }
