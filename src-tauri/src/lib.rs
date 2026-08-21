@@ -5,11 +5,15 @@ mod font5x7;
 pub mod scene_machine;
 
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
+use wait_timeout::ChildExt;
 
 use codequest::{CodeQuestConfig, GameType};
 use scene_machine::{SceneMachineDefinition, SceneMachineTemplate};
@@ -271,45 +275,20 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     })
 }
 
-fn folder_picker_command(is_appimage: bool) -> Command {
-    let mut command = Command::new("zenity");
-    if is_appimage {
-        // AppRun points this at the bundle's Ubuntu libraries. Zenity is a host
-        // executable, so inheriting that path can bind it to an older bundled
-        // GLib and make the picker die before its window is created.
-        command.env_remove("LD_LIBRARY_PATH");
-    }
-    command
-        .args([
-            "--file-selection",
-            "--directory",
-            "--title=SELECT CARTRIDGE (GIT REPO)",
-        ])
-        // keep the dialog on the app's own display: without this, GTK4 delegates
-        // to the xdg-desktop-portal, which renders on the host session instead
-        .env("GDK_DEBUG", "no-portals")
-        .env("GTK_USE_PORTAL", "0");
-    command
-}
-
 #[tauri::command]
-async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
-    let is_appimage =
-        std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some();
-    let out = folder_picker_command(is_appimage)
-        .output()
-        .map_err(|_| "FOLDER PICKER UNAVAILABLE (NEEDS ZENITY)".to_string())?;
-    if !out.status.success() {
-        if out.status.code() == Some(1) {
-            return Ok(None); // user cancelled the dialog
-        }
-        return Err("FOLDER PICKER FAILED TO OPEN".to_string());
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if path.is_empty() {
+async fn pick_cartridge(app: tauri::AppHandle) -> Result<Option<Cartridge>, String> {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .set_title("SELECT CARTRIDGE (GIT REPO)")
+        .blocking_pick_folder()
+    else {
         return Ok(None);
-    }
-    build_cartridge(std::path::Path::new(&path)).map(Some)
+    };
+    let path = path
+        .into_path()
+        .map_err(|_| "FOLDER PICKER RETURNED AN INVALID PATH".to_string())?;
+    build_cartridge(&path).map(Some)
 }
 
 #[tauri::command]
@@ -475,6 +454,56 @@ fn claude_question_prompt(
     )
 }
 
+fn command_output_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<Output, &'static str> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| "CLAUDE CLI UNAVAILABLE")?;
+    let stdout = child.stdout.take().ok_or("CLAUDE CALL FAILED")?;
+    let stderr = child.stderr.take().ok_or("CLAUDE CALL FAILED")?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut reader = stdout;
+        reader.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut reader = stderr;
+        reader.read_to_end(&mut bytes).map(|_| bytes)
+    });
+
+    let status = match child
+        .wait_timeout(timeout)
+        .map_err(|_| "CLAUDE CALL FAILED")?
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err("CLAUDE CALL TIMED OUT");
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "CLAUDE CALL FAILED")?
+        .map_err(|_| "CLAUDE CALL FAILED")?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "CLAUDE CALL FAILED")?
+        .map_err(|_| "CLAUDE CALL FAILED")?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 fn ai_questions(
     path: &std::path::Path,
     level: u32,
@@ -508,16 +537,14 @@ fn ai_questions(
         }
     }
     let prompt = claude_question_prompt(&name, level, count, &readme, &excerpts);
-    let mut cmd = Command::new("timeout");
-    cmd.args(["120", "claude", "-p", &prompt, "--output-format", "json"]);
+    let mut cmd = Command::new("claude");
+    cmd.args(["-p", &prompt, "--output-format", "json"]);
     if let Ok(model) = std::env::var("CQA_CLAUDE_MODEL") {
         if !model.is_empty() {
             cmd.args(["--model", &model]);
         }
     }
-    let out = cmd
-        .output()
-        .map_err(|_| "CLAUDE CLI UNAVAILABLE".to_string())?;
+    let out = command_output_with_timeout(cmd, Duration::from_secs(120)).map_err(str::to_string)?;
     if !out.status.success() {
         return Err("CLAUDE CALL FAILED".to_string());
     }
@@ -625,6 +652,7 @@ pub fn run() {
             .collect()
     });
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(EngineState(engine::EngineRuntime::spawn(question_loader)))
         .invoke_handler(tauri::generate_handler![
@@ -715,6 +743,28 @@ mod question_policy_tests {
             choices: choices.iter().map(|choice| (*choice).to_string()).collect(),
             answer: 0,
         }
+    }
+
+    #[test]
+    #[ignore = "child-process fixture for the timeout test"]
+    fn slow_command_fixture() {
+        std::thread::sleep(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn external_commands_are_stopped_at_their_deadline() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "question_policy_tests::slow_command_fixture",
+        ]);
+        let started = std::time::Instant::now();
+
+        let error = command_output_with_timeout(command, Duration::from_millis(50)).unwrap_err();
+
+        assert_eq!(error, "CLAUDE CALL TIMED OUT");
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
@@ -878,17 +928,6 @@ mod question_policy_tests {
         assert_eq!(cartridge.provenance.copyright, None);
 
         std::fs::remove_dir_all(repo).unwrap();
-    }
-
-    #[test]
-    fn appimage_picker_does_not_leak_bundled_libraries_into_host_zenity() {
-        let command = folder_picker_command(true);
-        let library_path = command
-            .get_envs()
-            .find(|(name, _)| *name == "LD_LIBRARY_PATH")
-            .map(|(_, value)| value);
-
-        assert_eq!(library_path, Some(None));
     }
 
     #[test]

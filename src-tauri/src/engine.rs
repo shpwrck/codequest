@@ -1604,6 +1604,36 @@ fn handle_effect(
     }
 }
 
+fn quest_shell_command() -> Command {
+    if let Some(shell) = std::env::var_os("CQA_SHELL") {
+        return Command::new(shell);
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(shell) = windows_git_bash() {
+        return Command::new(shell);
+    }
+    Command::new("bash")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_git_bash() -> Option<std::path::PathBuf> {
+    let output = Command::new("where.exe").arg("git.exe").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(std::path::PathBuf::from)
+        .flat_map(|git| {
+            git.ancestors()
+                .map(|ancestor| ancestor.join("bin").join("bash.exe"))
+                .collect::<Vec<_>>()
+        })
+        .find(|candidate| candidate.is_file())
+}
+
 fn run_quest(
     command: String,
     sender: mpsc::Sender<EngineCommand>,
@@ -1621,7 +1651,7 @@ fn run_quest(
         let _ = sender.send(EngineCommand::QuestDone { success: false });
         return;
     }
-    let mut child = match Command::new("bash")
+    let mut child = match quest_shell_command()
         .arg("-c")
         .arg(command)
         .stdout(Stdio::piped())

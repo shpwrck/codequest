@@ -94,8 +94,16 @@ the DOM-rendered version could trigger.
 
 ## Install
 
-Grab the AppImage, make it executable, run it — there is nothing to install and
-no toolchain required:
+Tagged releases publish native packages for all supported desktop platforms:
+
+| Platform | Package | Architecture |
+|----------|---------|--------------|
+| Linux | `.AppImage` | x86_64 |
+| Windows | NSIS `.exe` and WiX `.msi` | x86_64 |
+| macOS | `.dmg` and zipped `.app` | Universal (Apple Silicon + Intel) |
+
+On Linux, make the AppImage executable and run it; there is nothing to install
+and no toolchain required:
 
 ```bash
 chmod +x code-quest-advance_0.2.1_amd64.AppImage
@@ -113,25 +121,44 @@ desktop session those are already present; on a bare/minimal host you need
 `libGLESv2.so.2` (`libglvnd-gles`) and some fonts. If the host has no FUSE, run
 it as `./code-quest-advance_0.2.1_amd64.AppImage --appimage-extract-and-run`.
 
-At runtime the app shells out, so `git` and `zenity` — plus `claude`, for AI
-question generation — must be on `PATH`. Those are the only other requirements.
+On Windows, use either installer. On macOS, open the DMG and drag the app to
+Applications. CI macOS packages use an ad-hoc signature so they can be built
+without repository secrets; a public production release should be rebuilt with
+a Developer ID certificate and notarized.
+
+At runtime the app shells out, so `git` — plus `claude`, for AI question
+generation — must be installed. On macOS the app repairs the restricted `PATH`
+inherited by GUI applications before looking for them. Quest mode also needs
+`bash`; macOS and Linux include it, and Git for Windows supplies it on Windows.
+Folder selection uses each operating system's native dialog and has no external
+helper.
 
 ## Build & run
 
 ```bash
-npm install
-npm run tauri dev     # dev window
-npm run tauri build   # deb / rpm / AppImage under src-tauri/target/release/bundle/
+npm ci
+npm run tauri -- dev
+npm run tauri -- build
 ```
 
-This builds against the host's libraries and is the right thing for development.
-It is NOT what you ship: a binary built on Fedora needs GLIBC_2.39 and will not
-start on RHEL 9, which has 2.34.
+Tauri produces native packages for the host operating system, so Windows and
+macOS bundles must be built on their corresponding runners. For a universal
+macOS package, install both Rust targets and request the virtual universal
+target:
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run tauri -- build --bundles app,dmg --target universal-apple-darwin
+```
+
+A native Linux host build is suitable for development but not for distribution:
+a binary built on Fedora needs GLIBC_2.39 and will not start on RHEL 9, which has
+2.34.
 
 ## Packaging a release
 
 ```bash
-./packaging/build-appimage.sh    # -> dist/*.AppImage + SHA256SUMS + portability.txt
+./packaging/build-appimage.sh    # Podman or Docker; writes dist/
 ```
 
 That builds inside an Ubuntu 22.04 container — the oldest base carrying
@@ -140,6 +167,13 @@ the bundle down to RHEL 9's glibc 2.34 and repackages it. `packaging/Containerfi
 is the authoritative list of build dependencies and documents each compatibility
 fix and why it exists. The build fails rather than emitting an artifact that
 would die on a RHEL 9 loader.
+
+The `Package` GitHub Actions workflow runs the Linux container build, Windows
+MSI/NSIS build, and universal macOS app/DMG build in parallel. Run it manually
+to obtain workflow artifacts, or push a `v*` tag to attach all packages and
+checksums to a GitHub release. Windows packages are unsigned and macOS packages
+are ad-hoc signed until platform signing credentials are supplied; signing does
+not affect local or CI compilation.
 
 Verify a change by rebuilding and re-running the smoke test in
 `docs/runbooks/headless-gui-smoke-test/`, which drives the gameplay loop without
