@@ -33,6 +33,8 @@ rack opens. Click or Enter still loads, and Delete provides a keyboard recycle
 action. If it isn't a git repo, the cartridge is refused with a message. The loaded cart
 peeks out of the top-back slot GBA-style and is remembered between launches;
 powering on with an empty slot halts on the boot logo, like real hardware.
+Git trust is scoped to each command for the selected cartridge, allowing Windows
+checkouts owned by an administrator account without changing global Git settings.
 
 A repo cartridge's quests are generated from its contents: repo scrying
 (`git status`), history (`git log`), and drift (`git diff`) always; plus a

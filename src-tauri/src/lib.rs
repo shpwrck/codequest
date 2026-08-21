@@ -59,10 +59,32 @@ fn shquote(p: &str) -> String {
     format!("'{}'", p.replace('\'', "'\\''"))
 }
 
-fn is_git_repo(path: &std::path::Path) -> bool {
-    external_tools::git_command()
+fn shell_path(path: &std::path::Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(drive_path) = path.strip_prefix(r"\\?\") {
+            return drive_path.to_string();
+        }
+    }
+    path.into_owned()
+}
+
+fn git_repo_command(path: &std::path::Path) -> Command {
+    let mut command = external_tools::git_command();
+    command
+        .arg("-c")
+        .arg(format!("safe.directory={}", path.to_string_lossy()))
         .arg("-C")
-        .arg(path)
+        .arg(path);
+    command
+}
+
+fn is_git_repo(path: &std::path::Path) -> bool {
+    git_repo_command(path)
         .args(["rev-parse", "--is-inside-work-tree"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -72,9 +94,7 @@ fn is_git_repo(path: &std::path::Path) -> bool {
 }
 
 fn repository_branch(path: &std::path::Path) -> String {
-    external_tools::git_command()
-        .arg("-C")
-        .arg(path)
+    git_repo_command(path)
         .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
         .output()
         .ok()
@@ -174,28 +194,29 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
         .as_ref()
         .and_then(|config| config.game.title.clone())
         .unwrap_or(default_name);
-    let q = shquote(&p);
+    let q = shquote(&shell_path(&canon));
+    let git = format!("git -c safe.directory={q} -C {q}");
     let mut quests = vec![
         quest(
             "scry",
             "Scrying Pool",
             "Divine the state of the realm.",
             "Fog of State",
-            &format!("git -C {q} status --short --branch"),
+            &format!("{git} status --short --branch"),
         ),
         quest(
             "barrow",
             "The Log Barrow",
             "Disturb the burial mound of history.",
             "History Lich",
-            &format!("git -C {q} log --oneline --graph --decorate -12"),
+            &format!("{git} log --oneline --graph --decorate -12"),
         ),
         quest(
             "marsh",
             "Diff Marsh",
             "Wade through the uncommitted changes.",
             "Drift Serpent",
-            &format!("git -C {q} diff --stat; git -C {q} diff --cached --stat; true"),
+            &format!("{git} diff --stat; {git} diff --cached --stat; true"),
         ),
     ];
     if let Ok(text) = std::fs::read_to_string(canon.join("package.json")) {
@@ -311,9 +332,7 @@ struct QuizData {
 }
 
 fn git_out(path: &std::path::Path, args: &[&str]) -> String {
-    external_tools::git_command()
-        .arg("-C")
-        .arg(path)
+    git_repo_command(path)
         .args(args)
         .output()
         .ok()
@@ -794,6 +813,63 @@ mod question_policy_tests {
         assert!(spec.codequest.is_some());
 
         std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_scopes_git_trust_to_the_selected_repository() {
+        let repo = temporary_git_repo();
+        let canon = std::fs::canonicalize(&repo).unwrap();
+        let command = git_repo_command(&canon);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args[0], "-c");
+        assert_eq!(args[1], format!("safe.directory={}", canon.display()));
+        assert_eq!(args[2], "-C");
+        assert_eq!(args[3], canon.to_string_lossy());
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        let q = shquote(&shell_path(&canon));
+        let git = format!("git -c safe.directory={q} -C {q}");
+        assert_eq!(
+            cartridge.quests[0].command,
+            format!("{git} status --short --branch")
+        );
+        assert_eq!(
+            cartridge.quests[1].command,
+            format!("{git} log --oneline --graph --decorate -12")
+        );
+        assert_eq!(
+            cartridge.quests[2].command,
+            format!("{git} diff --stat; {git} diff --cached --stat; true")
+        );
+
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_paths_remove_windows_extended_length_prefixes() {
+        assert_eq!(
+            shell_path(std::path::Path::new(r"\\?\C:\repos\code quest")),
+            r"C:\repos\code quest"
+        );
+        assert_eq!(
+            shell_path(std::path::Path::new(r"\\?\UNC\server\share\repo")),
+            r"\\server\share\repo"
+        );
+    }
+
+    #[test]
+    fn workspace_checkout_uses_scoped_git_trust_when_available() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        if workspace.join(".git").exists() {
+            let canon = std::fs::canonicalize(workspace).unwrap();
+            assert!(is_git_repo(&canon));
+        }
     }
 
     #[test]
