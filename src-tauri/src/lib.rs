@@ -161,9 +161,15 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     })
 }
 
-#[tauri::command]
-async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
-    let out = Command::new("zenity")
+fn folder_picker_command(is_appimage: bool) -> Command {
+    let mut command = Command::new("zenity");
+    if is_appimage {
+        // AppRun points this at the bundle's Ubuntu libraries. Zenity is a host
+        // executable, so inheriting that path can bind it to an older bundled
+        // GLib and make the picker die before its window is created.
+        command.env_remove("LD_LIBRARY_PATH");
+    }
+    command
         .args([
             "--file-selection",
             "--directory",
@@ -172,7 +178,15 @@ async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
         // keep the dialog on the app's own display: without this, GTK4 delegates
         // to the xdg-desktop-portal, which renders on the host session instead
         .env("GDK_DEBUG", "no-portals")
-        .env("GTK_USE_PORTAL", "0")
+        .env("GTK_USE_PORTAL", "0");
+    command
+}
+
+#[tauri::command]
+async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
+    let is_appimage =
+        std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some();
+    let out = folder_picker_command(is_appimage)
         .output()
         .map_err(|_| "FOLDER PICKER UNAVAILABLE (NEEDS ZENITY)".to_string())?;
     if !out.status.success() {
@@ -512,6 +526,17 @@ mod question_policy_tests {
             choices: choices.iter().map(|choice| (*choice).to_string()).collect(),
             answer: 0,
         }
+    }
+
+    #[test]
+    fn appimage_picker_does_not_leak_bundled_libraries_into_host_zenity() {
+        let command = folder_picker_command(true);
+        let library_path = command
+            .get_envs()
+            .find(|(name, _)| *name == "LD_LIBRARY_PATH")
+            .map(|(_, value)| value);
+
+        assert_eq!(library_path, Some(None));
     }
 
     #[test]

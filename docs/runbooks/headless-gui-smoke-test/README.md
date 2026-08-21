@@ -14,9 +14,9 @@ Durable state: three small X11 utility RPMs installed on this Fedora 43 host
 via local passwordless `sudo dnf` (no credentials involved): `xwd`, `scrot`,
 and `xorg-x11-server-Xvfb`. They exist so this repo's GUI can be launched,
 driven, and screenshot-verified without touching the user's desktop session.
-The app under test is `/home/jskrzype/workdir/scratch/code-quest-advance`
-(release binary at `src-tauri/target/release/code-quest-advance`);
-verification screenshots live in `docs/screenshots/`.
+The app under test is the current repository checkout (release binary at
+`src-tauri/target/release/code-quest-advance`); verification screenshots live
+in `docs/screenshots/`.
 
 ### Template map
 
@@ -26,7 +26,7 @@ Xvfb :99 virtual framebuffer -> xwd root capture -> docs/screenshots/*.png
 
 ```bash
 sudo dnf install -y xwd scrot xorg-x11-server-Xvfb   # idempotent
-cd ~/workdir/scratch/code-quest-advance
+cd /path/to/codequest
 Xvfb :99 -screen 0 1024x720x24 & XPID=$!
 DISPLAY=:99 GDK_BACKEND=x11 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
   LIBGL_ALWAYS_SOFTWARE=1 ./src-tauri/target/release/code-quest-advance & PID=$!
@@ -37,6 +37,18 @@ DISPLAY=:99 xdotool key Return                     # XTEST, NOT `key --window`
 DISPLAY=:99 xwd -root -silent | magick xwd:- png:shot.png
 kill $PID $XPID
 ```
+
+After building an AppImage, verify the native cartridge picker through the
+same headless display stack:
+
+```bash
+scripts/test-release-picker.sh \
+  src-tauri/target/release/bundle/appimage/code-quest-advance_0.2.1_amd64.AppImage
+```
+
+The script powers no game state and touches no desktop session. It opens the
+cartridge tray, clicks **ADD FROM DISK**, and fails unless the native
+`SELECT CARTRIDGE (GIT REPO)` window appears.
 
 ### Verify and recover
 
