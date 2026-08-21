@@ -46,8 +46,11 @@ requires ejecting first — remove and insert animations included.
 `quiz` or `quest` mode, override its cartridge title, and define the finite-state
 scene graph that the Bevy engine executes. Each scene chooses a trusted built-in
 handler and routes its semantic events to other scenes; mechanics and art remain
-linked design requirements. See the [v2 contract](docs/reference/codequest-toml.md),
-its [complete example](docs/examples/CODEQUEST.toml), and the
+linked design requirements. This repository's root
+[`CODEQUEST.toml`](CODEQUEST.toml) makes CODE QUEST itself the reference
+cartridge for exercising that contract. See the
+[v2 contract](docs/reference/codequest-toml.md), its
+[maintained example](docs/examples/CODEQUEST.toml), and the
 [Oracle quiz storyboard](docs/game-design/oracle-quiz.md). Schema v1 manifests
 still load as metadata and receive the built-in flow. Without a manifest, a repo
 with `CODEQUEST.md` loads the legacy quest-battle mode and any other repo loads

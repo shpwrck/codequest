@@ -1,0 +1,239 @@
+# CODEQUEST.toml schema version 2
+schema_version = 2
+
+[game]
+type = "quiz"
+title = "CODE QUEST ADVANCE"
+summary = "Learn a software project by exploring its world and answering conceptual questions."
+start_scene = "copyright"
+
+[[mechanics]]
+id = "present-copyright"
+summary = "Credit the repository's authors and establish its real development timeline while the first questions are requested."
+inputs = ["a", "start"]
+rules = ["Read authors and earliest/latest commit dates from repository data.", "Credit up to three git authors using git shortlog's commit-count ranking.", "Show an explicit copyright owner only when the repository declares one.", "Begin question generation when the cartridge is accepted; this scene must not delay it.", "A or Start may skip after a readable minimum dwell, and the scene otherwise advances automatically."]
+feedback = ["Reveal author names and timeline landmarks in a short, legible sequence.", "Use no progress percentage or claim that questions are ready."]
+
+[[mechanics]]
+id = "play-opening-fanfare"
+summary = "Play a finite original spectacle while first-round question generation continues in the background."
+inputs = ["a", "start"]
+rules = ["The sequence lasts five to seven seconds when unskipped.", "A or Start may skip after the opening impact has been readable for 1.5 seconds.", "Finishing the fanfare does not imply that a question is ready."]
+feedback = ["Build from dark silhouettes to a bright repository sigil, then cut cleanly to the title scene.", "Provide a reduced-motion version using cuts and fades instead of flashes."]
+
+[[mechanics]]
+id = "navigate-menu"
+summary = "Move through a short list and confirm or go back."
+inputs = ["d-pad", "a", "b", "start"]
+rules = ["The current choice is always visible.", "Confirm advances to the selected destination."]
+feedback = ["Highlight the current choice.", "Play a short confirmation response."]
+
+[[mechanics]]
+id = "customize-hero"
+summary = "Choose the hero name, class, and visual style before beginning a run."
+inputs = ["d-pad", "a", "b", "start"]
+rules = ["Each row edits one hero trait.", "The selected hero persists for the run."]
+feedback = ["Update the hero preview immediately."]
+
+[[mechanics]]
+id = "consult-oracle"
+summary = "Play Oracle Datafall while the next question is prepared."
+inputs = ["left", "right"]
+rules = ["Data packets and bugs fall in deterministic lanes while the Oracle holds the run for a valid question.", "Left and Right move the hero to dodge bugs or line up with data.", "Contact with data increments the data counter automatically; contact with a bug increments the bug counter.", "Up, Down, face buttons, Start, and shoulders do nothing in this scene, so their input cannot carry into a newly loaded question.", "Datafall counters are cosmetic and never change quiz score, hearts, question timing, or generation.", "A failed generation attempt is retried instead of replaced with filler."]
+feedback = ["Use distinct packet and crossed-bug silhouettes in addition to green and red.", "Keep Oracle Datafall, truthful Claude status, and animated dots in the top quiz header.", "Keep the data count, bug count, and Left/Right prompt in the bottom game strip.", "Show loading, retry, and ready status without a percentage."]
+
+[[mechanics]]
+id = "answer-question"
+summary = "Choose one of four answers to a conceptual project question."
+inputs = ["d-pad", "a", "b"]
+rules = ["Exactly one answer is correct.", "A wrong answer costs one heart.", "Correct answers increase score and streak."]
+feedback = ["Reveal whether the answer was correct.", "Show the correct answer after a mistake."]
+
+[[art]]
+id = "copyright-card"
+kind = "ui"
+summary = "A copyright-style provenance card for repository authors and development history."
+requirements = ["Fits repository title, up to three credited author lines, and earliest-to-latest commit dates inside 240x160.", "Uses explicit copyright wording only when supported by repository metadata.", "Supports a second page for additional authors without shrinking body text."]
+
+[[art]]
+id = "opening-fanfare"
+kind = "scene-vfx"
+summary = "An original code-fantasy opening that turns repository history into spectacle before the title appears."
+requirements = ["Uses high-contrast silhouettes, a commit-graph constellation, and an Oracle sigil rather than borrowed characters or layouts.", "Completes in five to seven seconds at 60 fps.", "Has a reduced-motion variant without full-frame flashes.", "Hands off to the title without sharing or overlaying the title frame."]
+
+[[art]]
+id = "title-mark"
+kind = "logo"
+summary = "A readable pixel-art title treatment for the opening scene."
+requirements = ["Fits inside a 240x160 frame.", "Remains legible at native resolution."]
+
+[[art]]
+id = "hero-set"
+kind = "sprite-set"
+summary = "Modular hero sprites that reflect the customization choices."
+requirements = ["Consistent silhouette across variants.", "Readable on Oracle and quiz backgrounds."]
+
+[[art]]
+id = "oracle-sanctum"
+kind = "scene"
+summary = "A readable falling-object playfield that makes question generation feel active."
+requirements = ["Supports the customized hero moving across the full playfield.", "Distinguishes collectible packets from crossed bugs by silhouette and color.", "Reserves a top quiz header for the title, Claude status, and animated dots.", "Reserves a bottom game strip for counters and the Left/Right prompt.", "Has clear loading, retry, and ready states."]
+
+[[art]]
+id = "quiz-frame"
+kind = "ui"
+summary = "Question, answer, score, streak, and heart presentation."
+requirements = ["Supports four 35-character choices.", "Keeps focus visible in every state."]
+
+[[scenes]]
+id = "copyright"
+title = "Repository Copyright"
+kind = "credits"
+handler = "repository-credits"
+summary = "Credit the people and timeline behind the inserted repository while the first question request begins."
+mechanics = ["present-copyright"]
+art = ["copyright-card"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "opening-fanfare"
+after_ticks = 60
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "opening-fanfare"
+after_ticks = 180
+
+[[scenes]]
+id = "opening-fanfare"
+title = "Opening Fanfare"
+kind = "cinematic"
+handler = "opening-fanfare"
+summary = "Complete a short original repository spectacle, then hand off cleanly while question generation continues."
+mechanics = ["play-opening-fanfare"]
+art = ["opening-fanfare"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "title"
+after_ticks = 90
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "title"
+after_ticks = 330
+
+[[scenes]]
+id = "title"
+title = "Title"
+kind = "title"
+handler = "title"
+summary = "Resolve the fanfare into the cartridge title and invite the player to begin."
+mechanics = ["navigate-menu"]
+art = ["title-mark"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "quiz-menu"
+
+[[scenes]]
+id = "quiz-menu"
+title = "Quiz Menu"
+kind = "menu"
+handler = "quiz-menu"
+summary = "Explain the run at a glance and offer start or return."
+mechanics = ["navigate-menu"]
+art = []
+
+[[scenes.transitions]]
+signal = "new-run"
+target = "character-creation"
+
+[[scenes.transitions]]
+signal = "back"
+target = "title"
+
+[[scenes]]
+id = "character-creation"
+title = "Create Hero"
+kind = "character-creation"
+handler = "character-creation"
+summary = "Let the player establish a small identity before the first question."
+mechanics = ["customize-hero"]
+art = ["hero-set"]
+
+[[scenes.transitions]]
+signal = "hero-ready"
+target = "oracle"
+
+[[scenes.transitions]]
+signal = "back"
+target = "quiz-menu"
+
+[[scenes]]
+id = "oracle"
+title = "Oracle"
+kind = "interstitial"
+handler = "oracle"
+summary = "Turn question-generation latency into a Left/Right-only falling-object game between challenges."
+mechanics = ["consult-oracle"]
+art = ["hero-set", "oracle-sanctum"]
+
+[[scenes.transitions]]
+signal = "questions-ready"
+target = "quiz"
+
+[[scenes]]
+id = "quiz"
+title = "Quiz"
+kind = "challenge"
+handler = "concept-quiz"
+summary = "Test one durable concept about the project."
+mechanics = ["answer-question"]
+art = ["hero-set", "quiz-frame"]
+
+[[scenes.transitions]]
+signal = "needs-question"
+target = "oracle"
+
+[[scenes.transitions]]
+signal = "batch-complete"
+target = "level-up"
+
+[[scenes.transitions]]
+signal = "hearts-empty"
+target = "game-over"
+
+[[scenes.transitions]]
+signal = "back"
+target = "quiz-menu"
+
+[[scenes]]
+id = "level-up"
+title = "Level Up"
+kind = "reward"
+handler = "level-up"
+summary = "Mark mastery and raise the next question batch's difficulty."
+mechanics = ["navigate-menu"]
+art = ["hero-set"]
+
+[[scenes.transitions]]
+signal = "questions-ready"
+target = "quiz"
+
+[[scenes.transitions]]
+signal = "needs-question"
+target = "oracle"
+
+[[scenes]]
+id = "game-over"
+title = "Game Over"
+kind = "result"
+handler = "game-over"
+summary = "Close the run with the final score and a replay path."
+mechanics = ["navigate-menu"]
+art = ["hero-set"]
+
+[[scenes.transitions]]
+signal = "replay"
+target = "quiz-menu"
