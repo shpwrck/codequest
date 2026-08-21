@@ -393,9 +393,15 @@ mod tests {
     }
 
     #[test]
-    fn shipped_example_defines_a_linked_quiz_storyboard() {
-        let config = CodeQuestConfig::parse(include_str!("../../docs/examples/CODEQUEST.toml"))
-            .expect("the documented example should remain valid");
+    fn repository_manifest_defines_the_shipped_quiz_storyboard() {
+        let repository_manifest = include_str!("../../CODEQUEST.toml");
+        let documented_example = include_str!("../../docs/examples/CODEQUEST.toml");
+        assert_eq!(
+            repository_manifest, documented_example,
+            "the dogfood manifest and documented example must remain synchronized"
+        );
+        let config = CodeQuestConfig::parse(repository_manifest)
+            .expect("the repository's dogfood manifest should remain valid");
 
         assert_eq!(config.schema_version, 2);
         assert_eq!(config.game.game_type, GameType::Quiz);

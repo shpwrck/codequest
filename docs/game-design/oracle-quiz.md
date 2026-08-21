@@ -1,10 +1,14 @@
 # Oracle Quiz
 
-This is the human design brief for the quiz flow represented by
-[`docs/examples/CODEQUEST.toml`](../examples/CODEQUEST.toml). The brief explains
-intent and implementation status; the manifest supplies stable scene,
-mechanic, and art IDs. Its schema-v2 handlers and transitions compile into the
-engine's scene machine; mechanics and art remain linked production metadata.
+This is the human design brief for the quiz flow represented by the repository's
+root [`CODEQUEST.toml`](../../CODEQUEST.toml) and its maintained
+[`docs/examples/CODEQUEST.toml`](../examples/CODEQUEST.toml) copy. Keeping the
+manifest at the root makes CODE QUEST itself the reference cartridge for
+dogfooding engine, scene-graph, and future presentation-template changes. The
+brief explains intent and implementation status; the manifest supplies stable
+scene, mechanic, and art IDs. Its schema-v2 handlers and transitions compile
+into the engine's scene machine; mechanics and art remain linked production
+metadata.
 
 ## Experience frame
 
