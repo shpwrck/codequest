@@ -37,10 +37,10 @@ feedback = ["Update the hero preview immediately."]
 
 [[mechanics]]
 id = "consult-oracle"
-summary = "Bring the hero to the Oracle while the next question is prepared."
-inputs = []
-rules = ["The Oracle holds the run until a valid question exists.", "A failed generation attempt is retried instead of replaced with filler."]
-feedback = ["Show question-generation status while waiting.", "Animate the hero while the Oracle is working."]
+summary = "Play Oracle Datafall while the next question is prepared."
+inputs = ["left", "right"]
+rules = ["Data packets and bugs fall in deterministic lanes while the Oracle holds the run for a valid question.", "Left and Right move the hero to dodge bugs or line up with data.", "Contact with data increments the data counter automatically; contact with a bug increments the bug counter.", "Up, Down, face buttons, Start, and shoulders do nothing in this scene, so their input cannot carry into a newly loaded question.", "Datafall counters are cosmetic and never change quiz score, hearts, question timing, or generation.", "A failed generation attempt is retried instead of replaced with filler."]
+feedback = ["Use distinct packet and crossed-bug silhouettes in addition to green and red.", "Keep Oracle Datafall, truthful Claude status, and animated dots in the top quiz header.", "Keep the data count, bug count, and Left/Right prompt in the bottom game strip.", "Show loading, retry, and ready status without a percentage."]
 
 [[mechanics]]
 id = "answer-question"
@@ -76,8 +76,8 @@ requirements = ["Consistent silhouette across variants.", "Readable on Oracle an
 [[art]]
 id = "oracle-sanctum"
 kind = "scene"
-summary = "A mysterious waiting space that makes question generation feel like part of the game."
-requirements = ["Supports the customized hero sprite.", "Has clear loading, retry, and ready states."]
+summary = "A readable falling-object playfield that makes question generation feel active."
+requirements = ["Supports the customized hero moving across the full playfield.", "Distinguishes collectible packets from crossed bugs by silhouette and color.", "Reserves a top quiz header for the title, Claude status, and animated dots.", "Reserves a bottom game strip for counters and the Left/Right prompt.", "Has clear loading, retry, and ready states."]
 
 [[art]]
 id = "quiz-frame"
@@ -175,17 +175,13 @@ id = "oracle"
 title = "Oracle"
 kind = "interstitial"
 handler = "oracle"
-summary = "Turn question-generation latency into anticipation between challenges."
+summary = "Turn question-generation latency into a Left/Right-only falling-object game between challenges."
 mechanics = ["consult-oracle"]
 art = ["hero-set", "oracle-sanctum"]
 
 [[scenes.transitions]]
 signal = "questions-ready"
 target = "quiz"
-
-[[scenes.transitions]]
-signal = "back"
-target = "quiz-menu"
 
 [[scenes]]
 id = "quiz"

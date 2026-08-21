@@ -7,8 +7,8 @@
 
 | Input | GBA | Action |
 |-------|-----|--------|
-| Arrow keys | D-pad | Navigate menus |
-| D | A | Confirm / answer / fight / jump |
+| Arrow keys | D-pad | Navigate menus / play Oracle Datafall |
+| D | A | Confirm / answer / fight |
 | S | B | Back / abort quest |
 | Enter | START | Start / confirm |
 | Shift | SELECT | Reserved |
@@ -56,7 +56,10 @@ Quiz cartridges contain no preloaded questions. Inserting one makes the Bevy
 engine ask the `claude` CLI for the first batch immediately. Character
 creation, Oracle travel, and level-up screens keep the game moving while
 Claude writes or prefetches the next batch; the Oracle waits and retries if a
-batch fails instead of substituting generic questions. Generated questions
+batch fails instead of substituting generic questions. During the wait, use
+Left/Right to dodge falling bugs and move into falling data. Contact collects
+data automatically; Up, Down, and face buttons are inactive so input cannot
+carry into a newly loaded question. Generated questions
 cover the project's purpose, architecture, responsibilities, interactions,
 invariants, and tradeoffs. The prompt and accepted-output policy live in
 `src-tauri/src/lib.rs`: file and repository trivia is rejected, questions

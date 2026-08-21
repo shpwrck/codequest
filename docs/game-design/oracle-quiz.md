@@ -13,7 +13,8 @@ behind the cartridge, then erupts into an original code-fantasy fanfare before
 the player binds a small code-seer, consults an Oracle, and proves their
 understanding through increasingly difficult conceptual questions. The first
 question request runs behind the opening spectacle, and any remaining latency
-becomes an honest Oracle ritual instead of an unexplained loading screen.
+becomes Oracle Datafall: a Left/Right falling-object game in which the hero
+dodges bugs and runs into data while Claude works.
 
 **Player outcome:** Build a durable mental model of a project's purpose,
 responsibilities, interactions, invariants, and tradeoffs—not memorize file
@@ -27,6 +28,8 @@ names or repository trivia.
    quiz should feel like one run, not a stack of forms.
 3. Earn spectacle from real repository provenance, while native 240×160
    readability wins over visual density, motion, or extra copy.
+4. Stall-scene inputs are transition-safe: A, B, and Start are inactive so a
+   held face button cannot answer a question that appears mid-input.
 
 **Non-goals:** No town or overworld layer, inventory economy, timed-answer
 pressure, generated filler questions, borrowed characters or compositions,
@@ -48,8 +51,10 @@ creates new renderer code.
   choice. At zero hearts, show the final score and a one-button replay path.
 - **Latency loop:** Request the first batch as soon as the cartridge is
   accepted, then continue behind the copyright, fanfare, title, menu, and hero
-  creation. Enter the Oracle only when no valid unanswered question is ready;
-  failed batches retry there instead of becoming generic trivia.
+  creation. In Oracle Datafall, move into falling data to collect it on contact
+  while moving away from crossed bugs.
+  Enter the Oracle only when no valid unanswered question is ready; failed
+  batches retry there instead of becoming generic trivia.
 
 ## Scene storyboard
 
@@ -60,14 +65,15 @@ creates new renderer code.
 | `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; title remains readable at native scale. | `quiz-menu` | `navigate-menu` | `title-mark` |
 | `quiz-menu` | Explain the run and offer a safe return. | D-pad selects; A/Start confirms; B returns. | `character-creation` or `title` | `navigate-menu` | — |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, class, and style with an immediate hero preview. | `oracle` | `customize-hero` | `hero-set` |
-| `oracle` | Turn real generation latency into anticipation without deception. | A animates the hero; truthful loading/retry/ready copy remains visible; B returns safely. | `quiz` or `quiz-menu` | `consult-oracle` | `hero-set`, `oracle-sanctum` |
+| `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data scores on contact and bugs count as hits. Every other control is inactive. The top quiz header holds Oracle/loading context; the bottom game strip holds counters and controls. | Automatically enters `quiz` when a valid question is ready. | `consult-oracle` | `hero-set`, `oracle-sanctum` |
 | `quiz` | Test one durable project concept. | D-pad selects; A commits; text and color reveal correct/wrong. | `oracle`, `level-up`, or `game-over` | `answer-question` | `hero-set`, `quiz-frame` |
 | `level-up` | Recognize a completed batch while the next batch is prepared. | A/Start continues after level and batch feedback. | `oracle` | `navigate-menu` | `hero-set` |
 | `game-over` | Close the run and make replay obvious. | Show final score; A/B/Start returns to the menu. | `quiz-menu` | `navigate-menu` | `hero-set` |
 
 All scenes are reachable from `copyright`. The opening path is finite, and the
-`oracle` → `quiz` loop is deliberate; `game-over`, menu back actions, and Oracle
-B provide clear exits.
+`oracle` → `quiz` loop is deliberate. The Oracle has no manual exit because all
+four directions are gameplay inputs; game-over and menu back actions provide
+the run's explicit exits.
 
 ## Opening micro-storyboard
 
@@ -94,14 +100,16 @@ dependency on generation.
 
 | Beat | Trigger | Presentation | Player agency | Status |
 |---|---|---|---|---|
-| Arrival | Enter `oracle`. | Hero reaches the dais; Oracle focus settles. Keep the existing minimum dwell so instant results do not flash past. | A triggers a cosmetic jump. | Implemented in basic form. |
-| Scrying | Request is in flight. | Indeterminate motion plus `THE ORACLE CONSULTS CLAUDE`; never show a percentage. | A remains cosmetic; B returns. | Implemented in basic form; richer art/copy proposed. |
-| Clouded vision | A batch returns empty or invalid. | Distinct retry copy and shape; expose that another attempt will happen. | B remains available. | Retry timing implemented; distinct presentation proposed. |
-| Vision ready | A valid unanswered question exists. | Motion converges and a text/check glyph confirms readiness before transition. | No confirmation required. | Automatic transition implemented; ready beat proposed. |
-| Long wait | Scrying continues beyond the normal beat. | Calm loop, sparse rotating copy, and an explicit safe-exit hint. No fake scan steps. | B returns to the menu. | Exit implemented; long-wait presentation proposed. |
+| Arrival | Enter `oracle`. | Reset the hero to center, clear in-flight objects, and show the real Claude status. Keep the existing minimum dwell so instant results do not flash past. | Left/Right begins moving immediately; every other control remains inactive. | Implemented. |
+| Datafall | Request is in flight. | Boxed data packets and crossed bugs fall through deterministic lanes. Data and bug-hit counters persist across Oracle visits in the current quiz run. | Move into data to collect it automatically; move away from bugs. | Implemented. |
+| Clouded vision | A batch returns empty or invalid. | `CLAUDE RETRYING` distinguishes the real retry delay without a fake percentage. Falling-object play continues. | Left/Right remain available. | Implemented. |
+| Vision ready | A valid unanswered question exists. | `QUESTION READY` may appear during the minimum dwell, then the scene transitions automatically. | No confirmation required; held D-pad inputs cannot answer the quiz. | Implemented. |
+| Long wait | Scrying continues beyond the normal beat. | The same deterministic play loop continues under truthful status copy, with no invented scan steps. | Keep playing until the question arrives. | Implemented. |
 
-The Oracle never rewards a slow response, suggests that jumping speeds up the
-model, or hides a failed request behind invented progress.
+The Oracle never rewards a slow response, suggests that Datafall speeds up the
+model, or hides a failed request behind invented progress. Datafall score and
+collisions are deliberately isolated from quiz hearts, score, question timing,
+and Claude retries.
 
 ## Mechanics
 
@@ -142,12 +150,19 @@ model, or hides a failed request behind invented progress.
 
 ### `consult-oracle`
 
-- **Decision:** Wait with a responsive ritual or leave safely.
-- **Inputs:** A for a cosmetic action; B to return.
-- **Rules:** Stay until a valid unanswered question exists. A does not affect
-  generation, difficulty, score, or wait duration. Empty results retry.
-- **Feedback:** Loading, retry, and ready must differ in text and shape, not
-  color or motion alone.
+- **Decision:** Choose a lane, dodge crossed bugs, and collide with boxed data.
+- **Inputs:** Left and Right move. Up, Down, A, B, Start, and shoulders are
+  inactive.
+- **Rules:** Drops use deterministic lanes and alternate data/bug types. Data
+  overlap increments a cosmetic data counter; bug overlap increments a cosmetic
+  hit counter. Active drops reset on each Oracle entry, while data/hit counters
+  persist for the current quiz run. Stay until a valid
+  unanswered question exists; empty results retry. No Datafall state affects
+  generation, difficulty, quiz score, hearts, or wait duration.
+- **Feedback:** Data uses a boxed silhouette; bugs use a crossed silhouette.
+  Keep `ORACLE DATAFALL`, truthful loading/retry/ready text, and animated dots
+  in the top 12-pixel quiz header. Keep both counters and the Left/Right prompt
+  in the bottom game strip.
 
 ### `answer-question`
 
@@ -166,8 +181,8 @@ model, or hides a failed request behind invented progress.
 | `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and overflow page. | Legible at 240×160; never infer legal ownership; body text stays at native size. | Procedural base implemented; overflow polish needed |
 | `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes; never overlay the title frame. | Procedural base implemented; reduced-motion polish needed |
 | `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | Basic renderer implemented; art polish needed |
-| `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, jump, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base implemented; state polish needed |
-| `oracle-sanctum` | Scene/UI | `oracle` | Make arrival, scrying, retry, ready, and long-wait states feel like one place. | Reserve clear status, hero, and Oracle regions; reduced-motion state required. | Basic renderer implemented; redesign needed |
+| `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, dodge, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base implemented; state polish needed |
+| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, and ready as one place: moving hero, boxed packets, crossed bugs, counters, animated dots, and horizontal-movement prompt. | Fits 240×160; objects differ by shape and color; Oracle/loading information stays in the top header while gameplay counters/controls stay in the bottom strip. | Procedural Datafall renderer implemented |
 | `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | Core frame implemented; accessibility polish needed |
 
 ## Runtime traceability
@@ -182,7 +197,9 @@ model, or hides a failed request behind invented progress.
 | Copyright and opening-fanfare screens | Implemented in basic form | Trusted Bevy handlers render before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Trusted handlers own input and rendering while the manifest routes their semantic events. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
-| Truthful multi-state Oracle presentation | Proposed | Add distinct in-flight/retry/ready/AI-disabled UI and tests to the existing Oracle state. |
+| Left/Right-only Oracle Datafall | Implemented | Held horizontal movement, deterministic falling objects, automatic data/bug collision counters, split top/bottom HUD, and framebuffer-level behavior tests. |
+| Safe Oracle-to-quiz input boundary | Implemented | Face buttons are ignored in Oracle; held D-pad controls have no answer action after the automatic transition. |
+| Truthful multi-state Oracle presentation | Implemented in basic form | Loading, retry, and ready copy derives from actual engine state; an explicit AI-disabled state remains future work. |
 | Non-color-only result labels and reduced motion | Proposed | Extend quiz/Oracle rendering and verify at native scale. |
 | Art selected from manifest metadata | Proposed | Requires a future engine/schema decision; art entries are requirements only today. |
 
@@ -194,9 +211,10 @@ model, or hides a failed request behind invented progress.
 2. **Completed — Opening state pass:** Add trusted `Copyright` and `OpeningFanfare`
    handlers before `Title`, preserve the already-early question request, and
    test minimum dwell, auto-advance, skip, and distinct rendered phases.
-3. **Oracle state pass:** Extend the trusted Oracle handler with distinct
-   in-flight, retry, ready, and AI-disabled presentation using actual engine
-   state and retain the B exit.
+3. **Completed — Oracle Datafall pass:** Replace the A-jump/B-exit waiting room
+   with Left/Right-only data collection and bug-dodging play; isolate its
+   counters from quiz state; split quiz context from gameplay HUD and add
+   framebuffer-level tests.
 4. **Feedback/accessibility pass:** Add correctness labels, reduced-motion
    Oracle behavior, and native-scale screenshot assertions.
 5. **Continuity pass:** Show the previous lesson and batch status during a wait
@@ -210,8 +228,7 @@ model, or hides a failed request behind invented progress.
 
 ## Open decisions
 
-- Should B from an active Oracle/quiz run return immediately or ask before
-  abandoning score and hearts?
+- Should B from an active quiz ask before abandoning score and hearts?
 - Should the generated question payload eventually include a short explanation,
   or is revealing the correct choice enough feedback at this resolution?
 - Which run records, if any, should persist per cartridge across launches?

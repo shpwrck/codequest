@@ -32,7 +32,7 @@ impl SceneHandler {
             Handler::Title => signal == Signal::Continue,
             Handler::QuizMenu => matches!(signal, Signal::NewRun | Signal::Back),
             Handler::CharacterCreation => matches!(signal, Signal::HeroReady | Signal::Back),
-            Handler::Oracle => matches!(signal, Signal::QuestionsReady | Signal::Back),
+            Handler::Oracle => signal == Signal::QuestionsReady,
             Handler::ConceptQuiz => matches!(
                 signal,
                 Signal::NeedsQuestion | Signal::BatchComplete | Signal::HeartsEmpty | Signal::Back
@@ -249,10 +249,7 @@ impl SceneMachineDefinition {
                 scene(
                     "oracle",
                     Handler::Oracle,
-                    vec![
-                        transition(Signal::QuestionsReady, "quiz", None),
-                        transition(Signal::Back, "quiz-menu", None),
-                    ],
+                    vec![transition(Signal::QuestionsReady, "quiz", None)],
                 ),
                 scene(
                     "quiz",
@@ -426,6 +423,21 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("cannot emit signal"));
+    }
+
+    #[test]
+    fn oracle_scene_cannot_restore_a_face_button_back_route() {
+        let error = SceneMachineDefinition::compile(
+            "oracle",
+            vec![scene(
+                "oracle",
+                SceneHandler::Oracle,
+                vec![route(SceneSignal::Back, "oracle")],
+            )],
+        )
+        .unwrap_err();
+
+        assert!(error.contains("cannot emit signal `Back`"));
     }
 
     #[test]

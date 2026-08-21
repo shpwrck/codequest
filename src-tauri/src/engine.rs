@@ -21,6 +21,11 @@ pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 35;
 const QUESTION_BATCH_SIZE: usize = 6;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
+const ORACLE_HERO_MIN_X: i32 = 8;
+const ORACLE_HERO_MAX_X: i32 = 210;
+const ORACLE_HERO_SPEED: i32 = 2;
+const ORACLE_DROP_INTERVAL: u64 = 30;
+const ORACLE_COLLISION_Y: i32 = 100;
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -370,6 +375,19 @@ struct QuizRun {
     feedback: Option<(bool, u16)>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OracleDropKind {
+    Data,
+    Bug,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OracleDrop {
+    x: i32,
+    y: i32,
+    kind: OracleDropKind,
+}
+
 #[derive(Resource)]
 struct GameState {
     powered: bool,
@@ -389,7 +407,11 @@ struct GameState {
     pending_questions: Option<(String, Vec<QuizQuestion>)>,
     questions_loading: bool,
     question_retry_ticks: u16,
-    oracle_jump: u16,
+    oracle_hero_x: i32,
+    oracle_drops: Vec<OracleDrop>,
+    oracle_spawned: u32,
+    oracle_data: u32,
+    oracle_bug_hits: u32,
     logs: VecDeque<(String, bool)>,
     active_boss: String,
 }
@@ -414,7 +436,11 @@ impl Default for GameState {
             pending_questions: None,
             questions_loading: false,
             question_retry_ticks: 0,
-            oracle_jump: 0,
+            oracle_hero_x: 104,
+            oracle_drops: Vec::new(),
+            oracle_spawned: 0,
+            oracle_data: 0,
+            oracle_bug_hits: 0,
             logs: VecDeque::new(),
             active_boss: String::new(),
         }
@@ -423,6 +449,11 @@ impl Default for GameState {
 
 impl GameState {
     fn transition(&mut self, screen: Screen) {
+        if screen == Screen::Oracle && self.screen != Screen::Oracle {
+            self.oracle_hero_x = 104;
+            self.oracle_drops.clear();
+            self.oracle_spawned = 0;
+        }
         self.screen = screen;
         self.screen_ticks = 0;
     }
@@ -514,6 +545,8 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
 }
 
 fn begin_quiz_run(state: &mut GameState) {
+    state.oracle_data = 0;
+    state.oracle_bug_hits = 0;
     state.quiz = Some(QuizRun {
         question: 0,
         completed_batches: 0,
@@ -827,13 +860,7 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             Button::A | Button::Start => begin_quiz_run(state),
             _ => {}
         },
-        Screen::Oracle => {
-            if button == Button::A {
-                state.oracle_jump = 25;
-            } else if button == Button::B {
-                state.signal(SceneSignal::Back);
-            }
-        }
+        Screen::Oracle => {}
         Screen::Quiz => {
             let Some(run) = state.quiz.as_mut() else {
                 return;
@@ -937,8 +964,46 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
     if !matches!(state.screen, Screen::Off | Screen::Boot) {
         state.tick_machine();
     }
-    if state.oracle_jump > 0 {
-        state.oracle_jump -= 1;
+    if state.screen == Screen::Oracle {
+        let moving_left = state.held.contains(&Button::Left);
+        let moving_right = state.held.contains(&Button::Right);
+        if moving_left != moving_right {
+            let direction = if moving_left { -1 } else { 1 };
+            state.oracle_hero_x = (state.oracle_hero_x + direction * ORACLE_HERO_SPEED)
+                .clamp(ORACLE_HERO_MIN_X, ORACLE_HERO_MAX_X);
+        }
+        if state.screen_ticks % ORACLE_DROP_INTERVAL == 1 {
+            let lanes = [112, 112, 54, 210, 24, 142, 82];
+            let index = state.oracle_spawned as usize;
+            state.oracle_drops.push(OracleDrop {
+                x: lanes[index % lanes.len()],
+                y: 30,
+                kind: if index.is_multiple_of(2) {
+                    OracleDropKind::Data
+                } else {
+                    OracleDropKind::Bug
+                },
+            });
+            state.oracle_spawned = state.oracle_spawned.saturating_add(1);
+        }
+        let hero_x = state.oracle_hero_x;
+        let mut data_hits = 0;
+        let mut bug_hits = 0;
+        state.oracle_drops.retain_mut(|drop| {
+            drop.y += 1;
+            let overlaps_hero = drop.x >= hero_x - 4 && drop.x <= hero_x + 28;
+            if drop.y >= ORACLE_COLLISION_Y && overlaps_hero {
+                match drop.kind {
+                    OracleDropKind::Data => data_hits += 1,
+                    OracleDropKind::Bug => bug_hits += 1,
+                }
+                false
+            } else {
+                drop.y < 128
+            }
+        });
+        state.oracle_data = state.oracle_data.saturating_add(data_hits);
+        state.oracle_bug_hits = state.oracle_bug_hits.saturating_add(bug_hits);
     }
     if matches!(state.screen, Screen::Oracle | Screen::LevelUp) {
         if let Some((cartridge_id, questions)) = state.pending_questions.take() {
@@ -1273,21 +1338,61 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(INK);
     for index in 0..30 {
         let x = ((index * 71 + state.screen_ticks as usize * 2) % WIDTH) as i32;
-        frame.pixel(x, 28 + (index * 29 % 82) as i32, MIST);
+        frame.pixel(x, 14 + (index * 29 % 96) as i32, MIST);
     }
-    frame.centered_text(20, "ORACLE LOADING", SKY, 1);
-    let phase = (state.screen_ticks % 60) / 15;
-    frame.centered_text(34, &".".repeat(phase as usize + 1), GOLD, 1);
+    frame.rect(0, 0, WIDTH as i32, 12, NAVY);
+    frame.rect(0, 11, WIDTH as i32, 1, PLUM);
+    frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
+    let status = if state.has_unanswered_question() {
+        "QUESTION READY"
+    } else if state.questions_loading {
+        "CLAUDE THINKING"
+    } else if state.question_retry_ticks > 0 {
+        "CLAUDE RETRYING"
+    } else {
+        "CONTACTING CLAUDE"
+    };
+    let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
+    frame.text(211 - status_width, 2, status, SKY, 1);
+    let phase = (state.screen_ticks % 45) / 15;
+    frame.text(216, 2, &".".repeat(phase as usize + 1), GOLD, 1);
+    for drop in &state.oracle_drops {
+        match drop.kind {
+            OracleDropKind::Data => draw_oracle_data(frame, drop.x, drop.y),
+            OracleDropKind::Bug => draw_oracle_bug(frame, drop.x, drop.y),
+        }
+    }
     frame.rect(0, 132, WIDTH as i32, 28, PLUM);
     frame.rect(0, 128, WIDTH as i32, 4, GREEN);
-    let jump = if state.oracle_jump > 0 {
-        let t = state.oracle_jump as i32 - 12;
-        12 - (t.abs() / 2)
-    } else {
-        0
-    };
-    draw_hero(frame, 104, 111 - jump, 1, state);
-    frame.centered_text(150, "A:JUMP", PARCH, 1);
+    draw_hero(frame, state.oracle_hero_x, 111, 1, state);
+    frame.text(
+        4,
+        143,
+        &format!("DATA {:02}", state.oracle_data.min(99)),
+        GREEN,
+        1,
+    );
+    frame.centered_text(143, "L/R MOVE", PARCH, 1);
+    frame.text(
+        201,
+        143,
+        &format!("BUG {:02}", state.oracle_bug_hits.min(99)),
+        RED,
+        1,
+    );
+}
+
+fn draw_oracle_data(frame: &mut Framebuffer, x: i32, y: i32) {
+    frame.outline(x - 4, y - 4, 9, 9, GREEN);
+    frame.rect(x - 1, y - 1, 3, 3, SKY);
+}
+
+fn draw_oracle_bug(frame: &mut Framebuffer, x: i32, y: i32) {
+    frame.rect(x - 3, y - 3, 7, 7, RED);
+    frame.pixel(x - 2, y - 2, INK);
+    frame.pixel(x + 2, y - 2, INK);
+    frame.line(x - 5, y - 5, x + 5, y + 5, RED);
+    frame.line(x + 5, y - 5, x - 5, y + 5, RED);
 }
 
 fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
@@ -1854,6 +1959,61 @@ mod tests {
         assert_eq!(engine.screen(), Screen::Title);
     }
 
+    fn waiting_oracle_engine() -> GameEngine {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        let _ = engine.take_effects();
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        for button in [Button::Start, Button::A, Button::Start] {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: false,
+                },
+            );
+        }
+        assert_eq!(engine.screen(), Screen::Oracle);
+        engine
+    }
+
+    fn color_pixels_in_region(
+        frame: &[u8],
+        color: Color,
+        x_range: std::ops::Range<usize>,
+        y_range: std::ops::Range<usize>,
+    ) -> usize {
+        y_range
+            .flat_map(|y| x_range.clone().map(move |x| (y * WIDTH + x) * 4))
+            .filter(|&offset| frame[offset..offset + 4] == [color.0, color.1, color.2, 255])
+            .count()
+    }
+
+    fn frame_region(
+        frame: &[u8],
+        x_range: std::ops::Range<usize>,
+        y_range: std::ops::Range<usize>,
+    ) -> Vec<u8> {
+        y_range
+            .flat_map(|y| {
+                x_range.clone().flat_map(move |x| {
+                    let offset = (y * WIDTH + x) * 4;
+                    frame[offset..offset + 4].iter().copied()
+                })
+            })
+            .collect()
+    }
+
     fn hero_pixels(engine: &GameEngine) -> Vec<u8> {
         let frame = engine.frame();
         (40..92)
@@ -1918,54 +2078,242 @@ mod tests {
     }
 
     #[test]
-    fn jumping_on_oracle_screen_cannot_change_resolution() {
-        let mut engine = GameEngine::new();
-        issue(
-            &mut engine,
-            EngineCommand::Cartridge(Some(quiz_cartridge())),
-        );
-        issue(&mut engine, EngineCommand::Power(true));
-        finish_opening(&mut engine);
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::Start,
-                pressed: true,
-            },
-        );
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::Start,
-                pressed: false,
-            },
-        );
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::A,
-                pressed: true,
-            },
-        );
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::A,
-                pressed: false,
-            },
-        );
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::Start,
-                pressed: true,
-            },
-        );
-        assert_eq!(engine.screen(), Screen::Oracle);
-        for _ in 0..30 {
-            engine.update();
-            assert_eq!(engine.frame().len(), FRAME_BYTES);
+    fn oracle_gameplay_cannot_change_resolution() {
+        let mut engine = waiting_oracle_engine();
+        for button in [Button::Left, Button::Right, Button::Up, Button::Down] {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            for _ in 0..30 {
+                engine.update();
+                assert_eq!(engine.frame().len(), FRAME_BYTES);
+            }
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button,
+                    pressed: false,
+                },
+            );
         }
+    }
+
+    #[test]
+    fn oracle_ignores_a_while_questions_are_loading() {
+        let mut control = waiting_oracle_engine();
+        let mut pressed = waiting_oracle_engine();
+
+        control.update();
+        issue(
+            &mut pressed,
+            EngineCommand::Input {
+                button: Button::A,
+                pressed: true,
+            },
+        );
+
+        assert!(
+            pressed.frame() == control.frame(),
+            "A changed the Oracle frame"
+        );
+    }
+
+    #[test]
+    fn oracle_moves_the_hero_while_left_or_right_is_held() {
+        let mut control = waiting_oracle_engine();
+        let mut moved = waiting_oracle_engine();
+        issue(
+            &mut moved,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        control.update();
+        for _ in 0..8 {
+            moved.update();
+            control.update();
+        }
+
+        assert!(
+            moved.frame() != control.frame(),
+            "Right did not move the hero"
+        );
+    }
+
+    #[test]
+    fn oracle_rains_collectible_data_and_bugs_while_waiting() {
+        let mut engine = waiting_oracle_engine();
+        for _ in 0..55 {
+            engine.update();
+        }
+
+        let data_pixels = color_pixels_in_region(engine.frame(), GREEN, 0..WIDTH, 40..120);
+        let bug_pixels = color_pixels_in_region(engine.frame(), RED, 0..WIDTH, 40..120);
+        assert!(data_pixels > 0, "no collectible data appeared");
+        assert!(bug_pixels > 0, "no bug appeared");
+    }
+
+    #[test]
+    fn oracle_collects_data_on_contact_without_an_action_button() {
+        let mut collected = waiting_oracle_engine();
+        let mut dodged = waiting_oracle_engine();
+        issue(
+            &mut dodged,
+            EngineCommand::Input {
+                button: Button::Left,
+                pressed: true,
+            },
+        );
+        collected.update();
+        for _ in 0..85 {
+            collected.update();
+            dodged.update();
+        }
+
+        let collected_counter = frame_region(collected.frame(), 0..60, 142..152);
+        let dodged_counter = frame_region(dodged.frame(), 0..60, 142..152);
+        assert!(
+            collected_counter != dodged_counter,
+            "contact with data did not update the data counter"
+        );
+    }
+
+    #[test]
+    fn oracle_up_and_down_do_not_change_datafall_gameplay() {
+        for button in [Button::Up, Button::Down] {
+            let mut control = waiting_oracle_engine();
+            let mut pressed = waiting_oracle_engine();
+            issue(
+                &mut pressed,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            control.update();
+            for _ in 0..60 {
+                control.update();
+                pressed.update();
+            }
+
+            assert!(
+                pressed.frame() == control.frame(),
+                "{button:?} still changes Oracle Datafall"
+            );
+        }
+    }
+
+    #[test]
+    fn oracle_hud_separates_oracle_info_at_top_from_game_info_at_bottom() {
+        let engine = waiting_oracle_engine();
+        let frame = engine.frame();
+        for (label, color) in [("Oracle title/progress", GOLD), ("Claude status", SKY)] {
+            assert!(
+                color_pixels_in_region(frame, color, 0..WIDTH, 0..12) > 0,
+                "{label} is missing from the top quiz HUD"
+            );
+        }
+        for (label, color) in [
+            ("data counter", GREEN),
+            ("controls", PARCH),
+            ("bug counter", RED),
+        ] {
+            assert!(
+                color_pixels_in_region(frame, color, 0..WIDTH, 132..HEIGHT) > 0,
+                "{label} is missing from the bottom game HUD"
+            );
+        }
+        assert_eq!(color_pixels_in_region(frame, GREEN, 0..WIDTH, 0..12), 0);
+        assert_eq!(color_pixels_in_region(frame, RED, 0..WIDTH, 0..12), 0);
+    }
+
+    #[test]
+    fn oracle_left_and_right_movement_dodges_bug_collisions() {
+        let mut hit = waiting_oracle_engine();
+        let mut dodged = waiting_oracle_engine();
+
+        hit.update();
+        issue(
+            &mut dodged,
+            EngineCommand::Input {
+                button: Button::Left,
+                pressed: true,
+            },
+        );
+        for _ in 0..50 {
+            hit.update();
+            dodged.update();
+        }
+        issue(
+            &mut dodged,
+            EngineCommand::Input {
+                button: Button::Left,
+                pressed: false,
+            },
+        );
+        hit.update();
+        for _ in 0..55 {
+            hit.update();
+            dodged.update();
+        }
+
+        let hit_counter = frame_region(hit.frame(), 190..240, 142..152);
+        let dodged_counter = frame_region(dodged.frame(), 190..240, 142..152);
+        assert!(
+            hit_counter != dodged_counter,
+            "dodging did not prevent the hit"
+        );
+    }
+
+    #[test]
+    fn oracle_a_press_cannot_answer_a_question_that_arrives_mid_input() {
+        let mut engine = waiting_oracle_engine();
+        for _ in 0..75 {
+            engine.update();
+        }
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::A,
+                pressed: true,
+            },
+        );
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                questions: vec![QuizQuestion {
+                    question: "WHAT ARRIVED SAFELY?".into(),
+                    choices: vec![
+                        "A QUESTION".into(),
+                        "A KEY PRESS".into(),
+                        "A GLITCH".into(),
+                        "A COMMAND".into(),
+                    ],
+                    answer: 0,
+                }],
+            },
+        );
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let unanswered = engine.frame().to_vec();
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::A,
+                pressed: false,
+            },
+        );
+
+        assert!(
+            engine.frame() == unanswered,
+            "releasing A answered the question"
+        );
     }
 
     #[test]
