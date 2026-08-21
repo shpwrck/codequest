@@ -75,7 +75,8 @@ RUN set -eux; \
     sed -i 's|^exec "$this_dir"/AppRun.wrapped|source "$this_dir"/apprun-hooks/"cqa-compat.sh"\n\nexec "$this_dir"/AppRun.wrapped|' "$d/AppRun"; \
     grep -q cqa-compat "$d/AppRun"; \
     rm -f ./*.AppImage; \
-    OUTPUT=code-quest-advance_0.1.0_amd64.AppImage ARCH=x86_64 \
+    version=$(node -p "require('/build/package.json').version"); \
+    OUTPUT="code-quest-advance_${version}_amd64.AppImage" ARCH=x86_64 \
       /root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage --appdir "$d"
 
 # --- Portability gate --------------------------------------------------------
