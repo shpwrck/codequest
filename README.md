@@ -50,7 +50,10 @@ design comprehension that stays true as the repo evolves; never counts,
 sizes, dates, or other state-in-time trivia. Generation starts the moment a
 cartridge clicks in and batches prefetch during play, each one harder; if
 the oracle ever falls behind, there is no loading screen — your hero walks a
-scrolling travel scene with story beats until A CHALLENGER APPEARS. Three hearts, score
+Pokémon-style town generated deterministically from the repository's tracked
+filesystem. Top-level folders become themed buildings, root files live in the
+repo hall, and the hero follows the road to a new building before every quiz.
+The walk continues while the oracle catches up. Three hearts, score
 scales with level, per-repo auto-save; `CQA_CLAUDE_MODEL` overrides the
 model used for generation.
 

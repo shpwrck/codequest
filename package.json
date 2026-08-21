@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test": "node --test",
+    "check:web": "node --check src/town.js && node --check src/main.js",
     "tauri": "NO_STRIP=true PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/share/pkgconfig tauri"
   },
   "devDependencies": {

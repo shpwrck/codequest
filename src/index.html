@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Code Quest Advance</title>
     <link rel="stylesheet" href="styles.css" />
+    <script src="town.js" defer></script>
     <script src="main.js" defer></script>
   </head>
   <body>
@@ -97,9 +98,9 @@
                 <div class="dialog quiz-q" id="quiz-q"></div>
                 <div class="quiz-choices" id="quiz-choices"></div>
                 <div class="quiz-wait" id="quiz-wait">
-                  <div class="travel-stars"></div>
-                  <div class="travel-ground"></div>
-                  <div id="travel-hero"></div>
+                  <canvas id="town-canvas" width="240" height="160" aria-label="Filesystem town map"></canvas>
+                  <div id="town-hero"></div>
+                  <div class="town-name" id="town-name"></div>
                   <div class="travel-line" id="travel-line"></div>
                 </div>
                 <div class="quiz-over" id="quiz-over">

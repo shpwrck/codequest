@@ -36,6 +36,13 @@
         { id: 'q2', name: 'Trial Of Listing', description: 'Survey the dungeon floor.', boss: 'INODE WRAITH', command: 'ls -la' },
         { id: 'q3', name: 'The Failing Rite', description: 'This one bites back.', boss: 'SEGFAULT OGRE', command: 'demo-fail' }
       ]);
+      if (cmd === 'quiz_data') return Promise.resolve({
+        files: [
+          { path: 'README.md', size: 1200 }, { path: 'package.json', size: 420 },
+          { path: 'src/main.js', size: 8000 }, { path: 'src/styles.css', size: 5000 },
+          { path: 'tests/main.test.js', size: 2400 }, { path: 'docs/guide.md', size: 1800 }
+        ]
+      });
       if (cmd === 'start_quest') {
         if (demo.running) return Promise.reject('a quest is already running');
         demo.running = true;
@@ -537,6 +544,7 @@
   function insertCart(c) {
     if (cart) return;                 // must eject first
     qQueue = []; quizSource = ''; quiz = null;
+    resetTown();
     cart = c;
     localStorage.setItem('cqa-cart-id', c.path);
     upsertCache(c);
@@ -546,6 +554,7 @@
     if (cart.mode === 'quiz') {       // the oracle starts writing the moment the cart clicks in
       const save = loadQuizSave();
       fetchBatch(save ? save.lv : 1, 6);
+      prepareTown(cart.path);
     }
   }
   async function insertByPath(path) {
@@ -577,6 +586,7 @@
     setTimeout(() => {
       cart = null;
       qQueue = []; quizSource = ''; quiz = null;
+      resetTown();
       localStorage.removeItem('cqa-cart-id');
       renderCartBack();               // resets to 'empty', clearing 'ejecting'
       if (trayOpen) buildTray();      // unlock the cards
@@ -621,18 +631,44 @@
   const quizLv = $('quiz-lv'), quizHearts = $('quiz-hearts'), quizScore = $('quiz-score');
   const quizTimerFill = $('quiz-timer-fill'), quizQ = $('quiz-q'), quizChoices = $('quiz-choices');
   const quizOver = $('quiz-over'), qoStats = $('qo-stats'), quizWait = $('quiz-wait');
+  const townCanvas = $('town-canvas'), townHero = $('town-hero'), townName = $('town-name'), travelLineEl = $('travel-line');
+  const townApi = window.CodeQuestTown;
   let quiz = null;        // active run
   let menuSel = 0;
   let qQueue = [];        // questions served by Rust (ORACLE = claude, ARCHIVE = procedural)
   let fetching = false;
   let quizSource = '';
   let pendingSaved = null;
+  let townModel = null;
+  let townPosition = null;
+  let townLoadToken = 0;
   const pickOf = (arr) => arr[(Math.random() * arr.length) | 0];
   const quizSaveKey = () => 'cqa-quiz-' + (cart ? cart.path : '');
   const heroKey = () => 'cqa-hero-' + (cart ? cart.path : '');
   const loadQuizSave = () => { try { return JSON.parse(localStorage.getItem(quizSaveKey())); } catch (e) { return null; } };
   const saveQuizRun = () => { if (quiz && !quiz.over) localStorage.setItem(quizSaveKey(), JSON.stringify({ lv: quiz.lv, score: quiz.score, hearts: quiz.hearts, qnum: quiz.qnum, streak: quiz.streak })); };
   const clearQuizSave = () => localStorage.removeItem(quizSaveKey());
+
+  function resetTown() {
+    townLoadToken++;
+    townModel = null;
+    townPosition = null;
+  }
+
+  async function prepareTown(path) {
+    if (!townApi || !path) return;
+    const token = ++townLoadToken;
+    try {
+      const data = await invoke('quiz_data', { path });
+      if (token !== townLoadToken || !cart || cart.path !== path) return;
+      townModel = townApi.createTown(cart.title, data && data.files);
+      townPosition = townModel.start;
+    } catch (err) {
+      if (token !== townLoadToken || !cart || cart.path !== path) return;
+      townModel = townApi.createTown(cart.title, []);
+      townPosition = townModel.start;
+    }
+  }
 
   function enterMenu() {
     clearFx();
@@ -683,16 +719,16 @@
   let hero = { name: 'SUDO THE BOLD', cls: 0, pal: 0 };
   let heroRow = 0;
   const rollName = () => pickOf(HERO_PRE) + ' ' + pickOf(HERO_EPI);
-  function renderHeroSprite() {
+  function renderHeroSprite(size = 4) {
     // the crab is constant; the name picks the wearable, the class the weapon,
     // STYLE tints both accents
     const accent = HERO_PALS[hero.pal][0];
     const cells = wearableFor(hero.name).cells(accent)
       .concat(weaponFor(hero.cls).cells(accent))
       .concat(heroCells);
-    return shadowOf(cells, 4);
+    return shadowOf(cells, size);
   }
-  function renderHeroSpriteInto(el) { el.style.boxShadow = renderHeroSprite(); }
+  function renderHeroSpriteInto(el, size = 4) { el.style.boxShadow = renderHeroSprite(size); }
   function renderHero() {
     hrName.textContent = hero.name;
     hrClass.textContent = HERO_CLASSES[hero.cls];
@@ -731,7 +767,12 @@
   function stopQuizTimer() {
     if (quiz && quiz.timerId) { clearInterval(quiz.timerId); quiz.timerId = null; }
     if (quiz && quiz.waitIv) { clearInterval(quiz.waitIv); quiz.waitIv = null; }
-    if (quiz && quiz.travelIv) { clearInterval(quiz.travelIv); quiz.travelIv = null; }
+    if (quiz && quiz.townIv) { clearInterval(quiz.townIv); quiz.townIv = null; }
+    if (quiz) {
+      quiz.townJourney = null;
+      quiz.traveling = false;
+      quiz.revealPending = false;
+    }
     quizWait.classList.remove('on');
   }
   function renderQuizHud() {
@@ -739,37 +780,101 @@
     quizHearts.textContent = '♥'.repeat(quiz.hearts) + '♡'.repeat(Math.max(0, 3 - quiz.hearts));
     quizScore.textContent = String(quiz.score);
   }
-  const TRAVEL_FOES = ['GREP GOLEM', 'SEGFAULT WRAITH', 'BORROW CHECKER', 'FLAKY HYDRA', 'STYLE BASILISK', 'OOM REAPER'];
-  function travelLine() {
-    return pickOf([
-      `${hero.name} VENTURES DEEPER INTO ${cart ? cart.title : 'THE REPO'}…`,
-      `THE ${HERO_CLASSES[hero.cls]} STUDIES ANCIENT SCROLLS…`,
-      `A ${pickOf(TRAVEL_FOES)} RUMBLES IN THE DISTANCE…`,
-      'THE ORACLE INSCRIBES NEW TRIALS…',
-      `CAMPFIRE: ${hero.name} SHARPENS THE MIND…`,
-      'STRANGE RUNES GLOW ALONG THE PATH…',
-    ]);
-  }
-  function nextQuestion() {
-    stopQuizTimer();
-    if (!qQueue.length) {
-      // no waiting screens: the journey continues until the next challenger
-      quizWait.classList.add('on');
-      renderHeroSpriteInto($('travel-hero'));
-      const lineEl = $('travel-line');
-      lineEl.textContent = travelLine();
-      quiz.travelIv = setInterval(() => { lineEl.textContent = travelLine(); }, 1700);
-      if (!fetching) fetchBatch(quiz.lv, 6);
-      quiz.waitIv = setInterval(() => {
-        if (qQueue.length) {
-          clearInterval(quiz.waitIv); quiz.waitIv = null;
-          lineEl.textContent = 'A CHALLENGER APPEARS!';
-          playNotes([523.25, 659.25], 0.09, 0.04);
-          after(750, () => { stopQuizTimer(); if (state === 'quiz' && !quiz.over) nextQuestion(); });
-        } else if (!fetching) fetchBatch(quiz.lv, 6);
-      }, 300);
-      return;
+  const TOWN_PALETTE = {
+    grass: '#74c15d', grassAlt: '#69b957', road: '#dec57b', roadAlt: '#d4b96d',
+    tree: '#257942', treeHi: '#38a653', trunk: '#76533b', wall: '#f0d49a',
+    shadow: 'rgba(26,28,44,.28)', ink: '#1a1c2c', window: '#74cbea', door: '#76533b',
+    code: '#3b5dc9', tests: '#b13e53', docs: '#e8a33d', assets: '#38b764',
+    config: '#5d275d', root: '#41a6f6', archive: '#94b0c2'
+  };
+
+  function townRoads(town) {
+    const roads = new Set();
+    for (let x = 0; x < town.width; x++) {
+      roads.add(`${x},${town.roadY - 1}`);
+      roads.add(`${x},${town.roadY}`);
+      roads.add(`${x},${town.roadY + 1}`);
     }
+    for (const place of town.landmarks) {
+      const low = Math.min(place.door.y, town.roadY);
+      const high = Math.max(place.door.y, town.roadY);
+      for (let y = low; y <= high; y++) roads.add(`${place.door.x},${y}`);
+    }
+    return roads;
+  }
+
+  function drawTown(town, target) {
+    const ctx = townCanvas.getContext('2d');
+    if (!ctx) return;
+    const tile = 8;
+    const roads = townRoads(town);
+    ctx.imageSmoothingEnabled = false;
+    for (let y = 0; y < town.height; y++) for (let x = 0; x < town.width; x++) {
+      ctx.fillStyle = (x + y) % 2 ? TOWN_PALETTE.grass : TOWN_PALETTE.grassAlt;
+      ctx.fillRect(x * tile, y * tile, tile, tile);
+      if (roads.has(`${x},${y}`)) {
+        ctx.fillStyle = (x + y) % 3 ? TOWN_PALETTE.road : TOWN_PALETTE.roadAlt;
+        ctx.fillRect(x * tile, y * tile, tile, tile);
+        if ((x * 7 + y * 11 + town.seed) % 9 === 0) {
+          ctx.fillStyle = 'rgba(118,83,59,.28)';
+          ctx.fillRect(x * tile + 2, y * tile + 3, 2, 1);
+        }
+      }
+    }
+
+    const buildingAt = (x, y) => town.landmarks.some((place) =>
+      x >= place.x - 1 && x <= place.x + place.width && y >= place.y - 1 && y <= place.y + place.height);
+    for (let y = 1; y < town.height - 1; y++) for (let x = 1; x < town.width - 1; x++) {
+      if (roads.has(`${x},${y}`) || buildingAt(x, y) || ((x * 29 + y * 47 + town.seed) % 31 !== 0)) continue;
+      const px = x * tile, py = y * tile;
+      ctx.fillStyle = TOWN_PALETTE.trunk; ctx.fillRect(px + 3, py + 5, 2, 3);
+      ctx.fillStyle = TOWN_PALETTE.tree; ctx.fillRect(px + 1, py + 2, 6, 4);
+      ctx.fillStyle = TOWN_PALETTE.treeHi; ctx.fillRect(px + 2, py + 1, 4, 3);
+      ctx.fillStyle = TOWN_PALETTE.grassAlt; ctx.fillRect(px + 3, py + 1, 1, 1);
+    }
+
+    for (const place of town.landmarks) {
+      const px = place.x * tile, py = place.y * tile;
+      const width = place.width * tile, height = place.height * tile;
+      const roof = TOWN_PALETTE[place.kind] || TOWN_PALETTE.archive;
+      ctx.fillStyle = TOWN_PALETTE.shadow; ctx.fillRect(px + 3, py + 3, width, height);
+      ctx.fillStyle = TOWN_PALETTE.wall; ctx.fillRect(px + 2, py + 14, width - 4, height - 14);
+      ctx.fillStyle = roof; ctx.fillRect(px, py + 4, width, 13);
+      ctx.fillStyle = TOWN_PALETTE.ink; ctx.fillRect(px + 2, py + 2, width - 4, 3);
+      ctx.fillStyle = roof; ctx.fillRect(px + 4, py, width - 8, 4);
+      ctx.fillStyle = 'rgba(244,244,244,.38)'; ctx.fillRect(px + 3, py + 7, width - 6, 2);
+      ctx.fillStyle = TOWN_PALETTE.window;
+      ctx.fillRect(px + 5, py + 20, 5, 5); ctx.fillRect(px + width - 10, py + 20, 5, 5);
+      const facesSouth = place.y < town.roadY;
+      ctx.fillStyle = TOWN_PALETTE.door;
+      ctx.fillRect(px + 14, facesSouth ? py + 23 : py + 14, 6, 9);
+      if (target && target.id === place.id) {
+        ctx.strokeStyle = '#ffed75'; ctx.lineWidth = 2;
+        ctx.strokeRect(px - 1, py - 1, width + 2, height + 2);
+      }
+      ctx.fillStyle = TOWN_PALETTE.ink;
+      ctx.font = 'bold 5px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(place.name.slice(0, 5), px + width / 2, py + 13);
+    }
+
+    ctx.fillStyle = '#f4f4f4'; ctx.fillRect(117, town.roadY * tile + 2, 6, 6);
+    ctx.fillStyle = TOWN_PALETTE.ink; ctx.fillRect(119, town.roadY * tile + 4, 2, 2);
+  }
+
+  function placeTownHero(point, previous, step) {
+    const left = point.x * 8 - 4;
+    const top = point.y * 8 - 11 - (step % 2);
+    townHero.style.left = `${left}px`;
+    townHero.style.top = `${top}px`;
+    if (previous && point.x !== previous.x) townHero.style.transform = `scaleX(${point.x < previous.x ? -1 : 1})`;
+  }
+
+  function revealQuizQuestion() {
+    if (!quiz || quiz.over || state !== 'quiz' || !qQueue.length) return;
+    if (quiz.waitIv) { clearInterval(quiz.waitIv); quiz.waitIv = null; }
+    quiz.revealPending = false;
+    quizWait.classList.remove('on');
     quiz.cur = qQueue.shift();
     quiz.sel = 0;
     quiz.locked = false;
@@ -793,6 +898,68 @@
       if (left <= 0) { if (quiz.timerId) clearInterval(quiz.timerId); quiz.timerId = null; resolveAnswer(-1); }
     }, 100);
     if (qQueue.length < 5 && !fetching) fetchBatch(quiz.lv + 1, 6);   // prefetch the next, harder batch
+  }
+
+  function waitForQuestionAt(place) {
+    if (!quiz || quiz.over || state !== 'quiz') return;
+    quiz.traveling = false;
+    quiz.arrivedAt = Date.now();
+    const files = `${place.fileCount} FILE${place.fileCount === 1 ? '' : 'S'}`;
+    travelLineEl.textContent = `${place.name} · ${files} · QUIZ AHEAD!`;
+    playNotes([523.25, 659.25], 0.09, 0.04);
+    const check = () => {
+      if (!quiz || quiz.over || state !== 'quiz' || quiz.traveling || quiz.revealPending) return;
+      if (!qQueue.length) {
+        travelLineEl.textContent = `${place.name} · THE ORACLE IS PREPARING A QUIZ…`;
+        if (!fetching) fetchBatch(quiz.lv, 6);
+        return;
+      }
+      if (Date.now() - quiz.arrivedAt < 450) return;
+      quiz.revealPending = true;
+      travelLineEl.textContent = `QUIZ AT ${place.name}!`;
+      after(300, revealQuizQuestion);
+    };
+    quiz.waitIv = setInterval(check, 150);
+    check();
+  }
+
+  function advanceTownWalk(steps = 1) {
+    const journey = quiz && quiz.townJourney;
+    if (!journey || !quiz.traveling) return;
+    for (let count = 0; count < steps && journey.index < journey.route.length - 1; count++) {
+      const previous = journey.route[journey.index];
+      journey.index++;
+      placeTownHero(journey.route[journey.index], previous, journey.index);
+    }
+    if (journey.index < journey.route.length - 1) return;
+    if (quiz.townIv) { clearInterval(quiz.townIv); quiz.townIv = null; }
+    townPosition = { ...journey.place.door };
+    waitForQuestionAt(journey.place);
+  }
+
+  function beginTownJourney() {
+    if (!quiz || quiz.over || state !== 'quiz' || !townApi) return;
+    const town = townModel || townApi.createTown(cart ? cart.title : 'REPO', []);
+    const place = town.landmarks[quiz.qnum % town.landmarks.length];
+    const from = townPosition || town.start;
+    const route = townApi.routeBetween(town, from, place.door);
+    quiz.locked = true;
+    quiz.traveling = true;
+    quiz.townJourney = { town, place, route, index: 0 };
+    townName.textContent = town.name;
+    travelLineEl.textContent = `${hero.name} WALKS TO ${place.name}…`;
+    drawTown(town, place);
+    renderHeroSpriteInto(townHero, 1);
+    placeTownHero(route[0], null, 0);
+    quizWait.classList.add('on');
+    renderQuizHud();
+    if (!qQueue.length && !fetching) fetchBatch(quiz.lv, 6);
+    quiz.townIv = setInterval(() => advanceTownWalk(1), 85);
+  }
+
+  function nextQuestion() {
+    stopQuizTimer();
+    beginTownJourney();
   }
   function renderQuizSel() {
     [...quizChoices.children].forEach((el, i) => el.classList.toggle('sel', i === quiz.sel));
@@ -1948,12 +2115,12 @@
 
     if (state === 'quiz') {
       if (quiz && quiz.over) { if (!repeat) enterMenu(); return; }
-      if (quiz && quiz.waitIv && btn === 'a' && !repeat) {   // hop along the journey
-        const th = $('travel-hero');
-        th.classList.remove('hop'); void th.offsetWidth; th.classList.add('hop');
-        return;
+      if (!quiz) return;
+      if (quiz.traveling && btn === 'a' && !repeat) return advanceTownWalk(4);
+      if ((quiz.traveling || quiz.waitIv) && btn === 'b' && !repeat) {
+        saveQuizRun(); stopQuizTimer(); return enterMenu();
       }
-      if (!quiz || quiz.locked) return;
+      if (quiz.locked) return;
       if (btn === 'up') { quiz.sel = (quiz.sel + quiz.cur.choices.length - 1) % quiz.cur.choices.length; return renderQuizSel(); }
       if (btn === 'down') { quiz.sel = (quiz.sel + 1) % quiz.cur.choices.length; return renderQuizSel(); }
       if (repeat) return;
@@ -2091,6 +2258,7 @@
     if (cart && cart.mode === 'quiz') {
       const save = loadQuizSave();
       fetchBatch(save ? save.lv : 1, 6);         // generate through boot and title
+      prepareTown(cart.path);                    // map tracked folders while the console boots
     }
     ready = true;
     if (!powered) show('off');                   // wait for the power switch (unless one raced init)

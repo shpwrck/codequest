@@ -1329,42 +1329,45 @@ html, body {
 .quiz-wait.on { display: block; }
 .qw-text { margin-top: 70px; text-align: center; font-size: 8px; color: var(--sky); animation: errBlink 1s steps(2) infinite; }
 
-/* ============================ TRAVEL SCENE (fills generation gaps) ============================ */
-.quiz-wait { background: var(--navy); }
-.travel-stars {
-  position: absolute; inset: 0 0 40px 0;
-  background-image: radial-gradient(circle, rgba(244,244,244,.8) 1px, transparent 1.6px);
-  background-size: 46px 34px;
-  animation: travelStars 3s linear infinite;
-  opacity: .5;
+/* ============================ FILESYSTEM TOWN ============================ */
+.quiz-wait { background: #74c15d; overflow: hidden; }
+#town-canvas {
+  position: absolute;
+  inset: 0;
+  width: 240px;
+  height: 160px;
+  image-rendering: pixelated;
 }
-@keyframes travelStars { to { background-position: -46px 0; } }
-.travel-ground {
-  position: absolute; left: 0; right: 0; bottom: 26px; height: 12px;
-  background: repeating-linear-gradient(90deg, #1f2b57 0 14px, #24316a 14px 28px);
-  border-top: 2px solid #34407c;
-  animation: travelGround .5s linear infinite;
+#town-hero {
+  position: absolute;
+  z-index: 2;
+  width: 1px;
+  height: 1px;
+  filter: drop-shadow(1px 2px 0 rgba(26,28,44,.4));
+  transition: left .07s linear, top .07s linear;
 }
-@keyframes travelGround { to { background-position: -28px 0; } }
-#travel-hero {
-  position: absolute; left: 92px; bottom: 105px;
-  width: 4px; height: 4px;
-  animation: travelBob .4s steps(2) infinite;
-}
-@keyframes travelBob {
-  0%, 100% { bottom: 105px; }
-  50% { bottom: 107px; }
-}
-#travel-hero.hop { animation: travelHop .35s ease-out; }
-@keyframes travelHop {
-  0%, 100% { bottom: 105px; }
-  50% { bottom: 120px; }
+.town-name {
+  position: absolute;
+  z-index: 3;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 5px 2px;
+  color: var(--ink);
+  background: rgba(244,244,244,.88);
+  border: 1px solid var(--ink);
+  font-size: 5px;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 1px 1px 0 rgba(26,28,44,.35);
 }
 .travel-line {
-  position: absolute; bottom: 6px; left: 4px; right: 4px;
-  text-align: center; font-size: 7px; line-height: 1.6; color: var(--parch);
+  position: absolute; z-index: 3; bottom: 4px; left: 4px; right: 4px;
+  min-height: 8px; padding: 3px 4px 2px;
+  text-align: center; font-size: 6px; line-height: 1.35; color: var(--parch);
+  background: rgba(26,28,44,.88); border: 1px solid var(--parch);
   text-shadow: 1px 1px 0 rgba(0,0,0,.6);
-=======
+}
 /* ============================ STICK CONTRA (konami secret) ============================ */
 #scr-contra { background: #000; }
 #contra-canvas {
