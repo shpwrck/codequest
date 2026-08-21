@@ -1,6 +1,14 @@
 /* CODE QUEST ADVANCE device adapter.
  * The browser owns only the shell. Bevy owns game state, timing, process
  * execution, and the fixed 240x160 RGBA framebuffer exposed by Rust. */
+import {
+  CARTRIDGE_DRAG_THRESHOLD,
+  MAX_CARTRIDGES,
+  cartridgeDragIntent,
+  normalizeCartridges,
+  upsertCartridge,
+} from "./cartridge-library.js";
+
 "use strict";
 
 (() => {
@@ -37,6 +45,7 @@
   let bootStartedAt = 0;
   let bootFinishing = false;
   let bootGeneration = 0;
+  let trayMessageTimer = null;
   const held = Object.create(null);
   const swallowedByBoot = Object.create(null);
 
@@ -160,16 +169,22 @@
   }
 
   function persistCartridges() {
-    const metadata = cartridges.map(({ path, title, color }) => ({ path, title, color }));
+    cartridges = normalizeCartridges(cartridges);
+    const metadata = cartridges.map(({ path, title, branch, color }) => ({
+      path,
+      title,
+      branch,
+      color,
+    }));
     localStorage.setItem("cqa-repo-carts", JSON.stringify(metadata));
   }
 
   function cacheCartridge(value) {
-    const metadata = { path: value.path, title: value.title, color: value.color };
-    const index = cartridges.findIndex((entry) => entry.path === value.path);
-    if (index >= 0) cartridges[index] = metadata;
-    else cartridges.push(metadata);
+    const result = upsertCartridge(cartridges, value);
+    cartridges = result.items;
+    if (!result.accepted) return false;
     persistCartridges();
+    return true;
   }
 
   function forgetCartridge(path) {
@@ -177,19 +192,60 @@
     persistCartridges();
   }
 
-  function showTrayError(message) {
+  async function refreshCartridgeBranches() {
+    const updates = await Promise.all(cartridges.map(async ({ path }) => {
+      try {
+        return { path, branch: await invoke("cartridge_branch", { path }) };
+      } catch (_) {
+        return null;
+      }
+    }));
+    let changed = false;
+    for (const update of updates) {
+      if (!update) continue;
+      const index = cartridges.findIndex(({ path }) => path === update.path);
+      if (index < 0 || cartridges[index].branch === update.branch) continue;
+      cartridges[index] = { ...cartridges[index], branch: update.branch };
+      changed = true;
+    }
+    if (!changed) return;
+    persistCartridges();
+    if (trayOpen) buildTray();
+  }
+
+  function showTrayMessage(message, tone = "error") {
     const error = $("tray-error");
+    if (trayMessageTimer !== null) window.clearTimeout(trayMessageTimer);
     error.textContent = String(message);
+    error.classList.toggle("notice", tone === "notice");
     error.classList.remove("hidden");
-    window.setTimeout(() => error.classList.add("hidden"), 4000);
+    trayMessageTimer = window.setTimeout(() => {
+      error.classList.add("hidden");
+      trayMessageTimer = null;
+    }, 4000);
+  }
+
+  function showTrayError(message) {
+    showTrayMessage(message);
   }
 
   async function insertCartridge(value) {
     if (!value || cartridge) return;
+    const alreadyCached = cartridges.some((entry) => entry.path === value.path);
+    if (!alreadyCached && cartridges.length >= MAX_CARTRIDGES) {
+      showTrayError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
+      return;
+    }
     const configured = await invoke("engine_set_cartridge", { path: value.path });
     cartridge = configured;
     localStorage.setItem("cqa-cart-id", configured.path);
-    cacheCartridge(configured);
+    if (!cacheCartridge(configured)) {
+      await invoke("engine_set_cartridge", { path: null });
+      cartridge = null;
+      localStorage.removeItem("cqa-cart-id");
+      showTrayError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
+      return;
+    }
     renderCartridge();
     closeTray();
   }
@@ -207,6 +263,10 @@
 
   async function addFromDisk() {
     if (picking || cartridge) return;
+    if (cartridges.length >= MAX_CARTRIDGES) {
+      showTrayError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
+      return;
+    }
     picking = true;
     try {
       await insertCartridge(await invoke("pick_cartridge"));
@@ -241,43 +301,140 @@
     })[char]);
   }
 
+  function recycleCartridge(value, card) {
+    if (card.classList.contains("recycling")) return;
+    if (cartridge?.path === value.path) {
+      showTrayError("EJECT THIS CARTRIDGE BEFORE RECYCLING IT");
+      return;
+    }
+    card.classList.add("recycling");
+    card.disabled = true;
+    window.setTimeout(() => {
+      forgetCartridge(value.path);
+      if (trayOpen) buildTray();
+      showTrayMessage(`RECYCLED ${value.title} · REPOSITORY UNTOUCHED`, "notice");
+    }, 180);
+  }
+
+  function bindCartridgeDrag(card, value, current) {
+    let pointerId = null;
+    let startY = 0;
+    let deltaY = 0;
+    let moved = false;
+
+    const clearDrag = () => {
+      pointerId = null;
+      card.classList.remove("dragging", "load-ready", "recycle-ready");
+      card.style.removeProperty("--drag-y");
+    };
+
+    card.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || pointerId !== null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      card.focus();
+      pointerId = event.pointerId;
+      startY = event.clientY;
+      deltaY = 0;
+      moved = false;
+      card.setPointerCapture(event.pointerId);
+      card.classList.add("dragging");
+    });
+
+    card.addEventListener("pointermove", (event) => {
+      if (event.pointerId !== pointerId) return;
+      deltaY = Math.max(-72, Math.min(72, event.clientY - startY));
+      moved ||= Math.abs(deltaY) > 6;
+      card.style.setProperty("--drag-y", `${deltaY}px`);
+      const intent = cartridgeDragIntent(deltaY, {
+        canLoad: !cartridge,
+        canRecycle: !current,
+      });
+      card.classList.toggle("load-ready", intent === "load");
+      card.classList.toggle("recycle-ready", intent === "recycle");
+    });
+
+    card.addEventListener("pointerup", (event) => {
+      if (event.pointerId !== pointerId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const intent = cartridgeDragIntent(deltaY, {
+        canLoad: !cartridge,
+        canRecycle: !current,
+      });
+      const deniedLoad = deltaY <= -CARTRIDGE_DRAG_THRESHOLD && Boolean(cartridge);
+      const deniedRecycle = deltaY >= CARTRIDGE_DRAG_THRESHOLD && current;
+      clearDrag();
+      if (intent === "load") insertByPath(value.path);
+      else if (intent === "recycle") recycleCartridge(value, card);
+      else if (deniedLoad) showTrayError("EJECT THE CURRENT CARTRIDGE BEFORE LOADING ANOTHER");
+      else if (deniedRecycle) showTrayError("EJECT THIS CARTRIDGE BEFORE RECYCLING IT");
+      else if (!moved && !cartridge) insertByPath(value.path);
+    });
+
+    card.addEventListener("pointercancel", clearDrag);
+    card.addEventListener("keydown", (event) => {
+      if ((event.key === "Enter" || event.key === " ") && !cartridge) {
+        event.preventDefault();
+        insertByPath(value.path);
+      } else if ((event.key === "Delete" || event.key === "Backspace") && !current) {
+        event.preventDefault();
+        recycleCartridge(value, card);
+      }
+    });
+  }
+
   function buildTray() {
     const list = $("tray-carts");
     list.innerHTML = "";
     for (const value of cartridges) {
-      const card = document.createElement("div");
+      const card = document.createElement("button");
       const current = cartridge?.path === value.path;
-      card.className = `cart-card${current ? " current" : ""}${cartridge ? " locked" : ""}`;
-      const shortPath = value.path.length > 26 ? `…${value.path.slice(-25)}` : value.path;
-      card.innerHTML = `<div class="cc-strip">CODEQUEST ADVANCE</div><div class="cc-label" style="--cc:${escapeHtml(value.color || "#6a6fd1")}"><span class="cc-title">${escapeHtml(value.title)}</span><span class="cc-sub">${escapeHtml(shortPath)}</span></div>`;
-      if (!cartridge) card.addEventListener("pointerdown", (event) => {
-        event.stopPropagation();
-        insertByPath(value.path);
-      });
+      card.type = "button";
+      card.className = `cart-card${current ? " current" : ""}`;
+      const accessibilityAction = current
+        ? "Currently in the device. Use the Eject Cartridge control before recycling."
+        : cartridge
+          ? "Drag down or press Delete to recycle. Eject the current cartridge before loading."
+          : "Drag up or press Enter to load. Drag down or press Delete to recycle.";
+      card.setAttribute(
+        "aria-label",
+        `${value.title}, branch ${value.branch}. ${accessibilityAction}`,
+      );
+      const gesture = current ? "EJECT FIRST" : "↑ LOAD · ↓ RECYCLE";
+      card.innerHTML = `<span class="cc-strip">CODEQUEST ADVANCE</span><span class="cc-label" style="--cc:${escapeHtml(value.color || "#6a6fd1")}"><span class="cc-title">${escapeHtml(value.title)}</span><span class="cc-sub">${escapeHtml(value.branch)}</span><span class="cc-gesture">${gesture}</span></span>`;
+      bindCartridgeDrag(card, value, current);
       list.appendChild(card);
     }
 
-    const add = document.createElement("div");
-    add.className = `cart-card add${cartridge ? " locked" : ""}`;
-    add.innerHTML = `<div class="cc-strip">&nbsp;</div><div class="cc-label"><span class="cc-title">+ ADD FROM DISK</span><span class="cc-sub">PICK A GIT REPO</span></div>`;
-    if (!cartridge) add.addEventListener("pointerdown", (event) => {
-      event.stopPropagation();
-      addFromDisk();
-    });
-    list.appendChild(add);
+    if (!cartridge && cartridges.length < MAX_CARTRIDGES) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "cart-card add";
+      add.innerHTML = `<span class="cc-label"><span class="cc-title">+ ADD FROM DISK</span><span class="cc-sub">CARTRIDGE ${cartridges.length + 1} OF ${MAX_CARTRIDGES}</span></span>`;
+      add.addEventListener("click", (event) => {
+        event.stopPropagation();
+        addFromDisk();
+      });
+      list.appendChild(add);
+    }
 
-    const eject = document.createElement("div");
-    eject.className = `cart-card eject${cartridge ? "" : " locked"}`;
-    eject.innerHTML = `<div class="cc-strip">&nbsp;</div><div class="cc-label"><span class="cc-title">EMPTY SLOT</span><span class="cc-sub">${cartridge ? "EJECT CARTRIDGE" : "NO CART LOADED"}</span></div>`;
-    if (cartridge) eject.addEventListener("pointerdown", (event) => {
-      event.stopPropagation();
-      ejectCartridge();
-    });
-    list.appendChild(eject);
+    if (cartridge) {
+      const eject = document.createElement("button");
+      eject.type = "button";
+      eject.className = "cart-card eject";
+      eject.innerHTML = `<span class="cc-label"><span class="cc-title">EJECT CARTRIDGE</span><span class="cc-sub">RETURN IT TO THE RACK</span></span>`;
+      eject.addEventListener("click", (event) => {
+        event.stopPropagation();
+        ejectCartridge();
+      });
+      list.appendChild(eject);
+    }
+    document.querySelector(".tray-head").textContent = `CARTRIDGE RACK · ${cartridges.length}/${MAX_CARTRIDGES}`;
     $("tray-error").classList.add("hidden");
     document.querySelector(".tray-hint").textContent = cartridge
-      ? "EJECT THE CARTRIDGE BEFORE SWAPPING"
-      : "CARTRIDGES ARE LOCAL GIT REPOS · ESC TO CLOSE";
+      ? "EJECT CURRENT · DRAG OTHER CARTS DOWN TO RECYCLE"
+      : "DRAG ↑ TO LOAD · DRAG ↓ TO RECYCLE · ESC TO CLOSE";
   }
 
   function openTray() {
@@ -285,6 +442,7 @@
     buildTray();
     $("cart-tray").classList.remove("hidden");
     trayOpen = true;
+    refreshCartridgeBranches().catch(() => {});
     updateControlGuides();
   }
 
@@ -408,16 +566,23 @@
 
   async function initialize() {
     fit();
+    const savedPath = localStorage.getItem("cqa-cart-id");
     try {
-      cartridges = (JSON.parse(localStorage.getItem("cqa-repo-carts")) || [])
-        .filter((entry) => entry && typeof entry.path === "string");
+      const stored = JSON.parse(localStorage.getItem("cqa-repo-carts")) || [];
+      cartridges = normalizeCartridges(stored, savedPath);
     } catch (_) {
       cartridges = [];
     }
-    const savedPath = localStorage.getItem("cqa-cart-id");
+    persistCartridges();
     if (savedPath) {
       try {
         cartridge = await invoke("engine_set_cartridge", { path: savedPath });
+        if (
+          !cartridges.some((entry) => entry.path === cartridge.path)
+          && cartridges.length >= MAX_CARTRIDGES
+        ) {
+          cartridges.pop();
+        }
         cacheCartridge(cartridge);
       } catch (_) {
         cartridge = null;
@@ -445,6 +610,7 @@
       if (command === "engine_set_cartridge" && args?.path == null) return null;
       if (command === "engine_set_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");
       if (command === "pick_cartridge") return null;
+      if (command === "cartridge_branch") return "BRANCH UNKNOWN";
       throw new Error(`UNKNOWN COMMAND ${command}`);
     };
   }

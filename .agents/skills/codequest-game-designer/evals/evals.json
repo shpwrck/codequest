@@ -1,0 +1,29 @@
+{
+  "skill_name": "codequest-game-designer",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Storyboard a stronger version of the current CODE QUEST quiz. Keep the Oracle instead of a town, make the wait for generated questions feel intentional, and give me a design brief plus an executable CODEQUEST.toml.",
+      "expected_output": "A linked quiz storyboard and valid schema-v2 manifest using trusted Oracle and quiz handlers, with mechanics, art requirements, and explicit implementation status.",
+      "expectations": [
+        "Produces both a human-readable design brief and a CODEQUEST.toml manifest.",
+        "The manifest passes the bundled schema-v2 validator with game.type set to quiz and no town scene.",
+        "The storyboard links Oracle latency to explicit mechanics, feedback, and art requirements.",
+        "The brief clearly distinguishes implemented, configured, and proposed behavior."
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I want a CODE QUEST stealth game where you sneak through a dependency graph and refactor modules without alerting regression guards. Design the scenes, mechanics, and art plan, but check what game types CODEQUEST.toml actually supports before you edit it.",
+      "expected_output": "A complete conceptual design that identifies the unsupported runtime type, avoids writing invalid TOML, and proposes the smallest schema/engine increment needed.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Our existing quiz storyboard needs an accessibility pass. Add a reduced-motion Oracle state, non-color-only answer feedback, and clearer retry behavior. Preserve existing IDs wherever possible and update both the brief and manifest.",
+      "expected_output": "An incremental, traceable revision that preserves stable IDs, updates mechanics and art requirements, and keeps all manifest references valid.",
+      "files": []
+    }
+  ]
+}

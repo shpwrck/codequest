@@ -1,12 +1,18 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod codequest;
 mod engine;
 mod font5x7;
+pub mod scene_machine;
 
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+
+use codequest::{CodeQuestConfig, GameType};
+use scene_machine::{SceneMachineDefinition, SceneMachineTemplate};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Quest {
@@ -33,10 +39,15 @@ fn quest(id: &str, name: &str, description: &str, boss: &str, command: &str) -> 
 struct Cartridge {
     id: String,
     title: String,
+    branch: String,
     color: String,
     path: String,
-    mode: String, // "custom" when CODEQUEST.md exists (schema TBD), else "quiz"
+    mode: String,
     quests: Vec<Quest>,
+    #[serde(skip)]
+    provenance: engine::RepositoryProvenance,
+    #[serde(skip)]
+    codequest: Option<CodeQuestConfig>,
 }
 
 fn shquote(p: &str) -> String {
@@ -55,16 +66,109 @@ fn is_git_repo(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+fn repository_branch(path: &std::path::Path) -> String {
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|branch| sanitized_metadata(&branch, 48))
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or_else(|| "DETACHED HEAD".to_string())
+}
+
+fn sanitized_metadata(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
+fn explicit_copyright_notice(path: &std::path::Path) -> Option<String> {
+    const NOTICE_FILES: [&str; 9] = [
+        "COPYRIGHT",
+        "COPYRIGHT.txt",
+        "COPYRIGHT.md",
+        "LICENSE",
+        "LICENSE.txt",
+        "LICENSE.md",
+        "NOTICE",
+        "NOTICE.txt",
+        "NOTICE.md",
+    ];
+
+    NOTICE_FILES.iter().find_map(|name| {
+        let file = std::fs::File::open(path.join(name)).ok()?;
+        let mut bytes = Vec::new();
+        file.take(16 * 1024).read_to_end(&mut bytes).ok()?;
+        String::from_utf8_lossy(&bytes).lines().find_map(|line| {
+            let notice = sanitized_metadata(line, 96);
+            let lowercase = notice.to_ascii_lowercase();
+            let declares_copyright = lowercase.starts_with("copyright ")
+                || lowercase.starts_with("copyright(")
+                || lowercase.starts_with("(c) ")
+                || lowercase.starts_with("spdx-filecopyrighttext:")
+                || notice.starts_with('©');
+            declares_copyright.then_some(notice)
+        })
+    })
+}
+
+fn repository_provenance(path: &std::path::Path) -> engine::RepositoryProvenance {
+    let authors = git_out(path, &["shortlog", "-sne", "--all"])
+        .lines()
+        .filter_map(|line| {
+            let author = line
+                .trim_start()
+                .trim_start_matches(|ch: char| ch.is_ascii_digit())
+                .trim();
+            let name = author
+                .rsplit_once(" <")
+                .map_or(author, |(name, _)| name)
+                .trim();
+            let name = sanitized_metadata(name, 64);
+            (!name.is_empty()).then_some(name)
+        })
+        .take(3)
+        .collect();
+
+    let years: Vec<u16> = git_out(path, &["log", "--all", "--format=%cd", "--date=format:%Y"])
+        .lines()
+        .filter_map(|year| year.parse().ok())
+        .collect();
+
+    engine::RepositoryProvenance {
+        authors,
+        first_year: years.iter().min().copied(),
+        latest_year: years.iter().max().copied(),
+        copyright: explicit_copyright_notice(path),
+    }
+}
+
 fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     let canon = std::fs::canonicalize(path).map_err(|_| "DIRECTORY NOT FOUND".to_string())?;
     if !is_git_repo(&canon) {
         return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
     }
+    let codequest = CodeQuestConfig::load(&canon)?;
     let p = canon.to_string_lossy().to_string();
-    let name = canon
+    let default_name = canon
         .file_name()
         .map(|n| n.to_string_lossy().to_uppercase())
         .unwrap_or_else(|| "REPO".into());
+    let name = codequest
+        .as_ref()
+        .and_then(|config| config.game.title.clone())
+        .unwrap_or(default_name);
     let q = shquote(&p);
     let mut quests = vec![
         quest(
@@ -146,18 +250,24 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     let h: usize = p
         .bytes()
         .fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
-    let mode = if canon.join("CODEQUEST.md").exists() {
-        "custom"
-    } else {
-        "quiz"
+    let mode = match codequest.as_ref().map(|config| config.game.game_type) {
+        Some(GameType::Quiz) => "quiz",
+        Some(GameType::Quest) => "custom",
+        None if canon.join("CODEQUEST.md").exists() => "custom",
+        None => "quiz",
     };
+    let provenance = repository_provenance(&canon);
+    let branch = repository_branch(&canon);
     Ok(Cartridge {
         id: p.clone(),
         title: name,
+        branch,
         color: palette[h % palette.len()].to_string(),
         path: p,
         mode: mode.to_string(),
         quests,
+        provenance,
+        codequest,
     })
 }
 
@@ -200,6 +310,15 @@ async fn pick_cartridge() -> Result<Option<Cartridge>, String> {
         return Ok(None);
     }
     build_cartridge(std::path::Path::new(&path)).map(Some)
+}
+
+#[tauri::command]
+fn cartridge_branch(path: String) -> Result<String, String> {
+    let canon = std::fs::canonicalize(path).map_err(|_| "DIRECTORY NOT FOUND".to_string())?;
+    if !is_git_repo(&canon) {
+        return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
+    }
+    Ok(repository_branch(&canon))
 }
 
 struct QuizFile {
@@ -416,16 +535,31 @@ fn ai_questions(
         .ok_or_else(|| "INCOMPLETE OR INVALID QUESTIONS".to_string())
 }
 
-fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
+fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, String> {
     let mode = if cartridge.mode == "custom" {
         engine::CartridgeMode::Custom
     } else {
         engine::CartridgeMode::Quiz
     };
-    engine::CartridgeSpec {
+    let template = match mode {
+        engine::CartridgeMode::Quiz => SceneMachineTemplate::Quiz,
+        engine::CartridgeMode::Custom => SceneMachineTemplate::Quest,
+    };
+    let machine = cartridge
+        .codequest
+        .as_ref()
+        .map(CodeQuestConfig::runtime_machine)
+        .transpose()?
+        .flatten()
+        .unwrap_or_else(|| SceneMachineDefinition::template(template));
+
+    Ok(engine::CartridgeSpec {
         id: cartridge.path,
         title: cartridge.title,
         mode,
+        provenance: cartridge.provenance,
+        codequest: cartridge.codequest.map(Box::new),
+        machine,
         quests: cartridge
             .quests
             .into_iter()
@@ -436,7 +570,7 @@ fn engine_cartridge(cartridge: Cartridge) -> engine::CartridgeSpec {
             })
             .collect(),
         questions: Vec::new(),
-    }
+    })
 }
 
 #[tauri::command]
@@ -449,7 +583,7 @@ fn engine_set_cartridge(
         .transpose()?;
     state
         .0
-        .set_cartridge(cartridge.clone().map(engine_cartridge))?;
+        .set_cartridge(cartridge.clone().map(engine_cartridge).transpose()?)?;
     Ok(cartridge)
 }
 
@@ -495,6 +629,7 @@ pub fn run() {
         .manage(EngineState(engine::EngineRuntime::spawn(question_loader)))
         .invoke_handler(tauri::generate_handler![
             pick_cartridge,
+            cartridge_branch,
             engine_set_cartridge,
             engine_power,
             engine_finish_boot,
@@ -509,15 +644,69 @@ pub fn run() {
 mod question_policy_tests {
     use super::*;
 
+    fn temporary_git_repo() -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "codequest-config-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        path
+    }
+
     fn cartridge(path: &str, title: &str) -> Cartridge {
         Cartridge {
             id: path.to_string(),
             title: title.to_string(),
+            branch: "test-branch".to_string(),
             color: "#000000".to_string(),
             path: path.to_string(),
             mode: "quiz".to_string(),
             quests: Vec::new(),
+            provenance: engine::RepositoryProvenance::default(),
+            codequest: None,
         }
+    }
+
+    fn commit_as(repo: &std::path::Path, name: &str, email: &str, date: &str, message: &str) {
+        std::fs::write(repo.join("history.txt"), format!("{message}\n")).unwrap();
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["add", "history.txt"])
+            .status()
+            .unwrap();
+        assert!(add.success());
+        let commit = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                message,
+            ])
+            .env("GIT_AUTHOR_NAME", name)
+            .env("GIT_AUTHOR_EMAIL", email)
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_NAME", name)
+            .env("GIT_COMMITTER_EMAIL", email)
+            .env("GIT_COMMITTER_DATE", date)
+            .status()
+            .unwrap();
+        assert!(commit.success());
     }
 
     fn question(text: &str, choices: &[&str]) -> QQuestion {
@@ -526,6 +715,169 @@ mod question_policy_tests {
             choices: choices.iter().map(|choice| (*choice).to_string()).collect(),
             answer: 0,
         }
+    }
+
+    #[test]
+    fn cartridge_loads_codequest_title_type_and_storyboard() {
+        let repo = temporary_git_repo();
+        std::fs::write(
+            repo.join(codequest::FILE_NAME),
+            r#"
+                schema_version = 1
+
+                [game]
+                type = "quest"
+                title = "CONFIGURED ADVENTURE"
+            "#,
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.title, "CONFIGURED ADVENTURE");
+        assert_eq!(cartridge.mode, "custom");
+        assert!(cartridge.codequest.is_some());
+
+        let spec = engine_cartridge(cartridge).unwrap();
+        assert_eq!(spec.title, "CONFIGURED ADVENTURE");
+        assert_eq!(spec.mode, engine::CartridgeMode::Custom);
+        assert!(spec.codequest.is_some());
+
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_reports_the_repositorys_current_branch() {
+        let repo = temporary_git_repo();
+        let switched = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["switch", "--quiet", "-c", "story/cartridge-label"])
+            .status()
+            .unwrap();
+        assert!(switched.success());
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.branch, "story/cartridge-label");
+
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_compiles_schema_v2_storyboard_for_the_engine() {
+        let repo = temporary_git_repo();
+        std::fs::write(
+            repo.join(codequest::FILE_NAME),
+            r#"
+                schema_version = 2
+
+                [game]
+                type = "quiz"
+                start_scene = "title"
+
+                [[scenes]]
+                id = "title"
+                title = "Title"
+                kind = "title"
+                handler = "title"
+
+                [[scenes.transitions]]
+                signal = "continue"
+                target = "game-over"
+
+                [[scenes]]
+                id = "game-over"
+                title = "Game Over"
+                kind = "result"
+                handler = "game-over"
+            "#,
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        let spec = engine_cartridge(cartridge).unwrap();
+        let mut machine = scene_machine::SceneMachine::new(spec.machine);
+        assert_eq!(machine.current_scene(), "title");
+        assert_eq!(
+            machine
+                .handle(scene_machine::SceneEvent::Signal(
+                    scene_machine::SceneSignal::Continue,
+                ))
+                .unwrap()
+                .target,
+            "game-over"
+        );
+
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_loads_ranked_authors_timeline_and_explicit_copyright() {
+        let repo = temporary_git_repo();
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2020-01-02T03:04:05Z",
+            "first",
+        );
+        commit_as(
+            &repo,
+            "Grace Hopper",
+            "grace@example.com",
+            "2022-02-03T04:05:06Z",
+            "second",
+        );
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2024-03-04T05:06:07Z",
+            "third",
+        );
+        std::fs::write(
+            repo.join("LICENSE"),
+            "MIT License\n\nCopyright (c) 2020-2024 Ada Lovelace\n",
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(
+            cartridge.provenance.authors,
+            vec!["Ada Lovelace", "Grace Hopper"]
+        );
+        assert_eq!(cartridge.provenance.first_year, Some(2020));
+        assert_eq!(cartridge.provenance.latest_year, Some(2024));
+        assert_eq!(
+            cartridge.provenance.copyright.as_deref(),
+            Some("Copyright (c) 2020-2024 Ada Lovelace")
+        );
+
+        let spec = engine_cartridge(cartridge).unwrap();
+        assert_eq!(spec.provenance.authors[0], "Ada Lovelace");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn cartridge_does_not_infer_copyright_from_commit_authors() {
+        let repo = temporary_git_repo();
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2020-01-02T03:04:05Z",
+            "first",
+        );
+        std::fs::write(
+            repo.join("LICENSE"),
+            "The above copyright notice and this permission notice shall be included.\n",
+        )
+        .unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.provenance.authors, vec!["Ada Lovelace"]);
+        assert_eq!(cartridge.provenance.copyright, None);
+
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]
@@ -578,7 +930,7 @@ mod question_policy_tests {
 
     #[test]
     fn quiz_cartridges_have_no_preloaded_questions() {
-        let spec = engine_cartridge(cartridge("/tmp/first", "FIRST"));
+        let spec = engine_cartridge(cartridge("/tmp/first", "FIRST")).unwrap();
 
         assert!(spec.questions.is_empty());
     }
