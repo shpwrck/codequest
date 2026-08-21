@@ -1,0 +1,148 @@
+name: Package
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/package.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "packaging/**"
+      - "scripts/test-release-picker.sh"
+      - "src/**"
+      - "src-tauri/**"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build portable AppImage
+        env:
+          CONTAINER_ENGINE: docker
+        run: ./packaging/build-appimage.sh
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            dist/*.AppImage
+            dist/SHA256SUMS
+            dist/portability.txt
+          if-no-files-found: error
+
+  windows:
+    name: Windows installers
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Test Windows build
+        run: |
+          npm test
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build MSI and NSIS installers
+        run: npm run tauri -- build --bundles msi,nsis
+
+      - name: Collect Windows packages
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi dist/
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe dist/
+          Get-ChildItem dist -File | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } |
+            Set-Content dist/SHA256SUMS-windows.txt
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal DMG
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Test macOS build
+        run: |
+          npm test
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build universal app and DMG
+        run: npm run tauri -- build --bundles app,dmg --target universal-apple-darwin
+
+      - name: Collect macOS packages
+        run: |
+          mkdir -p dist
+          version=$(node -p "require('./package.json').version")
+          app=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/code-quest-advance_${version}_universal.app.zip"
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg dist/
+          (cd dist && shasum -a 256 ./*.dmg ./*.zip > SHA256SUMS-macos.txt)
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh -R "$GITHUB_REPOSITORY" release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh -R "$GITHUB_REPOSITORY" release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
+          fi
+          while IFS= read -r -d '' artifact; do
+            gh -R "$GITHUB_REPOSITORY" release upload "$GITHUB_REF_NAME" "$artifact" --clobber
+          done < <(find release-artifacts -maxdepth 1 -type f -print0)

@@ -68,7 +68,7 @@ sleep 3
 DISPLAY="$task_display" xdotool windowfocus --sync "$task_window"
 DISPLAY="$task_display" xdotool key c
 sleep .3
-DISPLAY="$task_display" xdotool mousemove 416 365 click 1
+DISPLAY="$task_display" xdotool mousemove 512 343 click 1
 sleep 1
 
 DISPLAY="$task_display" xwd -root -silent |

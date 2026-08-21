@@ -9,7 +9,8 @@
 FROM docker.io/library/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    APPIMAGE_EXTRACT_AND_RUN=1
+    APPIMAGE_EXTRACT_AND_RUN=1 \
+    NO_STRIP=true
 
 # No appindicator: this app declares no tray icon, so the tray deps are dead weight.
 # xdg-utils IS required: tauri-plugin-opener makes the bundler copy xdg-open into the AppDir.

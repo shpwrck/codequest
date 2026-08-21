@@ -4,8 +4,8 @@
   "version": "0.2.1",
   "type": "module",
   "scripts": {
-    "test": "node tests/display-contract.mjs && node tests/device-boot-contract.mjs && node tests/device-bounds-contract.mjs && node tests/device-pointer-contract.mjs && node tests/device-animation-contract.mjs && node tests/cartridge-library-contract.mjs",
-    "tauri": "NO_STRIP=true PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/share/pkgconfig tauri"
+    "test": "node tests/display-contract.mjs && node tests/device-boot-contract.mjs && node tests/device-bounds-contract.mjs && node tests/device-pointer-contract.mjs && node tests/device-animation-contract.mjs && node tests/cartridge-library-contract.mjs && node tests/packaging-contract.mjs",
+    "tauri": "tauri"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
