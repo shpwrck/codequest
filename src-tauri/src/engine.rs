@@ -1338,10 +1338,10 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(INK);
     for index in 0..30 {
         let x = ((index * 71 + state.screen_ticks as usize * 2) % WIDTH) as i32;
-        frame.pixel(x, 25 + (index * 29 % 85) as i32, MIST);
+        frame.pixel(x, 14 + (index * 29 % 96) as i32, MIST);
     }
-    frame.rect(0, 0, WIDTH as i32, 22, NAVY);
-    frame.rect(0, 21, WIDTH as i32, 1, PLUM);
+    frame.rect(0, 0, WIDTH as i32, 12, NAVY);
+    frame.rect(0, 11, WIDTH as i32, 1, PLUM);
     frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
     let status = if state.has_unanswered_question() {
         "QUESTION READY"
@@ -1356,21 +1356,6 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.text(211 - status_width, 2, status, SKY, 1);
     let phase = (state.screen_ticks % 45) / 15;
     frame.text(216, 2, &".".repeat(phase as usize + 1), GOLD, 1);
-    frame.text(
-        4,
-        13,
-        &format!("DATA {:02}", state.oracle_data.min(99)),
-        GREEN,
-        1,
-    );
-    frame.centered_text(13, "L/R MOVE", PARCH, 1);
-    frame.text(
-        201,
-        13,
-        &format!("BUG {:02}", state.oracle_bug_hits.min(99)),
-        RED,
-        1,
-    );
     for drop in &state.oracle_drops {
         match drop.kind {
             OracleDropKind::Data => draw_oracle_data(frame, drop.x, drop.y),
@@ -1380,6 +1365,21 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.rect(0, 132, WIDTH as i32, 28, PLUM);
     frame.rect(0, 128, WIDTH as i32, 4, GREEN);
     draw_hero(frame, state.oracle_hero_x, 111, 1, state);
+    frame.text(
+        4,
+        143,
+        &format!("DATA {:02}", state.oracle_data.min(99)),
+        GREEN,
+        1,
+    );
+    frame.centered_text(143, "L/R MOVE", PARCH, 1);
+    frame.text(
+        201,
+        143,
+        &format!("BUG {:02}", state.oracle_bug_hits.min(99)),
+        RED,
+        1,
+    );
 }
 
 fn draw_oracle_data(frame: &mut Framebuffer, x: i32, y: i32) {
@@ -2145,10 +2145,10 @@ mod tests {
             dodged.update();
         }
 
-        let collected_counter = frame_region(collected.frame(), 0..60, 12..22);
-        let dodged_counter = frame_region(dodged.frame(), 0..60, 12..22);
-        assert_ne!(
-            collected_counter, dodged_counter,
+        let collected_counter = frame_region(collected.frame(), 0..60, 142..152);
+        let dodged_counter = frame_region(dodged.frame(), 0..60, 142..152);
+        assert!(
+            collected_counter != dodged_counter,
             "contact with data did not update the data counter"
         );
     }
@@ -2179,25 +2179,27 @@ mod tests {
     }
 
     #[test]
-    fn oracle_hud_keeps_title_status_progress_and_counters_at_the_top() {
+    fn oracle_hud_separates_oracle_info_at_top_from_game_info_at_bottom() {
         let engine = waiting_oracle_engine();
         let frame = engine.frame();
+        for (label, color) in [("Oracle title/progress", GOLD), ("Claude status", SKY)] {
+            assert!(
+                color_pixels_in_region(frame, color, 0..WIDTH, 0..12) > 0,
+                "{label} is missing from the top quiz HUD"
+            );
+        }
         for (label, color) in [
-            ("title/progress", GOLD),
-            ("Claude status", SKY),
             ("data counter", GREEN),
+            ("controls", PARCH),
             ("bug counter", RED),
         ] {
             assert!(
-                color_pixels_in_region(frame, color, 0..WIDTH, 0..22) > 0,
-                "{label} is missing from the top HUD"
+                color_pixels_in_region(frame, color, 0..WIDTH, 132..HEIGHT) > 0,
+                "{label} is missing from the bottom game HUD"
             );
         }
-        assert_eq!(
-            color_pixels_in_region(frame, GOLD, 0..WIDTH, 28..55),
-            0,
-            "progress dots are still below the top HUD"
-        );
+        assert_eq!(color_pixels_in_region(frame, GREEN, 0..WIDTH, 0..12), 0);
+        assert_eq!(color_pixels_in_region(frame, RED, 0..WIDTH, 0..12), 0);
     }
 
     #[test]
@@ -2230,8 +2232,8 @@ mod tests {
             dodged.update();
         }
 
-        let hit_counter = frame_region(hit.frame(), 190..240, 12..22);
-        let dodged_counter = frame_region(dodged.frame(), 190..240, 12..22);
+        let hit_counter = frame_region(hit.frame(), 190..240, 142..152);
+        let dodged_counter = frame_region(dodged.frame(), 190..240, 142..152);
         assert!(
             hit_counter != dodged_counter,
             "dodging did not prevent the hit"

@@ -65,7 +65,7 @@ creates new renderer code.
 | `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; title remains readable at native scale. | `quiz-menu` | `navigate-menu` | `title-mark` |
 | `quiz-menu` | Explain the run and offer a safe return. | D-pad selects; A/Start confirms; B returns. | `character-creation` or `title` | `navigate-menu` | — |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, class, and style with an immediate hero preview. | `oracle` | `customize-hero` | `hero-set` |
-| `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data scores on contact and bugs count as hits. Every other control is inactive. Packet/bug silhouettes, counters, animated dots, and truthful loading/retry/ready copy share a compact top HUD. | Automatically enters `quiz` when a valid question is ready. | `consult-oracle` | `hero-set`, `oracle-sanctum` |
+| `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data scores on contact and bugs count as hits. Every other control is inactive. The top quiz header holds Oracle/loading context; the bottom game strip holds counters and controls. | Automatically enters `quiz` when a valid question is ready. | `consult-oracle` | `hero-set`, `oracle-sanctum` |
 | `quiz` | Test one durable project concept. | D-pad selects; A commits; text and color reveal correct/wrong. | `oracle`, `level-up`, or `game-over` | `answer-question` | `hero-set`, `quiz-frame` |
 | `level-up` | Recognize a completed batch while the next batch is prepared. | A/Start continues after level and batch feedback. | `oracle` | `navigate-menu` | `hero-set` |
 | `game-over` | Close the run and make replay obvious. | Show final score; A/B/Start returns to the menu. | `quiz-menu` | `navigate-menu` | `hero-set` |
@@ -160,8 +160,9 @@ and Claude retries.
   unanswered question exists; empty results retry. No Datafall state affects
   generation, difficulty, quiz score, hearts, or wait duration.
 - **Feedback:** Data uses a boxed silhouette; bugs use a crossed silhouette.
-  Keep `ORACLE DATAFALL`, truthful loading/retry/ready text, animated dots, both
-  counters, and the Left/Right prompt inside the top 22 pixels.
+  Keep `ORACLE DATAFALL`, truthful loading/retry/ready text, and animated dots
+  in the top 12-pixel quiz header. Keep both counters and the Left/Right prompt
+  in the bottom game strip.
 
 ### `answer-question`
 
@@ -181,7 +182,7 @@ and Claude retries.
 | `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes; never overlay the title frame. | Procedural base implemented; reduced-motion polish needed |
 | `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | Basic renderer implemented; art polish needed |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, dodge, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base implemented; state polish needed |
-| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, and ready as one place: moving hero, boxed packets, crossed bugs, counters, animated dots, and horizontal-movement prompt. | Fits 240×160; objects differ by shape and color; all status/HUD information fits in the top 22 pixels. | Procedural Datafall renderer implemented |
+| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, and ready as one place: moving hero, boxed packets, crossed bugs, counters, animated dots, and horizontal-movement prompt. | Fits 240×160; objects differ by shape and color; Oracle/loading information stays in the top header while gameplay counters/controls stay in the bottom strip. | Procedural Datafall renderer implemented |
 | `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | Core frame implemented; accessibility polish needed |
 
 ## Runtime traceability
@@ -196,7 +197,7 @@ and Claude retries.
 | Copyright and opening-fanfare screens | Implemented in basic form | Trusted Bevy handlers render before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Trusted handlers own input and rendering while the manifest routes their semantic events. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
-| Left/Right-only Oracle Datafall | Implemented | Held horizontal movement, deterministic falling objects, automatic data/bug collision counters, compact top HUD, and framebuffer-level behavior tests. |
+| Left/Right-only Oracle Datafall | Implemented | Held horizontal movement, deterministic falling objects, automatic data/bug collision counters, split top/bottom HUD, and framebuffer-level behavior tests. |
 | Safe Oracle-to-quiz input boundary | Implemented | Face buttons are ignored in Oracle; held D-pad controls have no answer action after the automatic transition. |
 | Truthful multi-state Oracle presentation | Implemented in basic form | Loading, retry, and ready copy derives from actual engine state; an explicit AI-disabled state remains future work. |
 | Non-color-only result labels and reduced motion | Proposed | Extend quiz/Oracle rendering and verify at native scale. |
@@ -212,7 +213,8 @@ and Claude retries.
    test minimum dwell, auto-advance, skip, and distinct rendered phases.
 3. **Completed — Oracle Datafall pass:** Replace the A-jump/B-exit waiting room
    with Left/Right-only data collection and bug-dodging play; isolate its
-   counters from quiz state; add a compact top HUD and framebuffer-level tests.
+   counters from quiz state; split quiz context from gameplay HUD and add
+   framebuffer-level tests.
 4. **Feedback/accessibility pass:** Add correctness labels, reduced-motion
    Oracle behavior, and native-scale screenshot assertions.
 5. **Continuity pass:** Show the previous lesson and batch status during a wait
