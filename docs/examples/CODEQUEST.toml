@@ -38,9 +38,9 @@ feedback = ["Update the hero preview immediately."]
 [[mechanics]]
 id = "consult-oracle"
 summary = "Play Oracle Datafall while the next question is prepared."
-inputs = ["left", "right", "up", "down"]
-rules = ["Data packets and glitches fall in deterministic lanes while the Oracle holds the run for a valid question.", "Left and Right move the hero to dodge glitches or line up with data.", "Holding Up catches one overlapping data packet; uncaught data falls away.", "Holding Down processes a carried packet; releasing Down pauses progress.", "Face buttons and Start do nothing in this scene, so their input cannot carry into a newly loaded question.", "Datafall counters are cosmetic and never change quiz score, hearts, question timing, or generation.", "A failed generation attempt is retried instead of replaced with filler."]
-feedback = ["Use distinct packet and crossed-glitch silhouettes in addition to green and red.", "Show processed-data and glitch-hit counters plus carried-packet processing progress.", "Show truthful loading, retry, and ready status without a percentage."]
+inputs = ["left", "right"]
+rules = ["Data packets and bugs fall in deterministic lanes while the Oracle holds the run for a valid question.", "Left and Right move the hero to dodge bugs or line up with data.", "Contact with data increments the data counter automatically; contact with a bug increments the bug counter.", "Up, Down, face buttons, Start, and shoulders do nothing in this scene, so their input cannot carry into a newly loaded question.", "Datafall counters are cosmetic and never change quiz score, hearts, question timing, or generation.", "A failed generation attempt is retried instead of replaced with filler."]
+feedback = ["Use distinct packet and crossed-bug silhouettes in addition to green and red.", "Keep Oracle Datafall, truthful Claude status, animated dots, data count, bug count, and the Left/Right prompt in a compact top HUD.", "Show loading, retry, and ready status without a percentage."]
 
 [[mechanics]]
 id = "answer-question"
@@ -77,7 +77,7 @@ requirements = ["Consistent silhouette across variants.", "Readable on Oracle an
 id = "oracle-sanctum"
 kind = "scene"
 summary = "A readable falling-object playfield that makes question generation feel active."
-requirements = ["Supports the customized hero moving across the full playfield.", "Distinguishes collectible packets from crossed glitches by silhouette and color.", "Reserves space for loading status, counters, a carried packet, processing progress, and D-pad-only instructions.", "Has clear loading, retry, and ready states."]
+requirements = ["Supports the customized hero moving across the full playfield.", "Distinguishes collectible packets from crossed bugs by silhouette and color.", "Reserves a compact top HUD for the title, Claude status, animated dots, counters, and Left/Right prompt.", "Has clear loading, retry, and ready states."]
 
 [[art]]
 id = "quiz-frame"
@@ -175,7 +175,7 @@ id = "oracle"
 title = "Oracle"
 kind = "interstitial"
 handler = "oracle"
-summary = "Turn question-generation latency into a D-pad-only falling-object game between challenges."
+summary = "Turn question-generation latency into a Left/Right-only falling-object game between challenges."
 mechanics = ["consult-oracle"]
 art = ["hero-set", "oracle-sanctum"]
 

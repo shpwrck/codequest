@@ -13,8 +13,8 @@ behind the cartridge, then erupts into an original code-fantasy fanfare before
 the player binds a small code-seer, consults an Oracle, and proves their
 understanding through increasingly difficult conceptual questions. The first
 question request runs behind the opening spectacle, and any remaining latency
-becomes Oracle Datafall: a D-pad-only falling-object game in which the hero
-dodges glitches, catches data, and processes it while Claude works.
+becomes Oracle Datafall: a Left/Right falling-object game in which the hero
+dodges bugs and runs into data while Claude works.
 
 **Player outcome:** Build a durable mental model of a project's purpose,
 responsibilities, interactions, invariants, and tradeoffs—not memorize file
@@ -51,8 +51,8 @@ creates new renderer code.
   choice. At zero hearts, show the final score and a one-button replay path.
 - **Latency loop:** Request the first batch as soon as the cartridge is
   accepted, then continue behind the copyright, fanfare, title, menu, and hero
-  creation. In Oracle Datafall, move into a data lane → hold Up to catch one
-  packet → hold Down to process it, while moving away from crossed glitches.
+  creation. In Oracle Datafall, move into falling data to collect it on contact
+  while moving away from crossed bugs.
   Enter the Oracle only when no valid unanswered question is ready; failed
   batches retry there instead of becoming generic trivia.
 
@@ -65,7 +65,7 @@ creates new renderer code.
 | `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; title remains readable at native scale. | `quiz-menu` | `navigate-menu` | `title-mark` |
 | `quiz-menu` | Explain the run and offer a safe return. | D-pad selects; A/Start confirms; B returns. | `character-creation` or `title` | `navigate-menu` | — |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, class, and style with an immediate hero preview. | `oracle` | `customize-hero` | `hero-set` |
-| `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes, Up catches data, and Down processes a carried packet; A/B/Start are inactive. Packet/glitch silhouettes, counters, progress, and truthful loading/retry/ready copy remain visible. | Automatically enters `quiz` when a valid question is ready. | `consult-oracle` | `hero-set`, `oracle-sanctum` |
+| `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data scores on contact and bugs count as hits. Every other control is inactive. Packet/bug silhouettes, counters, animated dots, and truthful loading/retry/ready copy share a compact top HUD. | Automatically enters `quiz` when a valid question is ready. | `consult-oracle` | `hero-set`, `oracle-sanctum` |
 | `quiz` | Test one durable project concept. | D-pad selects; A commits; text and color reveal correct/wrong. | `oracle`, `level-up`, or `game-over` | `answer-question` | `hero-set`, `quiz-frame` |
 | `level-up` | Recognize a completed batch while the next batch is prepared. | A/Start continues after level and batch feedback. | `oracle` | `navigate-menu` | `hero-set` |
 | `game-over` | Close the run and make replay obvious. | Show final score; A/B/Start returns to the menu. | `quiz-menu` | `navigate-menu` | `hero-set` |
@@ -100,10 +100,9 @@ dependency on generation.
 
 | Beat | Trigger | Presentation | Player agency | Status |
 |---|---|---|---|---|
-| Arrival | Enter `oracle`. | Reset the hero to center, clear in-flight objects and any half-processed carried packet, then show the real Claude status. Keep the existing minimum dwell so instant results do not flash past. | Left/Right begins moving immediately; face buttons remain inactive. | Implemented. |
-| Datafall | Request is in flight. | Boxed data packets and crossed glitches fall through deterministic lanes. Processed-data and glitch-hit counters persist across Oracle visits in the current quiz run. | Left/Right dodges or aligns; hold Up during overlap to catch one packet. | Implemented. |
-| Processing | A packet is carried. | Keep the packet above the hero and show a progress bar. Processing is cosmetic and never changes generation or quiz state. | Hold Down to advance processing; releasing Down pauses it. | Implemented. |
-| Clouded vision | A batch returns empty or invalid. | `CLAUDE RETRYING` distinguishes the real retry delay without a fake percentage. Falling-object play continues. | All four D-pad actions remain available. | Implemented. |
+| Arrival | Enter `oracle`. | Reset the hero to center, clear in-flight objects, and show the real Claude status. Keep the existing minimum dwell so instant results do not flash past. | Left/Right begins moving immediately; every other control remains inactive. | Implemented. |
+| Datafall | Request is in flight. | Boxed data packets and crossed bugs fall through deterministic lanes. Data and bug-hit counters persist across Oracle visits in the current quiz run. | Move into data to collect it automatically; move away from bugs. | Implemented. |
+| Clouded vision | A batch returns empty or invalid. | `CLAUDE RETRYING` distinguishes the real retry delay without a fake percentage. Falling-object play continues. | Left/Right remain available. | Implemented. |
 | Vision ready | A valid unanswered question exists. | `QUESTION READY` may appear during the minimum dwell, then the scene transitions automatically. | No confirmation required; held D-pad inputs cannot answer the quiz. | Implemented. |
 | Long wait | Scrying continues beyond the normal beat. | The same deterministic play loop continues under truthful status copy, with no invented scan steps. | Keep playing until the question arrives. | Implemented. |
 
@@ -151,20 +150,18 @@ and Claude retries.
 
 ### `consult-oracle`
 
-- **Decision:** Choose a lane, dodge crossed glitches, catch boxed data, and
-  decide when to process the single carried packet.
-- **Inputs:** Left and Right move; held Up catches an overlapping packet; held
-  Down processes a carried packet. A, B, Start, and shoulders are inactive.
-- **Rules:** Drops use deterministic lanes and alternate data/glitch types. A
-  hero may carry one packet. Only Up plus spatial overlap catches data; only
-  Down advances processing. Glitch overlap increments a cosmetic hit counter.
-  Active drops and incomplete processing reset on each Oracle entry, while
-  processed/hit counters persist for the current quiz run. Stay until a valid
+- **Decision:** Choose a lane, dodge crossed bugs, and collide with boxed data.
+- **Inputs:** Left and Right move. Up, Down, A, B, Start, and shoulders are
+  inactive.
+- **Rules:** Drops use deterministic lanes and alternate data/bug types. Data
+  overlap increments a cosmetic data counter; bug overlap increments a cosmetic
+  hit counter. Active drops reset on each Oracle entry, while data/hit counters
+  persist for the current quiz run. Stay until a valid
   unanswered question exists; empty results retry. No Datafall state affects
   generation, difficulty, quiz score, hearts, or wait duration.
-- **Feedback:** Data uses a boxed silhouette; glitches use a crossed silhouette.
-  Show processed-data and hit counters, the carried packet, processing progress,
-  truthful loading/retry/ready text, and two rows of D-pad-only instructions.
+- **Feedback:** Data uses a boxed silhouette; bugs use a crossed silhouette.
+  Keep `ORACLE DATAFALL`, truthful loading/retry/ready text, animated dots, both
+  counters, and the Left/Right prompt inside the top 22 pixels.
 
 ### `answer-question`
 
@@ -183,8 +180,8 @@ and Claude retries.
 | `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and overflow page. | Legible at 240×160; never infer legal ownership; body text stays at native size. | Procedural base implemented; overflow polish needed |
 | `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation with silhouette, impact, repository crest, commit constellation, Oracle ignition, and reduced-motion variants. | Original characters/composition; five-to-seven seconds; no full-frame flashes; never overlay the title frame. | Procedural base implemented; reduced-motion polish needed |
 | `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | Basic renderer implemented; art polish needed |
-| `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, catch, process, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base plus Oracle catch pose implemented; state polish needed |
-| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, and ready as one place: moving hero, boxed packets, crossed glitches, counters, carried item, progress bar, and instructions. | Fits 240×160; objects differ by shape and color; status/HUD remain readable over motion. | Procedural Datafall renderer implemented |
+| `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run; customization, idle, dodge, success, and defeat variants. | Consistent silhouette across palettes/backgrounds. | Procedural base implemented; state polish needed |
+| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, and ready as one place: moving hero, boxed packets, crossed bugs, counters, animated dots, and horizontal-movement prompt. | Fits 240×160; objects differ by shape and color; all status/HUD information fits in the top 22 pixels. | Procedural Datafall renderer implemented |
 | `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | Core frame implemented; accessibility polish needed |
 
 ## Runtime traceability
@@ -199,7 +196,7 @@ and Claude retries.
 | Copyright and opening-fanfare screens | Implemented in basic form | Trusted Bevy handlers render before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Trusted handlers own input and rendering while the manifest routes their semantic events. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
-| D-pad-only Oracle Datafall | Implemented | Held-input movement, deterministic falling objects, Up catch, Down process, glitch collision, counters, progress, and framebuffer-level behavior tests. |
+| Left/Right-only Oracle Datafall | Implemented | Held horizontal movement, deterministic falling objects, automatic data/bug collision counters, compact top HUD, and framebuffer-level behavior tests. |
 | Safe Oracle-to-quiz input boundary | Implemented | Face buttons are ignored in Oracle; held D-pad controls have no answer action after the automatic transition. |
 | Truthful multi-state Oracle presentation | Implemented in basic form | Loading, retry, and ready copy derives from actual engine state; an explicit AI-disabled state remains future work. |
 | Non-color-only result labels and reduced motion | Proposed | Extend quiz/Oracle rendering and verify at native scale. |
@@ -214,8 +211,8 @@ and Claude retries.
    handlers before `Title`, preserve the already-early question request, and
    test minimum dwell, auto-advance, skip, and distinct rendered phases.
 3. **Completed — Oracle Datafall pass:** Replace the A-jump/B-exit waiting room
-   with D-pad-only dodge, catch, and process play; isolate its counters from quiz
-   state; add loading/retry/ready copy and framebuffer-level behavior tests.
+   with Left/Right-only data collection and bug-dodging play; isolate its
+   counters from quiz state; add a compact top HUD and framebuffer-level tests.
 4. **Feedback/accessibility pass:** Add correctness labels, reduced-motion
    Oracle behavior, and native-scale screenshot assertions.
 5. **Continuity pass:** Show the previous lesson and batch status during a wait

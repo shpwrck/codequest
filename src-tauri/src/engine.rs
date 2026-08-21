@@ -25,8 +25,7 @@ const ORACLE_HERO_MIN_X: i32 = 8;
 const ORACLE_HERO_MAX_X: i32 = 210;
 const ORACLE_HERO_SPEED: i32 = 2;
 const ORACLE_DROP_INTERVAL: u64 = 30;
-const ORACLE_CATCH_Y: i32 = 100;
-const ORACLE_PROCESS_TICKS: u16 = 40;
+const ORACLE_COLLISION_Y: i32 = 100;
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -379,7 +378,7 @@ struct QuizRun {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OracleDropKind {
     Data,
-    Glitch,
+    Bug,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -411,10 +410,8 @@ struct GameState {
     oracle_hero_x: i32,
     oracle_drops: Vec<OracleDrop>,
     oracle_spawned: u32,
-    oracle_carried: bool,
-    oracle_process_ticks: u16,
-    oracle_processed: u32,
-    oracle_hits: u32,
+    oracle_data: u32,
+    oracle_bug_hits: u32,
     logs: VecDeque<(String, bool)>,
     active_boss: String,
 }
@@ -442,10 +439,8 @@ impl Default for GameState {
             oracle_hero_x: 104,
             oracle_drops: Vec::new(),
             oracle_spawned: 0,
-            oracle_carried: false,
-            oracle_process_ticks: 0,
-            oracle_processed: 0,
-            oracle_hits: 0,
+            oracle_data: 0,
+            oracle_bug_hits: 0,
             logs: VecDeque::new(),
             active_boss: String::new(),
         }
@@ -458,8 +453,6 @@ impl GameState {
             self.oracle_hero_x = 104;
             self.oracle_drops.clear();
             self.oracle_spawned = 0;
-            self.oracle_carried = false;
-            self.oracle_process_ticks = 0;
         }
         self.screen = screen;
         self.screen_ticks = 0;
@@ -552,8 +545,8 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
 }
 
 fn begin_quiz_run(state: &mut GameState) {
-    state.oracle_processed = 0;
-    state.oracle_hits = 0;
+    state.oracle_data = 0;
+    state.oracle_bug_hits = 0;
     state.quiz = Some(QuizRun {
         question: 0,
         completed_batches: 0,
@@ -984,55 +977,33 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
             let index = state.oracle_spawned as usize;
             state.oracle_drops.push(OracleDrop {
                 x: lanes[index % lanes.len()],
-                y: 57,
+                y: 30,
                 kind: if index.is_multiple_of(2) {
                     OracleDropKind::Data
                 } else {
-                    OracleDropKind::Glitch
+                    OracleDropKind::Bug
                 },
             });
             state.oracle_spawned = state.oracle_spawned.saturating_add(1);
         }
-        let can_catch = state.held.contains(&Button::Up) && !state.oracle_carried;
         let hero_x = state.oracle_hero_x;
-        let mut caught_data = false;
-        let mut glitch_hits = 0;
+        let mut data_hits = 0;
+        let mut bug_hits = 0;
         state.oracle_drops.retain_mut(|drop| {
             drop.y += 1;
             let overlaps_hero = drop.x >= hero_x - 4 && drop.x <= hero_x + 28;
-            if can_catch
-                && !caught_data
-                && drop.kind == OracleDropKind::Data
-                && drop.y >= ORACLE_CATCH_Y
-                && overlaps_hero
-            {
-                caught_data = true;
-                false
-            } else if drop.kind == OracleDropKind::Glitch
-                && drop.y >= ORACLE_CATCH_Y
-                && overlaps_hero
-            {
-                glitch_hits += 1;
+            if drop.y >= ORACLE_COLLISION_Y && overlaps_hero {
+                match drop.kind {
+                    OracleDropKind::Data => data_hits += 1,
+                    OracleDropKind::Bug => bug_hits += 1,
+                }
                 false
             } else {
                 drop.y < 128
             }
         });
-        state.oracle_hits = state.oracle_hits.saturating_add(glitch_hits);
-        if caught_data {
-            state.oracle_carried = true;
-            state.oracle_process_ticks = 0;
-        }
-        if state.oracle_carried && state.held.contains(&Button::Down) {
-            state.oracle_process_ticks += 1;
-            if state.oracle_process_ticks >= ORACLE_PROCESS_TICKS {
-                state.oracle_carried = false;
-                state.oracle_process_ticks = 0;
-                state.oracle_processed = state.oracle_processed.saturating_add(1);
-            }
-        } else if !state.oracle_carried {
-            state.oracle_process_ticks = 0;
-        }
+        state.oracle_data = state.oracle_data.saturating_add(data_hits);
+        state.oracle_bug_hits = state.oracle_bug_hits.saturating_add(bug_hits);
     }
     if matches!(state.screen, Screen::Oracle | Screen::LevelUp) {
         if let Some((cartridge_id, questions)) = state.pending_questions.take() {
@@ -1367,9 +1338,11 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(INK);
     for index in 0..30 {
         let x = ((index * 71 + state.screen_ticks as usize * 2) % WIDTH) as i32;
-        frame.pixel(x, 28 + (index * 29 % 82) as i32, MIST);
+        frame.pixel(x, 25 + (index * 29 % 85) as i32, MIST);
     }
-    frame.centered_text(7, "ORACLE DATAFALL", GOLD, 1);
+    frame.rect(0, 0, WIDTH as i32, 22, NAVY);
+    frame.rect(0, 21, WIDTH as i32, 1, PLUM);
+    frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
     let status = if state.has_unanswered_question() {
         "QUESTION READY"
     } else if state.questions_loading {
@@ -1379,50 +1352,34 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     } else {
         "CONTACTING CLAUDE"
     };
-    frame.centered_text(21, status, SKY, 1);
-    let phase = (state.screen_ticks % 60) / 15;
-    frame.centered_text(34, &".".repeat(phase as usize + 1), GOLD, 1);
+    let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
+    frame.text(211 - status_width, 2, status, SKY, 1);
+    let phase = (state.screen_ticks % 45) / 15;
+    frame.text(216, 2, &".".repeat(phase as usize + 1), GOLD, 1);
     frame.text(
-        5,
-        44,
-        &format!("DATA {:02}", state.oracle_processed),
+        4,
+        13,
+        &format!("DATA {:02}", state.oracle_data.min(99)),
         GREEN,
         1,
     );
-    frame.text(166, 44, &format!("BUG {:02}", state.oracle_hits), RED, 1);
+    frame.centered_text(13, "L/R MOVE", PARCH, 1);
+    frame.text(
+        201,
+        13,
+        &format!("BUG {:02}", state.oracle_bug_hits.min(99)),
+        RED,
+        1,
+    );
     for drop in &state.oracle_drops {
         match drop.kind {
             OracleDropKind::Data => draw_oracle_data(frame, drop.x, drop.y),
-            OracleDropKind::Glitch => draw_oracle_glitch(frame, drop.x, drop.y),
+            OracleDropKind::Bug => draw_oracle_bug(frame, drop.x, drop.y),
         }
-    }
-    if state.oracle_carried {
-        draw_oracle_data(frame, state.oracle_hero_x + 12, 100);
-        frame.outline(state.oracle_hero_x - 2, 89, 28, 5, MIST);
-        let progress = i32::from(state.oracle_process_ticks) * 26 / i32::from(ORACLE_PROCESS_TICKS);
-        frame.rect(state.oracle_hero_x - 1, 90, progress, 3, GREEN);
     }
     frame.rect(0, 132, WIDTH as i32, 28, PLUM);
     frame.rect(0, 128, WIDTH as i32, 4, GREEN);
     draw_hero(frame, state.oracle_hero_x, 111, 1, state);
-    if state.held.contains(&Button::Up) {
-        frame.line(
-            state.oracle_hero_x + 7,
-            118,
-            state.oracle_hero_x + 4,
-            108,
-            PARCH,
-        );
-        frame.line(
-            state.oracle_hero_x + 17,
-            118,
-            state.oracle_hero_x + 20,
-            108,
-            PARCH,
-        );
-    }
-    frame.centered_text(137, "L/R:DODGE  UP:CATCH", PARCH, 1);
-    frame.centered_text(150, "DOWN:PROCESS", MIST, 1);
 }
 
 fn draw_oracle_data(frame: &mut Framebuffer, x: i32, y: i32) {
@@ -1430,7 +1387,7 @@ fn draw_oracle_data(frame: &mut Framebuffer, x: i32, y: i32) {
     frame.rect(x - 1, y - 1, 3, 3, SKY);
 }
 
-fn draw_oracle_glitch(frame: &mut Framebuffer, x: i32, y: i32) {
+fn draw_oracle_bug(frame: &mut Framebuffer, x: i32, y: i32) {
     frame.rect(x - 3, y - 3, 7, 7, RED);
     frame.pixel(x - 2, y - 2, INK);
     frame.pixel(x + 2, y - 2, INK);
@@ -2159,66 +2116,92 @@ mod tests {
     }
 
     #[test]
-    fn oracle_rains_collectible_data_and_hazards_while_waiting() {
+    fn oracle_rains_collectible_data_and_bugs_while_waiting() {
         let mut engine = waiting_oracle_engine();
         for _ in 0..55 {
             engine.update();
         }
 
         let data_pixels = color_pixels_in_region(engine.frame(), GREEN, 0..WIDTH, 40..120);
-        let hazard_pixels = color_pixels_in_region(engine.frame(), RED, 0..WIDTH, 40..120);
+        let bug_pixels = color_pixels_in_region(engine.frame(), RED, 0..WIDTH, 40..120);
         assert!(data_pixels > 0, "no collectible data appeared");
-        assert!(hazard_pixels > 0, "no hazard appeared");
+        assert!(bug_pixels > 0, "no bug appeared");
     }
 
     #[test]
-    fn oracle_catches_data_with_up_and_processes_it_with_down() {
-        fn carried_data_pixels(engine: &GameEngine) -> usize {
-            color_pixels_in_region(engine.frame(), GREEN, 108..125, 92..111)
-        }
-
-        let mut idle = waiting_oracle_engine();
-        let mut processing = waiting_oracle_engine();
-        for engine in [&mut idle, &mut processing] {
-            issue(
-                engine,
-                EngineCommand::Input {
-                    button: Button::Up,
-                    pressed: true,
-                },
-            );
-            for _ in 0..90 {
-                engine.update();
-            }
-            issue(
-                engine,
-                EngineCommand::Input {
-                    button: Button::Up,
-                    pressed: false,
-                },
-            );
-            assert!(carried_data_pixels(engine) > 0, "data was not caught");
-        }
-
-        idle.update();
+    fn oracle_collects_data_on_contact_without_an_action_button() {
+        let mut collected = waiting_oracle_engine();
+        let mut dodged = waiting_oracle_engine();
         issue(
-            &mut processing,
+            &mut dodged,
             EngineCommand::Input {
-                button: Button::Down,
+                button: Button::Left,
                 pressed: true,
             },
         );
-        for _ in 0..45 {
-            idle.update();
-            processing.update();
+        collected.update();
+        for _ in 0..85 {
+            collected.update();
+            dodged.update();
         }
 
-        assert!(carried_data_pixels(&idle) > 0, "idle hero dropped the data");
-        assert_eq!(carried_data_pixels(&processing), 0);
+        let collected_counter = frame_region(collected.frame(), 0..60, 12..22);
+        let dodged_counter = frame_region(dodged.frame(), 0..60, 12..22);
+        assert_ne!(
+            collected_counter, dodged_counter,
+            "contact with data did not update the data counter"
+        );
     }
 
     #[test]
-    fn oracle_left_and_right_movement_dodges_glitch_collisions() {
+    fn oracle_up_and_down_do_not_change_datafall_gameplay() {
+        for button in [Button::Up, Button::Down] {
+            let mut control = waiting_oracle_engine();
+            let mut pressed = waiting_oracle_engine();
+            issue(
+                &mut pressed,
+                EngineCommand::Input {
+                    button,
+                    pressed: true,
+                },
+            );
+            control.update();
+            for _ in 0..60 {
+                control.update();
+                pressed.update();
+            }
+
+            assert!(
+                pressed.frame() == control.frame(),
+                "{button:?} still changes Oracle Datafall"
+            );
+        }
+    }
+
+    #[test]
+    fn oracle_hud_keeps_title_status_progress_and_counters_at_the_top() {
+        let engine = waiting_oracle_engine();
+        let frame = engine.frame();
+        for (label, color) in [
+            ("title/progress", GOLD),
+            ("Claude status", SKY),
+            ("data counter", GREEN),
+            ("bug counter", RED),
+        ] {
+            assert!(
+                color_pixels_in_region(frame, color, 0..WIDTH, 0..22) > 0,
+                "{label} is missing from the top HUD"
+            );
+        }
+        assert_eq!(
+            color_pixels_in_region(frame, GOLD, 0..WIDTH, 28..55),
+            0,
+            "progress dots are still below the top HUD"
+        );
+    }
+
+    #[test]
+    fn oracle_left_and_right_movement_dodges_bug_collisions() {
         let mut hit = waiting_oracle_engine();
         let mut dodged = waiting_oracle_engine();
 
@@ -2247,8 +2230,8 @@ mod tests {
             dodged.update();
         }
 
-        let hit_counter = frame_region(hit.frame(), 156..236, 43..53);
-        let dodged_counter = frame_region(dodged.frame(), 156..236, 43..53);
+        let hit_counter = frame_region(hit.frame(), 190..240, 12..22);
+        let dodged_counter = frame_region(dodged.frame(), 190..240, 12..22);
         assert!(
             hit_counter != dodged_counter,
             "dodging did not prevent the hit"
