@@ -22,7 +22,9 @@ assert.match(workflow, /Smoke-test Windows executable/);
 assert.match(workflow, /Start-Process .* -WindowStyle Hidden/);
 assert.match(workflow, /--bundles app,dmg --target universal-apple-darwin/);
 assert.match(workflow, /runs-on: macos-15/);
-assert.match(workflow, /pull_request:/);
+assert.doesNotMatch(workflow, /^\s*pull_request:/m);
+assert.match(workflow, /^\s*workflow_dispatch:/m);
+assert.match(workflow, /^\s*push:\n\s+tags:\n\s+- "v\*"/m);
 assert.equal([...workflow.matchAll(/if-no-files-found: error/g)].length, 3);
 
 assert.equal(packageJson.scripts.tauri, "tauri");
