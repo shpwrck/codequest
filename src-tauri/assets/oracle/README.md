@@ -11,7 +11,7 @@ templates selected by `art[].template` in `CODEQUEST.toml`.
 | `oracle-menu` | `gateway.png` | Focus, contained action labels, and controls |
 | `oracle-atelier` | `atelier.png` | Hero, customization values, truthful generation status, focus |
 | `oracle-hero` | `hero-*.png`, `portrait-*.png` | Selected authored colorway with no procedural accessory or weapon overlays |
-| `oracle-sanctum` | `sanctum.png` | Datafall objects, hero movement, counters, status, tier grading |
+| `oracle-sanctum` | `sanctum.png`, `drop-*.png` | Authored Datafall collectibles and hazards, hero movement, counters, status, tier grading |
 | `oracle-trial` | `trial.png` | Question, choices, focus, hearts, score, correctness, review lock |
 | `oracle-ascension` | `ascension.png` | Hero rise, earned tier, level, batch, hold/continue state |
 | `oracle-aftermath` | `aftermath.png` | Defeated hero, final score, earned tier, replay prompt |
@@ -19,7 +19,8 @@ templates selected by `art[].template` in `CODEQUEST.toml`.
 
 The PNG files are the inspectable source assets. Matching `.rgb` files are the
 dependency-free native buffers embedded by the Rust renderer. Hero and portrait
-sprites use matching `.rgba` buffers so they can composite over scene plates.
+sprites and Datafall drops use matching `.rgba` buffers so they can composite
+over scene plates.
 
 Run `scripts/compile-oracle-assets.sh` after changing a PNG. It regenerates the
 runtime buffers and refuses incorrect dimensions or byte counts.
@@ -43,6 +44,9 @@ runtime buffers and refuses incorrect dimensions or byte counts.
 - Authored hero sprites remain visually intact. Name and path are textual
   identity choices, aura selects the authored colorway, and lower-fidelity
   procedural accessories or weapons are not layered over the source art.
+- Datafall uses an authored cyan-and-gold crystal shard for data and an
+  asymmetric magenta corruption glyph for bugs. Their silhouettes, values, and
+  hues remain distinct without procedural boxes or crossed lines.
 - The opening begins without emissive light, introduces cyan, adds gold, and
   reveals the complete Oracle only at the crescendo.
 - Every reachable scene, including the repository chronicle and aftermath, must

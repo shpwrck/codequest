@@ -61,7 +61,7 @@ creates new renderer code.
 - **Latency loop:** Request the first batch as soon as the cartridge is
   accepted, then continue behind the copyright, fanfare, title, menu, and hero
   creation. In Oracle Datafall, move into falling data to collect it on contact
-  while moving away from crossed bugs.
+  while moving away from magenta corruption glyphs.
   Enter the Oracle only when no valid unanswered question is ready; failed
   batches retry there instead of becoming generic trivia.
 
@@ -140,7 +140,7 @@ dependency on generation.
 | Beat | Trigger | Presentation | Player agency | Status |
 |---|---|---|---|---|
 | Arrival | Enter `oracle`. | Reset the hero to center, clear in-flight objects, and show the real Claude status. Keep the existing minimum dwell so instant results do not flash past. | Left/Right begins moving immediately; B returns to the quiz menu; all other controls remain inactive. | Implemented. |
-| Datafall | Request is in flight. | Boxed data packets and crossed bugs fall through deterministic lanes. Data and bug-hit counters persist across Oracle visits in the current quiz run. | Move into data to collect it automatically; move away from bugs. | Implemented. |
+| Datafall | Request is in flight. | Authored cyan-and-gold crystal shards and asymmetric magenta corruption glyphs fall through deterministic lanes. Data and bug-hit counters persist across Oracle visits in the current quiz run. | Move into data to collect it automatically; move away from bugs. | Implemented. |
 | Clouded vision | A batch returns empty or invalid. | `CLAUDE RETRYING` distinguishes the real retry delay without a fake percentage. Falling-object play continues. | Left/Right remain available. | Implemented. |
 | Vision ready | A valid unanswered question exists. | `QUESTION READY` may appear during the minimum dwell, then the scene transitions automatically. | No confirmation required; held D-pad inputs cannot answer the quiz. | Implemented. |
 | Long wait | Scrying continues beyond the normal beat. | The same deterministic play loop continues under truthful status copy, with no invented scan steps. | Keep playing until the question arrives. | Implemented. |
@@ -207,7 +207,8 @@ and Claude retries.
 
 ### `consult-oracle`
 
-- **Decision:** Choose a lane, dodge crossed bugs, and collide with boxed data.
+- **Decision:** Choose a lane, dodge corruption glyphs, and collide with crystal
+  data shards.
 - **Inputs:** Left and Right move. B returns to the quiz menu. Up, Down, A,
   Start, and shoulders are inactive.
 - **Rules:** Drops use deterministic lanes and alternate data/bug types. Data
@@ -265,7 +266,7 @@ and Claude retries.
 | `menu-frame` | UI | `quiz-menu` | Carry the cathedral/rune language into focused and idle menu states. | Focus differs by pointer, shape, and color; no unowned empty space. | `oracle-menu` implemented. |
 | `character-frame` | UI/scene | `character-creation` | Stage the customizable hero inside the same world with centered name, path, and aura rows plus loading, retry, and ready states. | Labels and values remain native-scale and centered in their measured interiors; status is truthful. | `oracle-atelier` implemented. |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run with authored aura colorways plus idle, dodge, reward, and defeat variants. | Consistent silhouette across palettes/backgrounds; no procedural accessory or weapon overlays. | `oracle-hero` implemented with authored colorways, portrait, and defeat variants. |
-| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, ready, and B-back as one place: moving hero, boxed packets, crossed bugs, counters, and a crest that reflects run tier. | Fits 240×160; objects differ by shape and color; Oracle/loading information stays in the top header while gameplay counters and move/back controls stay in the bottom strip. | `oracle-sanctum` implemented with three visual tiers. |
+| `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, ready, and B-back as one place: moving hero, authored data shards, corruption glyphs, counters, and a crest that reflects run tier. | Fits 240×160; sprites stay inside the playfield and differ by silhouette, value, and hue; Oracle/loading information stays in the top header while gameplay counters and move/back controls stay in the bottom strip. | `oracle-sanctum` implemented with authored drop sprites and three visual tiers. |
 | `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | `oracle-trial` implemented with shaped focus and explicit correct/wrong labels. |
 | `reward-frame` | Scene/UI | `level-up` | Telegraph the threshold, celebrate it once, and establish the new Oracle-bond baseline. | No rapid full-background flashing; tier and reward remain readable. | `oracle-ascension` implemented with tiered crest and readable hold. |
 | `result-frame` | Scene/UI | `game-over` | Resolve the run with hero state, final score, level, completed crest, and an obvious reset/replay path. | Defeat is clear without erasing earned progress; all accepted replay inputs are visible. | `oracle-aftermath` implemented with preserved tier and defeated hero. |

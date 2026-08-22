@@ -52,4 +52,18 @@ for portrait in "$asset_dir"/portrait-*.png; do
   }
 done
 
+for drop in "$asset_dir"/drop-*.png; do
+  dimensions=$(magick identify -format '%wx%h' "$drop")
+  [[ "$dimensions" == "16x16" ]] || {
+    echo "$(basename "$drop") must be 16x16, got $dimensions" >&2
+    exit 1
+  }
+  magick "$drop" -depth 8 "rgba:${drop%.png}.rgba"
+  bytes=$(wc -c < "${drop%.png}.rgba")
+  [[ "$bytes" -eq 1024 ]] || {
+    echo "$(basename "${drop%.png}.rgba") must be 1024 bytes, got $bytes" >&2
+    exit 1
+  }
+done
+
 echo "Oracle assets compiled at 240x160."

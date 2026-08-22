@@ -725,10 +725,19 @@ fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
     tauri::ipc::Response::new(state.0.frame())
 }
 
+fn environment_flag_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let question_loader: engine::QuestionLoader = Arc::new(|path, level, count| {
-        if std::env::var("CQA_NO_AI").is_ok() {
+        if environment_flag_enabled(std::env::var("CQA_NO_AI").ok().as_deref()) {
             return Vec::new();
         }
         generate_and_save_questions(std::path::Path::new(&path), level, count)
@@ -761,6 +770,17 @@ pub fn run() {
 #[cfg(test)]
 mod question_policy_tests {
     use super::*;
+
+    #[test]
+    fn no_ai_flag_requires_an_explicit_truthy_value() {
+        for enabled in ["1", "true", "TRUE", "yes", "on", " On "] {
+            assert!(environment_flag_enabled(Some(enabled)), "{enabled}");
+        }
+        for disabled in ["0", "false", "no", "off", "", "anything-else"] {
+            assert!(!environment_flag_enabled(Some(disabled)), "{disabled}");
+        }
+        assert!(!environment_flag_enabled(None));
+    }
 
     fn temporary_git_repo() -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()

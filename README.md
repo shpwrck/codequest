@@ -79,7 +79,8 @@ invariants, and tradeoffs. The prompt and accepted-output policy live in
 `src-tauri/src/lib.rs`: file and repository trivia is rejected, questions
 must fit four 37-character lines, and each of four distinct choices must fit
 35 characters. Set `CQA_NO_AI=1` to disable generation for diagnostics (the
-Oracle will continue waiting), or `CQA_CLAUDE_MODEL` to select the model.
+Oracle will continue waiting); `0`, `false`, `no`, and `off` leave generation
+enabled. Set `CQA_CLAUDE_MODEL` to select the model.
 Quest-battle commands are selected from the Rust-derived cartridge quest list
 and are started, streamed, and stopped by the Bevy runtime.
 

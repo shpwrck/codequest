@@ -117,7 +117,7 @@ id = "oracle-sanctum"
 kind = "scene"
 summary = "A readable falling-object playfield that makes question generation feel active."
 template = "oracle-sanctum"
-requirements = ["Supports the customized hero moving across the full playfield.", "Distinguishes collectible packets from crossed bugs by silhouette and color.", "Reserves a top quiz header for the title, Claude status, and animated dots.", "Reserves a bottom game strip for counters plus move and B-back prompts.", "Has clear loading, retry, ready, and safe-exit states.", "Reflects the current Initiate, Adept, or Oracle-bound presentation tier."]
+requirements = ["Supports the customized hero moving across the full playfield.", "Uses authored cyan-and-gold crystal shards for data and asymmetric magenta corruption glyphs for bugs; no procedural boxes or crossed lines.", "Keeps every falling sprite contained within the live playfield and distinct by silhouette, value, and hue.", "Reserves a top quiz header for the title, Claude status, and animated dots.", "Reserves a bottom game strip for counters plus move and B-back prompts.", "Has clear loading, retry, ready, and safe-exit states.", "Reflects the current Initiate, Adept, or Oracle-bound presentation tier."]
 
 [[art]]
 id = "quiz-frame"

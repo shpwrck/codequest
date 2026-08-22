@@ -54,10 +54,11 @@ palette to otherwise sparse geometry.
    Measure the usable interior from the actual plate; do not substitute the
    framebuffer center or an estimated outer border. Preview the real manifest
    title and representative production provenance, not only short fixture text.
-10. Compare every runtime-drawn ornament against the authored plate at native
-    resolution. Remove accessory, weapon, particle, or badge overlays that do
-    not meet the same material detail, cluster discipline, and silhouette
-    quality; customization metadata does not require a visible sprite overlay.
+10. Compare every runtime-drawn ornament, collectible, and hazard against the
+    authored plate at native resolution. Remove accessory, weapon, particle,
+    badge, collectible, or hazard overlays that do not meet the same material
+    detail, cluster discipline, and silhouette quality; customization metadata
+    does not require a visible sprite overlay.
 
 ## Progression rule
 

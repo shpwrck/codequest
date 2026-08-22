@@ -23,6 +23,8 @@ const HERO_SPRITE_HEIGHT: usize = 36;
 const HERO_SPRITE_BYTES: usize = HERO_SPRITE_WIDTH * HERO_SPRITE_HEIGHT * 4;
 const HERO_PORTRAIT_SIZE: usize = 24;
 const HERO_PORTRAIT_BYTES: usize = HERO_PORTRAIT_SIZE * HERO_PORTRAIT_SIZE * 4;
+const DROP_SPRITE_SIZE: usize = 16;
+const DROP_SPRITE_BYTES: usize = DROP_SPRITE_SIZE * DROP_SPRITE_SIZE * 4;
 pub const QUIZ_QUESTION_COLUMNS: usize = 37;
 pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 35;
@@ -91,6 +93,10 @@ const ORACLE_PORTRAITS: [&[u8; HERO_PORTRAIT_BYTES]; 5] = [
     include_bytes!("../assets/oracle/portrait-amber.rgba"),
     include_bytes!("../assets/oracle/portrait-violet.rgba"),
 ];
+
+const ORACLE_DATA_DROP: &[u8; DROP_SPRITE_BYTES] =
+    include_bytes!("../assets/oracle/drop-data.rgba");
+const ORACLE_BUG_DROP: &[u8; DROP_SPRITE_BYTES] = include_bytes!("../assets/oracle/drop-bug.rgba");
 
 #[derive(Clone, Copy)]
 struct Color(u8, u8, u8);
@@ -2183,16 +2189,27 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
 }
 
 fn draw_oracle_data(frame: &mut Framebuffer, x: i32, y: i32) {
-    frame.outline(x - 4, y - 4, 9, 9, GREEN);
-    frame.rect(x - 1, y - 1, 3, 3, SKY);
+    let offset = DROP_SPRITE_SIZE as i32 / 2;
+    frame.blit_rgba(
+        ORACLE_DATA_DROP,
+        DROP_SPRITE_SIZE,
+        DROP_SPRITE_SIZE,
+        x - offset,
+        y - offset,
+        1,
+    );
 }
 
 fn draw_oracle_bug(frame: &mut Framebuffer, x: i32, y: i32) {
-    frame.rect(x - 3, y - 3, 7, 7, RED);
-    frame.pixel(x - 2, y - 2, INK);
-    frame.pixel(x + 2, y - 2, INK);
-    frame.line(x - 5, y - 5, x + 5, y + 5, RED);
-    frame.line(x + 5, y - 5, x - 5, y + 5, RED);
+    let offset = DROP_SPRITE_SIZE as i32 / 2;
+    frame.blit_rgba(
+        ORACLE_BUG_DROP,
+        DROP_SPRITE_SIZE,
+        DROP_SPRITE_SIZE,
+        x - offset,
+        y - offset,
+        1,
+    );
 }
 
 fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
@@ -3911,10 +3928,21 @@ mod tests {
             engine.update();
         }
 
-        let data_pixels = color_pixels_in_region(engine.frame(), GREEN, 0..WIDTH, 40..120);
-        let bug_pixels = color_pixels_in_region(engine.frame(), RED, 0..WIDTH, 40..120);
-        assert!(data_pixels > 0, "no collectible data appeared");
-        assert!(bug_pixels > 0, "no bug appeared");
+        let state = engine.app.world().resource::<GameState>();
+        assert!(
+            state
+                .oracle_drops
+                .iter()
+                .any(|drop| drop.kind == OracleDropKind::Data),
+            "no collectible data appeared"
+        );
+        assert!(
+            state
+                .oracle_drops
+                .iter()
+                .any(|drop| drop.kind == OracleDropKind::Bug),
+            "no bug appeared"
+        );
     }
 
     #[test]
@@ -5118,6 +5146,18 @@ mod tests {
             }),
             questions_loading: true,
             screen_ticks: 90,
+            oracle_drops: vec![
+                OracleDrop {
+                    x: 82,
+                    y: 58,
+                    kind: OracleDropKind::Data,
+                },
+                OracleDrop {
+                    x: 158,
+                    y: 78,
+                    kind: OracleDropKind::Bug,
+                },
+            ],
             ..Default::default()
         };
 
@@ -5169,6 +5209,54 @@ mod tests {
             "every reachable scene needs its own authored composition"
         );
         assert!(previews.iter().all(|frame| frame.len() == FRAME_BYTES));
+    }
+
+    #[test]
+    fn oracle_drop_sprites_are_authored_distinct_and_contained() {
+        assert_ne!(ORACLE_DATA_DROP, ORACLE_BUG_DROP);
+
+        for (name, sprite) in [
+            ("data", ORACLE_DATA_DROP.as_slice()),
+            ("bug", ORACLE_BUG_DROP.as_slice()),
+        ] {
+            let visible_pixels = sprite.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+            let bright_pixels = sprite
+                .chunks_exact(4)
+                .filter(|pixel| {
+                    pixel[3] > 0 && pixel[..3].iter().copied().max().unwrap_or(0) >= 128
+                })
+                .count();
+            assert!(
+                visible_pixels >= 45,
+                "the {name} sprite needs a readable authored silhouette"
+            );
+            assert!(
+                bright_pixels >= 20,
+                "the {name} sprite needs a high-contrast luminous core"
+            );
+        }
+
+        let playfield = LayoutBounds {
+            x: 0,
+            y: 15,
+            width: WIDTH as i32,
+            height: 128,
+        };
+        let offset = DROP_SPRITE_SIZE as i32 / 2;
+        for x in [24, 54, 82, 112, 142, 210] {
+            for y in [30, 127] {
+                let drop = LayoutBounds {
+                    x: x - offset,
+                    y: y - offset,
+                    width: DROP_SPRITE_SIZE as i32,
+                    height: DROP_SPRITE_SIZE as i32,
+                };
+                assert!(
+                    bounds_contains(playfield, drop),
+                    "drop at ({x}, {y}) exceeds the sanctum playfield"
+                );
+            }
+        }
     }
 
     #[test]
