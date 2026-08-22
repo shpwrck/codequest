@@ -23,6 +23,11 @@ When the request includes polish, finishing, animation, sound, game feel, or
 progression, also read `references/polish.md` in this skill completely before
 editing the design.
 
+When the request creates, replaces, or judges visual assets, also read
+`references/visual-floor.md` completely. Treat repository-owned native template
+plates as the acceptance floor; a procedural palette or glow treatment does not
+meet an illustrated asset-backed reference.
+
 If the repository contract differs from examples in this skill, the repository
 contract wins. Never invent fields or game types that the current schema rejects.
 
@@ -95,6 +100,11 @@ Do not claim an asset exists merely because the design names it. If the user
 asks to generate art, invoke the available image-generation workflow separately
 and update the ledger with the actual output path and status.
 
+When the contract supports `art[].template`, prefer a repository-owned built-in
+template that satisfies the scene before proposing a new renderer. Treat a
+typed built-in template as configured/executable presentation; art entries with
+no template remain production metadata.
+
 ### 6. Run the whole-game polish audit
 
 For a polish or finishing pass, audit every reachable scene—including credits,
@@ -115,13 +125,16 @@ Classify each important element as:
 
 - Implemented: verified in current code or behavior
 - Configured/executable: a schema-v2 scene handler or transition the engine runs
-- Configured/metadata: a mechanic or art requirement retained for production
+- Configured/executable presentation: a referenced built-in `art[].template`
+- Configured/metadata: a mechanic or template-less art requirement retained
+  for production
 - Proposed: requires engine/schema/art work
 
 Schema v2 compiles `game.start_scene`, scene handlers, and semantic transitions
 into the Bevy engine's finite-state machine. Handlers are trusted built-in
 behaviors; the manifest can reorder or reuse them but cannot define arbitrary
-code or create a new renderer. Mechanic and art tables remain validated design
+code or create a new renderer. Typed art templates select only renderers shipped
+with CODE QUEST; mechanics and template-less art remain validated design
 metadata. Schema v1 remains compatible metadata and uses the built-in flow.
 
 When the desired game type is unsupported, finish the design brief but do not
@@ -142,9 +155,10 @@ production status, and implementation gaps; the manifest is the stable graph
 the engine can validate. Preserve unrelated existing design decisions and show
 material changes clearly.
 
-When the runtime contract has no dedicated sound or presentation schema, retain
-those needs as referenced production entries (for example `art.kind = "audio"`)
-instead of inventing fields. State plainly that metadata does not load assets.
+When the runtime contract has no dedicated sound schema, retain sound needs as
+referenced production entries (for example `art.kind = "audio"`) instead of
+inventing fields. State plainly that metadata does not play audio. Do not use a
+visual `template` name to imply sound playback.
 
 ## Validate before handoff
 
@@ -160,6 +174,19 @@ tests from `src-tauri/`:
 ```bash
 cargo test codequest --lib
 ```
+
+When built-in visual templates change, emit and inspect every Oracle scene at
+native resolution before handoff:
+
+```bash
+CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
+  cargo test --manifest-path src-tauri/Cargo.toml \
+  oracle_templates_produce_nine_distinct_native_scene_frames --lib
+```
+
+When the repository includes `scripts/compile-oracle-assets.sh`, run it before
+the preview test so inspectable PNG sources and embedded runtime buffers cannot
+drift.
 
 Then perform a traceability pass:
 

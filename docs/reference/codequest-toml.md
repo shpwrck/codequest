@@ -23,7 +23,8 @@ cannot drift without failing verification.
 | `game.start_scene` | Names the first scene in the executable v2 machine. |
 | `scenes[].handler` | Selects a trusted Rust scene implementation. It does not load code from the cartridge. |
 | `scenes[].transitions` | Routes semantic engine signals to target scenes, with optional timing gates. |
-| `mechanics`, `art` | Validated design and production requirements referenced by scenes; they do not dynamically create code or assets. |
+| `mechanics` | Validated design requirements referenced by scenes; they do not dynamically create code. |
+| `art` | Validated production requirements. An optional typed `template` selects a safe renderer asset built into CODE QUEST; entries without it remain metadata. |
 
 Without `CODEQUEST.toml`, the engine builds the same finite-state machine from
 its quiz or quest template. A repository with `CODEQUEST.md` uses the legacy
@@ -140,16 +141,48 @@ feedback = ["Reveal correctness immediately."]
 
 ## Art requirements
 
-Art entries name production needs without coupling the contract to a particular
-generation or asset pipeline. `kind` is author-defined and `requirements`
-defaults to an empty list.
+Art entries name production needs. `kind` is author-defined, `requirements`
+defaults to an empty list, and the optional `template` field selects a trusted
+visual template compiled into the application. A cartridge can choose and reuse
+these templates, but cannot provide executable drawing code or read arbitrary
+asset paths.
 
 ```toml
 [[art]]
 id = "quiz-frame"
 kind = "ui"
 summary = "Question, answer, score, streak, and heart presentation."
+template = "oracle-trial"
 requirements = ["Fits 240x160.", "Keeps focus visible."]
+```
+
+The built-in Oracle template catalog is:
+
+- `oracle-chronicle`
+- `oracle-awakening`
+- `oracle-title`
+- `oracle-menu`
+- `oracle-atelier`
+- `oracle-hero`
+- `oracle-sanctum`
+- `oracle-trial`
+- `oracle-ascension`
+- `oracle-aftermath`
+- `oracle-progression`
+
+Scene handlers activate a visual template only when the current scene references
+the corresponding art entry. `oracle-hero` and `oracle-progression` are shared
+systems: once selected by the cartridge, they preserve the chosen hero and
+Initiate/Adept/Oracle-bound visual tier across the scenes that use them. Unknown
+template names are rejected instead of falling back silently.
+
+Renderer changes can emit all nine Oracle scenes as native 240×160 PPM files
+for visual review without packaging the application:
+
+```bash
+CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
+  cargo test --manifest-path src-tauri/Cargo.toml \
+  oracle_templates_produce_nine_distinct_native_scene_frames --lib
 ```
 
 ## Schema v1 compatibility
@@ -165,6 +198,7 @@ V1 cannot use `handler` or `transitions`. V2 cannot use `next`.
 - `game.type` must be `quiz` or `quest`.
 - IDs cannot be blank or duplicated within their category.
 - All scene, mechanic, and art references must resolve.
+- `art[].template`, when present, must name a built-in visual template.
 - Every v2 scene must be reachable from `game.start_scene`.
 - V2 handlers must belong to the selected game family, transitions must use a
   signal their handler emits, and duplicate signal routes are rejected.

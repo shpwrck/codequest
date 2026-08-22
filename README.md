@@ -53,8 +53,9 @@ requires ejecting first — remove and insert animations included.
 **Game modes.** A repo may declare a versioned `CODEQUEST.toml` to select
 `quiz` or `quest` mode, override its cartridge title, and define the finite-state
 scene graph that the Bevy engine executes. Each scene chooses a trusted built-in
-handler and routes its semantic events to other scenes; mechanics and art remain
-linked design requirements. This repository's root
+handler and routes its semantic events to other scenes. Mechanics remain linked
+design requirements, while typed art templates can select trusted built-in
+renderers. This repository's root
 [`CODEQUEST.toml`](CODEQUEST.toml) makes CODE QUEST itself the reference
 cartridge for exercising that contract. See the
 [v2 contract](docs/reference/codequest-toml.md), its
@@ -76,9 +77,10 @@ carry into a newly loaded question. Generated questions
 cover the project's purpose, architecture, responsibilities, interactions,
 invariants, and tradeoffs. The prompt and accepted-output policy live in
 `src-tauri/src/lib.rs`: file and repository trivia is rejected, questions
-must fit four 37-character lines, and each of four distinct choices must fit
-35 characters. Set `CQA_NO_AI=1` to disable generation for diagnostics (the
-Oracle will continue waiting), or `CQA_CLAUDE_MODEL` to select the model.
+must fit four 31-character lines, and each of four distinct choices must fit
+31 characters. Set `CQA_NO_AI=1` to disable generation for diagnostics (the
+Oracle will continue waiting); `0`, `false`, `no`, and `off` leave generation
+enabled. Set `CQA_CLAUDE_MODEL` to select the model.
 Quest-battle commands are selected from the Rust-derived cartridge quest list
 and are started, streamed, and stopped by the Bevy runtime.
 
@@ -211,5 +213,5 @@ Verify a change by rebuilding and re-running the smoke test in
 `docs/runbooks/headless-gui-smoke-test/`, which drives the gameplay loop without
 touching the desktop.
 
-Engine status: playable end to end, with deliberately minimal procedural art
-and room for production polish.
+Engine status: playable end to end, with asset-backed Oracle scene templates,
+native 240×160 hero sprites, staged opening luminance, and live FSM-owned UI.

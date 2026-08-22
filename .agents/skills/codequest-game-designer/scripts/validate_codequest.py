@@ -28,7 +28,20 @@ SCENE_KEYS = {
 }
 TRANSITION_KEYS = {"signal", "target", "after_ticks"}
 MECHANIC_KEYS = {"id", "summary", "inputs", "rules", "feedback"}
-ART_KEYS = {"id", "kind", "summary", "requirements"}
+ART_KEYS = {"id", "kind", "summary", "template", "requirements"}
+VISUAL_TEMPLATES = {
+    "oracle-chronicle",
+    "oracle-awakening",
+    "oracle-title",
+    "oracle-menu",
+    "oracle-atelier",
+    "oracle-hero",
+    "oracle-sanctum",
+    "oracle-trial",
+    "oracle-ascension",
+    "oracle-aftermath",
+    "oracle-progression",
+}
 HANDLER_SIGNALS = {
     "repository-credits": {"continue", "elapsed"},
     "opening-fanfare": {"continue", "elapsed"},
@@ -216,6 +229,10 @@ def validate(config: dict[str, Any]) -> tuple[int, int, int]:
         require_keys(item, ART_KEYS, location)
         require_text(item.get("kind"), f"{location}.kind")
         require_text(item.get("summary"), f"{location}.summary")
+        if "template" in item:
+            template = require_text(item["template"], f"{location}.template")
+            if template not in VISUAL_TEMPLATES:
+                raise ContractError(f"{location}.template `{template}` is not built in")
         string_list(item, "requirements", location)
 
     if schema_version == 2:

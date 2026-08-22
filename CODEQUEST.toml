@@ -37,10 +37,10 @@ feedback = ["Highlight the current choice by pointer, shape, and color.", "Use d
 
 [[mechanics]]
 id = "customize-hero"
-summary = "Choose the hero name, class, and visual style before beginning a run."
+summary = "Choose the hero name, path, and aura before beginning a run."
 inputs = ["d-pad", "a", "b", "start"]
 rules = ["Each row edits one hero trait.", "The selected hero persists for the run."]
-feedback = ["Update the hero preview immediately.", "Pair each changed trait with one short response variant and reserve the Oracle cadence for final confirmation."]
+feedback = ["Update each identity label immediately; aura changes the authored hero colorway without layering procedural equipment over it.", "Pair each changed trait with one short response variant and reserve the Oracle cadence for final confirmation."]
 
 [[mechanics]]
 id = "consult-oracle"
@@ -74,66 +74,77 @@ feedback = ["Show final score, level, and earned crest before prompting.", "Use 
 id = "copyright-card"
 kind = "ui"
 summary = "A copyright-style provenance card for repository authors and development history."
-requirements = ["Fits repository title, up to three credited author lines, and earliest-to-latest commit dates inside 240x160.", "Uses the same rune-and-circuit frame language as gameplay while remaining deliberately dormant with no emissive glow.", "Uses explicit copyright wording only when supported by repository metadata.", "Supports missing provenance and a second page for additional authors without shrinking body text.", "Owns readable reveal and skip states rather than behaving like an unstyled disclaimer."]
+template = "oracle-chronicle"
+requirements = ["Fits repository title, up to three credited author lines, and earliest-to-latest commit dates inside 240x160.", "Uses the same rune-and-circuit frame language as gameplay while remaining deliberately dormant with no emissive glow.", "Uses explicit copyright wording only when supported by repository metadata.", "Supports missing provenance without shrinking body text.", "Owns readable reveal and skip states rather than behaving like an unstyled disclaimer."]
 
 [[art]]
 id = "opening-fanfare"
 kind = "scene-vfx"
 summary = "An original code-fantasy opening that turns repository history into spectacle before the title appears."
+template = "oracle-awakening"
 requirements = ["Uses high-contrast cathedral and sigil silhouettes, a commit-graph constellation, and an Oracle sigil rather than borrowed characters or layouts.", "Begins with no emissive glow, introduces one cyan node, propagates cyan and gold in stages, and reserves maximum contrast for the complete Oracle at the crescendo.", "Completes in five to seven seconds at 60 fps.", "Has a reduced-motion variant without full-frame flashes.", "Hands the Oracle motif to the title without sharing or overlaying the fanfare frame."]
 
 [[art]]
 id = "title-mark"
 kind = "logo"
 summary = "A readable pixel-art title treatment for the opening scene."
+template = "oracle-title"
 requirements = ["Fits inside a 240x160 frame.", "Remains legible at native resolution without glow.", "Redraws the Oracle motif at a restrained baseline after the fanfare clears.", "Supports idle and prompt-pulse states without competing with the title."]
 
 [[art]]
 id = "menu-frame"
 kind = "ui"
 summary = "A rune-and-circuit menu frame that carries the Oracle world into navigation."
+template = "oracle-menu"
 requirements = ["Fits 240x160 without empty placeholder regions.", "Shows focus through pointer, shape, and color.", "Supports idle, focused, confirmed, and cancelled states."]
 
 [[art]]
 id = "character-frame"
 kind = "ui-scene"
 summary = "A staged code-fantasy workshop for hero customization and truthful Oracle status."
-requirements = ["Fits hero, equipment, native-scale labels, and controls inside 240x160.", "Supports loading, retry, and ready without fake progress.", "Keeps the hero preview visually dominant over status copy."]
+template = "oracle-atelier"
+requirements = ["Fits the authored hero, centered native-scale identity labels, and controls inside 240x160.", "Supports loading, retry, and ready without fake progress.", "Keeps the hero preview visually dominant over status copy.", "Does not layer lower-fidelity procedural accessories or weapons over the authored hero sprite."]
 
 [[art]]
 id = "hero-set"
 kind = "sprite-set"
-summary = "Modular hero sprites that reflect the customization choices."
-requirements = ["Consistent silhouette across variants.", "Readable on Oracle and quiz backgrounds."]
+summary = "Authored hero sprites whose colorway reflects the selected aura while name and path remain textual identity choices."
+template = "oracle-hero"
+requirements = ["Consistent silhouette across variants.", "Readable on Oracle and quiz backgrounds.", "No procedural accessory or weapon overlays."]
 
 [[art]]
 id = "oracle-sanctum"
 kind = "scene"
 summary = "A readable falling-object playfield that makes question generation feel active."
-requirements = ["Supports the customized hero moving across the full playfield.", "Distinguishes collectible packets from crossed bugs by silhouette and color.", "Reserves a top quiz header for the title, Claude status, and animated dots.", "Reserves a bottom game strip for counters plus move and B-back prompts.", "Has clear loading, retry, ready, and safe-exit states.", "Reflects the current Initiate, Adept, or Oracle-bound presentation tier."]
+template = "oracle-sanctum"
+requirements = ["Supports the customized hero moving across the full playfield.", "Uses authored cyan-and-gold crystal shards for data and asymmetric magenta corruption glyphs for bugs; no procedural boxes or crossed lines.", "Keeps every falling sprite contained within the live playfield and distinct by silhouette, value, and hue.", "Reserves a top quiz header for the title, Claude status, and animated dots.", "Reserves a bottom game strip for counters plus move and B-back prompts.", "Has clear loading, retry, ready, and safe-exit states.", "Reflects the current Initiate, Adept, or Oracle-bound presentation tier."]
 
 [[art]]
 id = "quiz-frame"
 kind = "ui"
 summary = "Question, answer, score, streak, and heart presentation."
-requirements = ["Supports four 35-character choices.", "Keeps focus visible in every state.", "Shows correct, wrong, low-heart, and batch-threshold states through more than color.", "Carries the hero and earned presentation tier without reducing question readability."]
+template = "oracle-trial"
+requirements = ["Supports four lines of 31-character question copy and four 31-character choices with visible spacing between glyphs and right-side breathing room.", "Keeps focus visible in every state.", "Turns the correct choice green and an incorrect committed choice red during review without redundant result words.", "Carries the hero and earned presentation tier without reducing question readability."]
 
 [[art]]
 id = "reward-frame"
 kind = "ui-scene"
 summary = "A tier-aware level-up composition that turns mastery into a visible Oracle-bond change."
+template = "oracle-ascension"
 requirements = ["Telegraphs the threshold, expands the crest once, shows the hero response, and holds the new state before continue.", "Avoids rapid full-background flashing.", "Has a reduced-motion equivalent with the same information and duration."]
 
 [[art]]
 id = "result-frame"
 kind = "ui-scene"
 summary = "A conclusive game-over frame that preserves earned identity and progression while offering replay."
+template = "oracle-aftermath"
 requirements = ["Shows hero defeat, final score, level, and completed crest state.", "Makes A, B, and Start replay behavior visible.", "Makes the progression reset on a new run explicit."]
 
 [[art]]
 id = "run-progression"
 kind = "presentation-system"
 summary = "Initiate, Adept, and Oracle-bound presentation tiers that make quiz progression perceptible through the final result."
+template = "oracle-progression"
 requirements = ["Changes at least two non-numeric channels across a run.", "Carries the earned crest and environment state through Oracle, quiz, level-up, and game-over scenes.", "Resets deterministically when a new run begins."]
 
 [[art]]

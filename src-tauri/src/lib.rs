@@ -513,7 +513,7 @@ fn claude_question_prompt(
     implementation_excerpts: &str,
 ) -> String {
     format!(
-        "You write questions for a retro handheld quiz game about a software project. Generate exactly {count} multiple-choice questions at difficulty level {level} (1=purpose and responsibilities, 3=component interactions and tradeoffs, 5=subtle invariants and design rationale).\n\nCONCEPTS ONLY: test the project's architecture, purpose, domain model, component responsibilities, interactions, invariants, tradeoffs, design rationale, or enduring behavior. Every question must still make sense if the project were reorganized and all implementation locations changed.\n\nNEVER ask about file names, paths, directories, or extensions; where code lives; repository structure; counts, sizes, or lines; dates or times; branches or commits; authors or contributors; ordering or recency; or any other state-in-time fact. Never use those facts as choices.\n\nDISPLAY LIMITS: each question must wrap into at most 4 lines of 37 characters. Each choice must be at most 35 characters. Return exactly 4 non-empty, distinct choices and exactly one correct answer. Wrong choices must be plausible concepts. Do not truncate words or sentences. Do not repeat questions.\n\nRespond with ONLY a JSON array, no prose and no code fences: [{{\"q\":\"...\",\"choices\":[\"a\",\"b\",\"c\",\"d\"],\"answer\":0}}]\n\nPROJECT: {project_name}\nPROJECT DOCUMENTATION:\n{documentation}\nANONYMIZED IMPLEMENTATION EXCERPTS:\n{implementation_excerpts}",
+        "You write questions for a retro handheld quiz game about a software project. Generate exactly {count} multiple-choice questions at difficulty level {level} (1=purpose and responsibilities, 3=component interactions and tradeoffs, 5=subtle invariants and design rationale).\n\nCONCEPTS ONLY: test the project's architecture, purpose, domain model, component responsibilities, interactions, invariants, tradeoffs, design rationale, or enduring behavior. Every question must still make sense if the project were reorganized and all implementation locations changed.\n\nNEVER ask about file names, paths, directories, or extensions; where code lives; repository structure; counts, sizes, or lines; dates or times; branches or commits; authors or contributors; ordering or recency; or any other state-in-time fact. Never use those facts as choices.\n\nDISPLAY LIMITS: each question must wrap into at most 4 lines of 31 characters. Each choice must be at most 31 characters. Return exactly 4 non-empty, distinct choices and exactly one correct answer. Wrong choices must be plausible concepts. Do not truncate words or sentences. Do not repeat questions.\n\nRespond with ONLY a JSON array, no prose and no code fences: [{{\"q\":\"...\",\"choices\":[\"a\",\"b\",\"c\",\"d\"],\"answer\":0}}]\n\nPROJECT: {project_name}\nPROJECT DOCUMENTATION:\n{documentation}\nANONYMIZED IMPLEMENTATION EXCERPTS:\n{implementation_excerpts}",
     )
 }
 
@@ -725,10 +725,19 @@ fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
     tauri::ipc::Response::new(state.0.frame())
 }
 
+fn environment_flag_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let question_loader: engine::QuestionLoader = Arc::new(|path, level, count| {
-        if std::env::var("CQA_NO_AI").is_ok() {
+        if environment_flag_enabled(std::env::var("CQA_NO_AI").ok().as_deref()) {
             return Vec::new();
         }
         generate_and_save_questions(std::path::Path::new(&path), level, count)
@@ -761,6 +770,17 @@ pub fn run() {
 #[cfg(test)]
 mod question_policy_tests {
     use super::*;
+
+    #[test]
+    fn no_ai_flag_requires_an_explicit_truthy_value() {
+        for enabled in ["1", "true", "TRUE", "yes", "on", " On "] {
+            assert!(environment_flag_enabled(Some(enabled)), "{enabled}");
+        }
+        for disabled in ["0", "false", "no", "off", "", "anything-else"] {
+            assert!(!environment_flag_enabled(Some(disabled)), "{disabled}");
+        }
+        assert!(!environment_flag_enabled(None));
+    }
 
     fn temporary_git_repo() -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
@@ -1306,8 +1326,8 @@ mod question_policy_tests {
         assert!(prompt.contains("CONCEPTS ONLY"));
         assert!(prompt.contains("NEVER ask about file names, paths, directories, or extensions"));
         assert!(prompt.contains("still make sense if the project were reorganized"));
-        assert!(prompt.contains("at most 4 lines of 37 characters"));
-        assert!(prompt.contains("at most 35 characters"));
+        assert!(prompt.contains("at most 4 lines of 31 characters"));
+        assert!(prompt.contains("at most 31 characters"));
         assert!(!prompt.contains("FILES:"));
         assert!(!prompt.contains("COMMIT MESSAGES"));
     }
