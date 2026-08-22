@@ -6,7 +6,7 @@ templates selected by `art[].template` in `CODEQUEST.toml`.
 | Template | Native plate | Live renderer responsibility |
 |---|---|---|
 | `oracle-chronicle` | `chronicle.png` | Repository title, copyright notice, authors, dates, reveal timing |
-| `oracle-awakening` | `awakening.png` | Dormant → cyan → gold → Oracle luminance progression and skip prompt |
+| `oracle-awakening` | `awakening-source.png`, `awakening-signal.png`, `awakening-archive.png`, `awakening-convergence.png`, `awakening.png` | Five-scene source ember → archive answer → memory vault → convergence → Oracle story and skip prompt |
 | `oracle-title` | `gateway.png` | Cartridge title and start prompt |
 | `oracle-menu` | `gateway.png` | Focus, contained action labels, and controls |
 | `oracle-atelier` | `atelier.png` | Hero, customization values, truthful generation status, focus |
@@ -47,14 +47,18 @@ runtime buffers and refuses incorrect dimensions or byte counts.
 - Datafall uses an authored cyan-and-gold crystal shard for data and an
   asymmetric magenta corruption glyph for bugs. Their silhouettes, values, and
   hues remain distinct without procedural boxes or crossed lines.
-- The opening begins without emissive light, introduces cyan, adds gold, and
-  reveals the complete Oracle only at the crescendo.
+- The opening uses five distinct authored compositions. It begins with one
+  restrained cyan ember, opens the archive, carries the code-seer into the
+  memory vault, adds gold at convergence, and reveals the complete Oracle only
+  in `awakening.png` at the crescendo.
 - Every reachable scene, including the repository chronicle and aftermath, must
   meet this floor at native resolution. A procedural palette swap is not an
   acceptable substitute for an illustrated plate.
 
-Generated plates were produced with the built-in image-generation workflow
-using the approved Oracle chamber, confrontation, and quiz references as style
-inputs. Prompts consistently requested: exact 3:2 game content with no device,
-no baked text or state, crisp polished pixel art, the shared material/palette
-language above, and scene-specific empty regions for live UI.
+Generated plates were produced with the built-in image-generation workflow.
+The four new opening plates used `awakening.png` and the preceding story plate
+as strict style and continuity references. Prompts consistently requested:
+exact 3:2 game content with no device, no baked text or state, crisp polished
+pixel art, the same code-seer and shared material/palette language, a quiet
+bottom-right region for the live skip prompt, and maximum white/gold reserved
+for the existing final plate.

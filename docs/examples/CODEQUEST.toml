@@ -19,7 +19,7 @@ id = "play-opening-fanfare"
 summary = "Play a finite original spectacle while first-round question generation continues in the background."
 inputs = ["a", "start"]
 rules = ["The sequence lasts five to seven seconds when unskipped.", "A or Start may skip after the opening impact has been readable for 1.5 seconds.", "Finishing the fanfare does not imply that a question is ready."]
-feedback = ["Begin with a completely dormant cathedral, introduce one cyan commit node, propagate cyan and gold through still-dark sigils, and reserve the complete bright Oracle for the collision crescendo.", "Grow sound from one node pulse to the full Oracle cadence in sync with the luminance arc.", "Provide a reduced-motion version using staged cuts and fades instead of flashes.", "Hand the Oracle motif to a freshly rendered, restrained title frame without leaking fanfare layers across the scene boundary."]
+feedback = ["Follow one code-seer from a dormant source ember through an answering archive, an opened memory vault, cyan-and-gold convergence, and the complete bright Oracle crescendo.", "Give every story beat its own authored 240x160 composition rather than treating one plate as a glow surface.", "Grow sound from one node pulse to the full Oracle cadence in sync with the luminance arc.", "Use clean staged cuts rather than flashes, and hand the Oracle motif to a freshly rendered, restrained title frame without leaking fanfare layers across the scene boundary."]
 
 [[mechanics]]
 id = "begin-from-title"
@@ -78,11 +78,39 @@ template = "oracle-chronicle"
 requirements = ["Fits repository title, up to three credited author lines, and earliest-to-latest commit dates inside 240x160.", "Uses the same rune-and-circuit frame language as gameplay while remaining deliberately dormant with no emissive glow.", "Uses explicit copyright wording only when supported by repository metadata.", "Supports missing provenance without shrinking body text.", "Owns readable reveal and skip states rather than behaving like an unstyled disclaimer."]
 
 [[art]]
+id = "opening-source"
+kind = "scene"
+summary = "A lone code-seer discovers the first cyan source ember in a dormant archive cathedral."
+template = "oracle-awakening"
+requirements = ["Uses an authored 240x160 plate with a small readable code-seer, a deep layered cathedral, and one cyan focal ember.", "Contains no Oracle sigil or gold energy so later beats can earn them.", "Keeps the live skip region visually quiet."]
+
+[[art]]
+id = "opening-signal"
+kind = "scene"
+summary = "The source ember answers through the altar and wakes the nearest archive monoliths."
+template = "oracle-awakening"
+requirements = ["Uses an authored 240x160 plate distinct from the source scene.", "Preserves the code-seer silhouette and cathedral material language while expanding cyan illumination.", "Contains no completed Oracle sigil or gold energy."]
+
+[[art]]
+id = "opening-archive"
+kind = "scene"
+summary = "The archive opens into a canyon of commit constellations and branching memory."
+template = "oracle-awakening"
+requirements = ["Uses an authored 240x160 plate with foreground vault doors, midground bridge, and deep commit-graph background.", "Carries the same code-seer forward and introduces only restrained amber nodes.", "Reads as a new location rather than a brighter copy of the altar scene."]
+
+[[art]]
+id = "opening-convergence"
+kind = "scene"
+summary = "Cyan source energy and gold knowledge meet around the Oracle's still-dark seed."
+template = "oracle-awakening"
+requirements = ["Uses an authored 240x160 circular chamber with cyan entering from the left and restrained gold from the right.", "Shows an incomplete Oracle eye while reserving maximum white and the complete sigil for the next scene.", "Keeps the code-seer and live skip region readable."]
+
+[[art]]
 id = "opening-fanfare"
 kind = "scene-vfx"
-summary = "An original code-fantasy opening that turns repository history into spectacle before the title appears."
+summary = "The existing cyan-and-gold awakening plate resolves the five-scene story at its brightest Oracle climax."
 template = "oracle-awakening"
-requirements = ["Uses high-contrast cathedral and sigil silhouettes, a commit-graph constellation, and an Oracle sigil rather than borrowed characters or layouts.", "Begins with no emissive glow, introduces one cyan node, propagates cyan and gold in stages, and reserves maximum contrast for the complete Oracle at the crescendo.", "Completes in five to seven seconds at 60 fps.", "Has a reduced-motion variant without full-frame flashes.", "Hands the Oracle motif to the title without sharing or overlaying the fanfare frame."]
+requirements = ["Uses high-contrast cathedral and sigil silhouettes, a commit-graph constellation, and a complete Oracle sigil rather than borrowed characters or layouts.", "Reserves maximum contrast for this final beat and reaches it only after four darker authored scenes.", "Completes the full five-scene sequence in six seconds at 60 fps.", "Uses staged cuts without full-frame flashes.", "Hands the Oracle motif to the title without sharing or overlaying the fanfare frame."]
 
 [[art]]
 id = "title-mark"
@@ -198,12 +226,12 @@ after_ticks = 180
 
 [[scenes]]
 id = "opening-fanfare"
-title = "Opening Fanfare"
+title = "The Source Ember"
 kind = "cinematic"
 handler = "opening-fanfare"
-summary = "Complete a short original repository spectacle, then hand off cleanly while question generation continues."
+summary = "A lone code-seer discovers one cyan source ember in the dormant archive cathedral."
 mechanics = ["play-opening-fanfare"]
-art = ["opening-fanfare", "opening-soundscape"]
+art = ["opening-source", "opening-soundscape"]
 
 [[scenes.transitions]]
 signal = "continue"
@@ -212,8 +240,80 @@ after_ticks = 90
 
 [[scenes.transitions]]
 signal = "elapsed"
+target = "archive-answer"
+after_ticks = 96
+
+[[scenes]]
+id = "archive-answer"
+title = "The Archive Answers"
+kind = "cinematic"
+handler = "opening-fanfare"
+summary = "The ember reaches the altar and wakes the nearest archive monoliths."
+mechanics = ["play-opening-fanfare"]
+art = ["opening-signal", "opening-soundscape"]
+
+[[scenes.transitions]]
+signal = "continue"
 target = "title"
-after_ticks = 330
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "memory-vault"
+after_ticks = 66
+
+[[scenes]]
+id = "memory-vault"
+title = "The Memory Vault"
+kind = "cinematic"
+handler = "opening-fanfare"
+summary = "The archive opens into a canyon of commit constellations and branching memory."
+mechanics = ["play-opening-fanfare"]
+art = ["opening-archive", "opening-soundscape"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "title"
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "convergence"
+after_ticks = 66
+
+[[scenes]]
+id = "convergence"
+title = "The Convergence"
+kind = "cinematic"
+handler = "opening-fanfare"
+summary = "Cyan source energy and gold knowledge spiral around the Oracle's still-dark seed."
+mechanics = ["play-opening-fanfare"]
+art = ["opening-convergence", "opening-soundscape"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "title"
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "oracle-awakening"
+after_ticks = 66
+
+[[scenes]]
+id = "oracle-awakening"
+title = "The Oracle Awakens"
+kind = "cinematic"
+handler = "opening-fanfare"
+summary = "The current cyan-and-gold awakening image becomes the earned climax of the story."
+mechanics = ["play-opening-fanfare"]
+art = ["opening-fanfare", "opening-soundscape"]
+
+[[scenes.transitions]]
+signal = "continue"
+target = "title"
+
+[[scenes.transitions]]
+signal = "elapsed"
+target = "title"
+after_ticks = 66
 
 [[scenes]]
 id = "title"

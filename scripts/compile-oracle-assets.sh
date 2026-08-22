@@ -9,7 +9,20 @@ command -v magick >/dev/null || {
   exit 1
 }
 
-plates=(chronicle awakening gateway atelier sanctum trial ascension aftermath)
+plates=(
+  chronicle
+  awakening-source
+  awakening-signal
+  awakening-archive
+  awakening-convergence
+  awakening
+  gateway
+  atelier
+  sanctum
+  trial
+  ascension
+  aftermath
+)
 for plate in "${plates[@]}"; do
   dimensions=$(magick identify -format '%wx%h' "$asset_dir/$plate.png")
   [[ "$dimensions" == "240x160" ]] || {

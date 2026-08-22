@@ -176,8 +176,9 @@ systems: once selected by the cartridge, they preserve the chosen hero and
 Initiate/Adept/Oracle-bound visual tier across the scenes that use them. Unknown
 template names are rejected instead of falling back silently.
 
-Renderer changes can emit all nine Oracle scenes as native 240×160 PPM files
-for visual review without packaging the application:
+Renderer changes can emit all thirteen reachable Oracle scenes—including the
+five-beat opening story—as native 240×160 PPM files for visual review without
+packaging the application:
 
 ```bash
 CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
