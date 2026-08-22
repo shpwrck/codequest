@@ -124,7 +124,7 @@ id = "quiz-frame"
 kind = "ui"
 summary = "Question, answer, score, streak, and heart presentation."
 template = "oracle-trial"
-requirements = ["Supports four lines of 32-character question copy and four 31-character choices with visible spacing between glyphs.", "Keeps focus visible in every state.", "Turns the correct choice green and an incorrect committed choice red during review without redundant result words.", "Carries the hero and earned presentation tier without reducing question readability."]
+requirements = ["Supports four lines of 31-character question copy and four 31-character choices with visible spacing between glyphs and right-side breathing room.", "Keeps focus visible in every state.", "Turns the correct choice green and an incorrect committed choice red during review without redundant result words.", "Carries the hero and earned presentation tier without reducing question readability."]
 
 [[art]]
 id = "reward-frame"

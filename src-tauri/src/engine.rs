@@ -25,7 +25,7 @@ const HERO_PORTRAIT_SIZE: usize = 24;
 const HERO_PORTRAIT_BYTES: usize = HERO_PORTRAIT_SIZE * HERO_PORTRAIT_SIZE * 4;
 const DROP_SPRITE_SIZE: usize = 16;
 const DROP_SPRITE_BYTES: usize = DROP_SPRITE_SIZE * DROP_SPRITE_SIZE * 4;
-pub const QUIZ_QUESTION_COLUMNS: usize = 32;
+pub const QUIZ_QUESTION_COLUMNS: usize = 31;
 pub const QUIZ_QUESTION_ROWS: usize = 4;
 pub const QUIZ_CHOICE_CHARS: usize = 31;
 const QUESTION_BATCH_SIZE: usize = 6;
@@ -5187,8 +5187,15 @@ mod tests {
     #[test]
     fn quiz_copy_reserves_visible_letter_spacing_inside_its_panels() {
         assert_eq!(GLYPH_ADVANCE, GLYPH_WIDTH + 1);
-        assert!(text_width(&"Q".repeat(QUIZ_QUESTION_COLUMNS), 1) <= 192);
+        assert!(text_width(&"Q".repeat(QUIZ_QUESTION_COLUMNS), 1) <= 186);
         assert!(text_width(&"C".repeat(QUIZ_CHOICE_CHARS), 1) <= 196);
+        assert_eq!(
+            wrap_text(
+                "WHY SEPARATE GAME STATE FROM THE DEVICE SHELL?",
+                QUIZ_QUESTION_COLUMNS,
+            ),
+            vec!["WHY SEPARATE GAME STATE FROM", "THE DEVICE SHELL?"]
+        );
     }
 
     #[test]

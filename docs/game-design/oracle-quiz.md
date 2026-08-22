@@ -230,7 +230,7 @@ and Claude retries.
 - **Decision:** Commit to one of four conceptual answers.
 - **Inputs:** D-pad, A, B.
 - **Rules:** Exactly four distinct choices, one correct answer, a maximum of
-  four 32-character question lines, and 31 characters per choice. Wrong costs
+  four 31-character question lines, and 31 characters per choice. Wrong costs
   one heart; correct adds score and streak. After commitment, hold the revealed
   answer for 45 ticks with every input intentionally inactive.
 - **Feedback:** Keep the correct choice visible in green after either result;

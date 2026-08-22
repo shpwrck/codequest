@@ -77,7 +77,7 @@ carry into a newly loaded question. Generated questions
 cover the project's purpose, architecture, responsibilities, interactions,
 invariants, and tradeoffs. The prompt and accepted-output policy live in
 `src-tauri/src/lib.rs`: file and repository trivia is rejected, questions
-must fit four 32-character lines, and each of four distinct choices must fit
+must fit four 31-character lines, and each of four distinct choices must fit
 31 characters. Set `CQA_NO_AI=1` to disable generation for diagnostics (the
 Oracle will continue waiting); `0`, `false`, `no`, and `off` leave generation
 enabled. Set `CQA_CLAUDE_MODEL` to select the model.
