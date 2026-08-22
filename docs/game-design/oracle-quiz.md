@@ -218,7 +218,8 @@ and Claude retries.
   unanswered question exists; empty results retry. No Datafall state affects
   generation, difficulty, quiz score, hearts, or wait duration. A B press exits
   on its input edge and clears the active run, so the wait is never inescapable.
-- **Feedback:** Data uses a boxed silhouette; bugs use a crossed silhouette.
+- **Feedback:** Data uses an authored cyan-and-gold crystal silhouette; bugs
+  use an asymmetric magenta corruption silhouette.
   Keep `ORACLE DATAFALL`, truthful loading/retry/ready text, and animated dots
   in the top 12-pixel quiz header. Keep counters plus move/back controls in the
   bottom game strip. Give data, bug, retry, ready, and back distinct cues while
@@ -229,13 +230,14 @@ and Claude retries.
 - **Decision:** Commit to one of four conceptual answers.
 - **Inputs:** D-pad, A, B.
 - **Rules:** Exactly four distinct choices, one correct answer, a maximum of
-  four 37-character question lines, and 35 characters per choice. Wrong costs
+  four 32-character question lines, and 31 characters per choice. Wrong costs
   one heart; correct adds score and streak. After commitment, hold the revealed
   answer for 45 ticks with every input intentionally inactive.
-- **Feedback:** Keep the correct choice visible after either result. Label
-  correctness in addition to red/green color. Use distinct cursor, commit,
-  correct, wrong, low-heart, and batch-complete cues. Replace the active
-  answer/back prompts with `REVIEW ANSWER` during the input lock.
+- **Feedback:** Keep the correct choice visible in green after either result;
+  show an incorrect committed choice in red. Do not add redundant correct/wrong
+  words. Use visibly spaced glyphs plus distinct cursor, commit, low-heart, and
+  batch-complete cues. Replace the active answer/back prompts with `REVIEW
+  ANSWER` during the input lock.
 
 ### `continue-after-reward`
 
@@ -267,7 +269,7 @@ and Claude retries.
 | `character-frame` | UI/scene | `character-creation` | Stage the customizable hero inside the same world with centered name, path, and aura rows plus loading, retry, and ready states. | Labels and values remain native-scale and centered in their measured interiors; status is truthful. | `oracle-atelier` implemented. |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run with authored aura colorways plus idle, dodge, reward, and defeat variants. | Consistent silhouette across palettes/backgrounds; no procedural accessory or weapon overlays. | `oracle-hero` implemented with authored colorways, portrait, and defeat variants. |
 | `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, ready, and B-back as one place: moving hero, authored data shards, corruption glyphs, counters, and a crest that reflects run tier. | Fits 240×160; sprites stay inside the playfield and differ by silhouette, value, and hue; Oracle/loading information stays in the top header while gameplay counters and move/back controls stay in the bottom strip. | `oracle-sanctum` implemented with authored drop sprites and three visual tiers. |
-| `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and result labels. | Honor text limits; focus and correctness cannot rely on color alone. | `oracle-trial` implemented with shaped focus and explicit correct/wrong labels. |
+| `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, hearts, score, streak, and answer review. | Honor text limits; preserve one pixel between adjacent glyph cells; keep focus shaped while correctness uses concise green/red choice text. | `oracle-trial` implemented with spaced copy, shaped focus, and color-only answer review. |
 | `reward-frame` | Scene/UI | `level-up` | Telegraph the threshold, celebrate it once, and establish the new Oracle-bond baseline. | No rapid full-background flashing; tier and reward remain readable. | `oracle-ascension` implemented with tiered crest and readable hold. |
 | `result-frame` | Scene/UI | `game-over` | Resolve the run with hero state, final score, level, completed crest, and an obvious reset/replay path. | Defeat is clear without erasing earned progress; all accepted replay inputs are visible. | `oracle-aftermath` implemented with preserved tier and defeated hero. |
 | `run-progression` | Presentation system | `oracle`, `quiz`, `level-up`, `game-over` | Select Initiate, Adept, and Oracle-bound frame/crest states so progression survives through the final result. | At least two non-numeric channels change; resets deterministically on a new run. | `oracle-progression` implemented; palette, circuit density, and crest geometry change by level. |
@@ -295,7 +297,7 @@ engine does not load or play them yet.
 | `quiz-menu` | Rune frame and shaped focus for both choices. | Focus moves on input edge. | Navigate, confirm, and cancel cues remain proposed. | Begin and back are explicit; held input cannot double-confirm. | New run previews the Initiate palette and reset. | Visual template implemented/tested; audio proposed. |
 | `character-creation` | Authored hero, centered identity rows, and Oracle status form one staged composition. | Aura changes the authored colorway; identity rows react immediately; begin has one clean handoff. | Trait and begin cues remain proposed. | Every row stays centered and contained; B returns; loading/retry/ready states are truthful. | Establishes identity that remains visible across the run. | Visual template implemented/tested; audio proposed. |
 | `oracle` | Sanctum, playfield, status, counters, controls, and tier crest remain distinct. | Datafall, status changes, and tier motif have owned loops and exits. | Ambience and action cues remain proposed. | Questions-ready enters quiz; B abandons safely; all other controls are intentionally inactive. | Crest, circuit density, and palette reflect all three tiers. | Visual template/progression implemented/tested; audio proposed. |
-| `quiz` | Question, choices, hero token, score, hearts, and tier frame remain readable. | Cursor, commit, 45-tick review hold, correct/wrong, heart loss, and batch threshold have causal timing. | Quiz cues remain proposed. | Result labels replace ambiguous color-only feedback; every automatic outcome routes visibly. | Question concepts deepen and the earned tier persists. | Visual template/result labels implemented/tested; audio proposed. |
+| `quiz` | Question, choices, hero token, score, hearts, and tier frame remain readable with one-pixel glyph spacing. | Cursor, commit, 45-tick review hold, color change, heart loss, and batch threshold have causal timing. | Quiz cues remain proposed. | Green/red answer copy appears without redundant result words; every automatic outcome routes visibly. | Question concepts deepen and the earned tier persists. | Spaced visual template and concise answer review implemented/tested; audio proposed. |
 | `level-up` | Hero and newly expanded crest dominate; level text supports rather than carries reward. | Crest growth → hero rise → one-second hold → continue; stable background avoids flashing. | Reward cadence remains proposed. | A/Start is inactive for 60 ticks, then routes to ready quiz or Oracle wait. | Explicit threshold celebration establishes the new visual baseline. | Visual template/progression implemented/tested; audio proposed. |
 | `game-over` | Defeated hero, final score, level, and earned crest share one conclusive frame. | Energy recedes without erasing the crest; replay resets it on the next run. | Defeat/result/reset cues remain proposed. | The visible A/B/Start prompt returns to menu; the next new run resets all run state. | Shows the exact visual tier reached before reset. | Visual template/progression implemented/tested; audio proposed. |
 
@@ -315,7 +317,7 @@ engine does not load or play them yet.
 | Safe Oracle-to-quiz input boundary | Implemented | A/Start are ignored in Oracle; B exits to the menu; held D-pad controls have no answer action after the automatic transition. |
 | Quiz result and reward input boundaries | Implemented in this pass | The 45-tick answer reveal replaces active controls, and level-up enforces a 60-tick hold before A/Start can leave. |
 | Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
-| Non-color-only result labels and reduced motion | Partially implemented | Correct/wrong labels, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
+| Concise answer review and reduced motion | Partially implemented | Green/red answer copy, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
 | Visual templates selected from manifest | Implemented in this pass | Eleven typed built-in templates are selected by `art[].template`; Oracle templates composite native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
 | Whole-game sound design and playback | Configured/metadata; runtime proposed | Every scene references an audio requirement, but the current engine has no sound asset selection or playback system. |
 | Felt presentation progression | Visual runtime implemented; audio proposed | Initiate, Adept, and Oracle-bound change palette, circuit density, crest geometry, and reward/result presentation; native-frame tests verify a non-numeric final-tier channel. |

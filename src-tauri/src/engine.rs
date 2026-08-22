@@ -25,9 +25,9 @@ const HERO_PORTRAIT_SIZE: usize = 24;
 const HERO_PORTRAIT_BYTES: usize = HERO_PORTRAIT_SIZE * HERO_PORTRAIT_SIZE * 4;
 const DROP_SPRITE_SIZE: usize = 16;
 const DROP_SPRITE_BYTES: usize = DROP_SPRITE_SIZE * DROP_SPRITE_SIZE * 4;
-pub const QUIZ_QUESTION_COLUMNS: usize = 37;
+pub const QUIZ_QUESTION_COLUMNS: usize = 32;
 pub const QUIZ_QUESTION_ROWS: usize = 4;
-pub const QUIZ_CHOICE_CHARS: usize = 35;
+pub const QUIZ_CHOICE_CHARS: usize = 31;
 const QUESTION_BATCH_SIZE: usize = 6;
 const FRAME_TIME: Duration = Duration::from_nanos(16_666_667);
 const ORACLE_HERO_MIN_X: i32 = 8;
@@ -700,24 +700,6 @@ impl Framebuffer {
                 }
             }
             cursor += GLYPH_WIDTH;
-        }
-    }
-
-    fn wrapped_compact_text(
-        &mut self,
-        x: i32,
-        y: i32,
-        text: &str,
-        color: Color,
-        max_chars: usize,
-        max_lines: usize,
-    ) {
-        for (line_no, line) in wrap_text(text, max_chars)
-            .into_iter()
-            .take(max_lines)
-            .enumerate()
-        {
-            self.compact_text(x, y + line_no as i32 * LINE_HEIGHT, &line, color);
         }
     }
 
@@ -2336,7 +2318,7 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
     let Some(question) = cart.questions.get(run.question) else {
         return;
     };
-    frame.wrapped_compact_text(
+    frame.wrapped_text(
         28,
         35,
         &question.question,
@@ -2352,25 +2334,14 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
             draw_asset_focus(frame, 23, y, 204, 20);
         }
         let mut color = if focused { PARCH } else { MIST };
-        let mut label = "";
         if let Some((correct, _)) = run.feedback {
             if index == question.answer {
                 color = GREEN;
-                label = "CORRECT";
             } else if focused && !correct {
                 color = RED;
-                label = "WRONG";
             }
         }
-        let max_choice = if label.is_empty() {
-            QUIZ_CHOICE_CHARS
-        } else {
-            24
-        };
-        frame.compact_text(31, y + 7, &truncate(choice, max_choice), color);
-        if !label.is_empty() {
-            frame.text(173, y + 7, label, color, 1);
-        }
+        frame.text(31, y + 7, &truncate(choice, QUIZ_CHOICE_CHARS), color, 1);
     }
 }
 
@@ -3437,7 +3408,7 @@ mod tests {
             (
                 "quiz longest question line",
                 quiz_question,
-                compact_text_bounds(28, 35, &"Q".repeat(QUIZ_QUESTION_COLUMNS)),
+                text_bounds(28, 35, &"Q".repeat(QUIZ_QUESTION_COLUMNS), 1),
             ),
             (
                 "trial number",
@@ -3463,17 +3434,7 @@ mod tests {
             (
                 "quiz longest choice",
                 quiz_choice,
-                compact_text_bounds(31, 76, &"C".repeat(QUIZ_CHOICE_CHARS)),
-            ),
-            (
-                "quiz feedback choice",
-                quiz_choice,
-                compact_text_bounds(31, 76, &"C".repeat(24)),
-            ),
-            (
-                "quiz feedback label",
-                quiz_choice,
-                text_bounds(173, 76, "CORRECT", 1),
+                text_bounds(31, 76, &"C".repeat(QUIZ_CHOICE_CHARS), 1),
             ),
             (
                 "ascension heading",
@@ -3662,11 +3623,6 @@ mod tests {
                 "atelier status and controls",
                 text_bounds(5, 148, "VISION CLOUDY - RETRYING", 1),
                 text_bounds(174, 148, "START:BIND", 1),
-            ),
-            (
-                "quiz choice and result",
-                compact_text_bounds(31, 76, &"C".repeat(24)),
-                text_bounds(173, 76, "CORRECT", 1),
             ),
             (
                 "trial tier and controls",
@@ -5131,8 +5087,19 @@ mod tests {
 
     #[test]
     fn oracle_templates_produce_nine_distinct_native_scene_frames() {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions[0] = QuizQuestion {
+            question: "WHY SEPARATE GAME STATE FROM THE DEVICE SHELL?".into(),
+            choices: vec![
+                "TO KEEP RESPONSIBILITIES CLEAR".into(),
+                "TO DUPLICATE RUNTIME STATE".into(),
+                "TO HIDE INPUT TRANSITIONS".into(),
+                "TO COUPLE RENDERING TO CSS".into(),
+            ],
+            answer: 0,
+        };
         let mut state = GameState {
-            cartridge: Some(oracle_template_cartridge()),
+            cartridge: Some(cartridge),
             quiz: Some(QuizRun {
                 question: 0,
                 completed_batches: 3,
@@ -5202,6 +5169,12 @@ mod tests {
             previews.push(frame.pixels);
         }
 
+        state.quiz.as_mut().unwrap().selected = 1;
+        state.quiz.as_mut().unwrap().feedback = Some((false, QUIZ_FEEDBACK_TICKS));
+        let mut review = Framebuffer::default();
+        render_oracle_trial(&mut review, &state);
+        maybe_write_preview("07b-trial-review", &review.pixels);
+
         let distinct = previews.iter().collect::<HashSet<_>>();
         assert_eq!(
             distinct.len(),
@@ -5209,6 +5182,13 @@ mod tests {
             "every reachable scene needs its own authored composition"
         );
         assert!(previews.iter().all(|frame| frame.len() == FRAME_BYTES));
+    }
+
+    #[test]
+    fn quiz_copy_reserves_visible_letter_spacing_inside_its_panels() {
+        assert_eq!(GLYPH_ADVANCE, GLYPH_WIDTH + 1);
+        assert!(text_width(&"Q".repeat(QUIZ_QUESTION_COLUMNS), 1) <= 192);
+        assert!(text_width(&"C".repeat(QUIZ_CHOICE_CHARS), 1) <= 196);
     }
 
     #[test]

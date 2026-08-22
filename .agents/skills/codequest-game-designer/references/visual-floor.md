@@ -23,6 +23,9 @@ At native 240×160 it must retain:
 - measured contrast between every foreground element and its immediate
   backdrop. Text must remain readable without relying on glow or an outline to
   rescue a low-contrast fill.
+- visible separation between adjacent glyph cells for primary question and
+  choice copy. Reduce the manifest's text budget rather than collapsing letter
+  spacing to preserve a larger character count.
 
 The built-in Oracle catalog at `src-tauri/assets/oracle/` is the repository's
 minimum production reference. Inspect its PNGs before proposing another Oracle
