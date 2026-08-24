@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const adapter = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
 function block(selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -36,6 +37,17 @@ for (const [property, label] of [["top", "top"], ["width", "width"], ["height", 
 }
 assert.match(rearCartridge, /linear-gradient\(#cdcedd,\s*#aaabbf\)/, "Rear cartridge is missing the front cartridge's gray surround");
 assert.match(block("#rear-cart-back.loaded::after"), /var\(--cart-color/, "Rear cartridge does not use the inserted cartridge color");
+assert.ok(
+  Number(block("#rear-cart-back").match(/z-index:\s*(\d+)/)?.[1]) >
+    Number(block(".rear-cartridge-well").match(/z-index:\s*(\d+)/)?.[1]),
+  "The loaded cartridge must sit inside and above the rear recess",
+);
+assert.match(html, /class="rear-cartridge-lip"/, "The rear recess needs a foreground lip to hold the cartridge");
+assert.ok(
+  Number(block(".rear-cartridge-lip").match(/z-index:\s*(\d+)/)?.[1]) >
+    Number(block("#rear-cart-back").match(/z-index:\s*(\d+)/)?.[1]),
+  "The recess lip must overlap the cartridge's lower edge",
+);
 
 const rearLabel = block("#rear-hotkeys");
 const labelWidth = pixels(rearLabel, "width", "rear label width");
@@ -53,9 +65,6 @@ for (const [control, key] of [
   ["START", "ENTER"],
   ["SELECT", "SHIFT"],
   ["L / R", "A / F"],
-  ["POWER", "P"],
-  ["SLOT", "C"],
-  ["TURN UNIT", "F1"],
 ]) {
   assert.match(
     html,
@@ -64,8 +73,17 @@ for (const [control, key] of [
   );
 }
 
-assert.match(html, /data-device-turn/, "The shell has no pointer-accessible turn control");
+for (const shellOnlyControl of ["POWER", "SLOT", "TURN UNIT"]) {
+  assert.doesNotMatch(html, new RegExp(`<th[^>]*>${shellOnlyControl}<\\/th>`), `${shellOnlyControl} should remain a pointer-only shell action`);
+}
+
+assert.match(html, /id="device-view-toggle"[^>]*role="switch"[^>]*aria-checked="false"/, "The shell needs a floating front/back switch");
+assert.doesNotMatch(html, /data-device-turn/, "Molded shell badges must not act as highlighted turn controls");
+assert.doesNotMatch(html, /<button class="shell-tag"/, "The front model badge must remain molded decoration");
+assert.doesNotMatch(html, /<button class="rear-brand"/, "The rear brand mark must remain molded decoration");
 assert.match(html, /id="device-back"[^>]*aria-hidden="true"/, "The rear face must start hidden from assistive technology");
+assert.match(block("#device-view-toggle"), /position:\s*fixed/, "The front/back switch should float independently of the shell");
+assert.match(css, /#device-view-toggle\.back-active[\s\S]*?\.view-toggle-knob/, "The slider does not expose its rear position");
 
 assert.match(css, /#shell-scale\.turning\s+#device-rotator\s*\{[^}]*animation:\s*deviceTurn/s, "The whole device does not own the turn animation");
 assert.match(css, /@keyframes deviceTurn\s*\{[\s\S]*?scaleX\(/, "The turn never carries the complete device edge-on");
@@ -85,8 +103,14 @@ assert.match(adapter, /function turnShell\(/, "The adapter does not coordinate a
 assert.match(adapter, /TURN_DURATION_MS\s*\/\s*2/, "The shell face does not swap at the edge-on midpoint");
 assert.match(adapter, /turning-to-back/, "The adapter does not distinguish the front-to-back display handoff");
 assert.match(adapter, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)/, "Reduced-motion users still receive the turn animation");
-assert.match(adapter, /event\.code === "F1"/, "F1 does not turn the unit over");
+assert.doesNotMatch(adapter, /event\.code === "(?:F1|KeyP|KeyC)"/, "Shell actions should not retain hidden hotkeys");
 assert.match(adapter, /ShiftLeft:\s*"select",\s*ShiftRight:\s*"select"/, "SELECT must remain mapped to Shift");
-assert.match(adapter, /querySelectorAll\("\[data-device-turn\]"\)/, "Pointer turn controls are not wired");
+assert.match(adapter, /viewToggle\.addEventListener\("click"/, "The floating front/back switch is not wired");
+assert.match(adapter, /viewToggle\.setAttribute\("aria-checked",\s*String\(shellBackVisible\)\)/, "The slider's accessible state does not follow the visible face");
 
-console.log("Device reverse contract OK: reversible shell, complete hotkey label, SELECT preserved");
+assert.match(html, /id="rear-serial">-------<\/div>/, "The empty serial plate needs a neutral revision placeholder");
+assert.match(adapter, /rearSerial\.textContent\s*=\s*cartridge\?\.revision\s*\|\|\s*"-------"/, "The serial plate does not show the inserted repository revision");
+assert.match(rust, /revision:\s*String/, "Cartridge metadata does not carry a revision");
+assert.match(rust, /rev-parse",\s*"--short=7",\s*"HEAD"/, "Cartridge revisions are not loaded from short HEAD");
+
+console.log("Device reverse contract OK: recessed cartridge, floating switch, compact hotkey label, revision serial");

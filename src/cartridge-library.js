@@ -8,10 +8,15 @@ function cartridgeMetadata(value) {
   const branch = typeof value.branch === "string"
     ? value.branch.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 48)
     : "";
+  const candidateRevision = typeof value.revision === "string"
+    ? value.revision.trim().toLowerCase()
+    : "";
+  const revision = /^[0-9a-f]{7,12}$/.test(candidateRevision) ? candidateRevision : "-------";
   return {
     path,
     title: typeof value.title === "string" && value.title.trim() ? value.title : fallbackTitle,
     branch: branch || "BRANCH UNKNOWN",
+    revision,
     color: typeof value.color === "string" && /^#[0-9a-f]{6}$/i.test(value.color)
       ? value.color
       : "#6a6fd1",

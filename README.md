@@ -13,20 +13,17 @@
 | Enter | START | Start / confirm |
 | Shift | SELECT | Reserved |
 | A / F | L / R | Page the quest menu |
-| P | POWER | Power on / off (or click the switch on the right edge) |
-| C | SLOT | Open the cartridge tray (power must be off; or click the slot) |
-| F1 | TURN UNIT | Turn the shell over to view the keyboard label |
 
 All shell buttons are also clickable, including the L/R shoulders and the
-power switch. Click the `CQA-001` model badge or press `F1` to turn the unit
-over; the reverse label lists every cartridge and shell binding. An inserted
-cartridge remains fully visible in the rear recess. The console starts powered
-off — flip the switch to boot.
+power switch. Use the floating FRONT/BACK switch to turn the unit over; the
+reverse label lists the gameplay bindings and shows the inserted repository's
+short commit hash in its serial plate. An inserted cartridge sits visibly inside
+the rear recess. The console starts powered off — flip the switch to boot.
 
 ## Cartridges
 
 Cartridges are **local git repositories**. Click the cartridge slot on the
-top edge (or press `C`) while the power is off, then **+ ADD FROM DISK** to
+top edge while the power is off, then **+ ADD FROM DISK** to
 pick a directory with the native folder dialog. If the directory is a git
 repo it loads as a cartridge — title from the directory name, label color
 from a path hash — and is cached in the three-slot rack for future launches.

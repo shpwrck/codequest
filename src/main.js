@@ -33,6 +33,8 @@ import {
   const bootOverlay = $("device-boot");
   const cartGuide = $("cart-guide");
   const powerGuide = $("power-guide");
+  const viewToggle = $("device-view-toggle");
+  const rearSerial = $("rear-serial");
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
   const image = context.createImageData(WIDTH, HEIGHT);
@@ -145,18 +147,17 @@ import {
     backFace.setAttribute("aria-hidden", String(!shellBackVisible));
     frontFace.inert = shellBackVisible;
     backFace.inert = !shellBackVisible;
+    viewToggle.classList.toggle("back-active", shellBackVisible);
+    viewToggle.setAttribute("aria-checked", String(shellBackVisible));
+    viewToggle.setAttribute("aria-label", shellBackVisible ? "Show front of device" : "Show back of device");
     updateControlGuides();
   }
 
-  function turnShell({ moveFocus = false } = {}) {
+  function turnShell() {
     if (shellTurning) return;
     const nextBackVisible = !shellBackVisible;
     const swapFaces = () => {
       setShellBackVisible(nextBackVisible);
-      if (moveFocus) {
-        const visibleFace = nextBackVisible ? backFace : frontFace;
-        visibleFace.querySelector("[data-device-turn]")?.focus({ preventScroll: true });
-      }
     };
 
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -205,6 +206,7 @@ import {
       rearSlot.className = "loaded";
       rearSlot.style.setProperty("--cart-color", cartridge.color || "#6a6fd1");
       rearSlot.title = `CARTRIDGE: ${cartridge.title}`;
+      rearSerial.textContent = cartridge?.revision || "-------";
     } else {
       slot.className = "empty";
       slot.style.removeProperty("--cart-color");
@@ -212,16 +214,18 @@ import {
       rearSlot.className = "empty";
       rearSlot.style.removeProperty("--cart-color");
       rearSlot.title = "CARTRIDGE SLOT (EMPTY)";
+      rearSerial.textContent = "-------";
     }
     updateControlGuides();
   }
 
   function persistCartridges() {
     cartridges = normalizeCartridges(cartridges);
-    const metadata = cartridges.map(({ path, title, branch, color }) => ({
+    const metadata = cartridges.map(({ path, title, branch, revision, color }) => ({
       path,
       title,
       branch,
+      revision,
       color,
     }));
     localStorage.setItem("cqa-repo-carts", JSON.stringify(metadata));
@@ -531,19 +535,6 @@ import {
   };
 
   window.addEventListener("keydown", (event) => {
-    if (event.code === "F1") {
-      event.preventDefault();
-      if (!event.repeat) turnShell();
-      return;
-    }
-    if (event.code === "KeyP") {
-      if (!event.repeat) setPower(!powered);
-      return;
-    }
-    if (event.code === "KeyC") {
-      if (!event.repeat) trayOpen ? closeTray() : openTray();
-      return;
-    }
     if (trayOpen && (event.key === "Escape" || event.code === "KeyS")) {
       closeTray();
       return;
@@ -591,13 +582,10 @@ import {
     element.addEventListener("pointercancel", release);
   });
 
-  document.querySelectorAll("[data-device-turn]").forEach((element) => {
-    element.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const shouldMoveFocus = document.activeElement === element;
-      turnShell({ moveFocus: shouldMoveFocus });
-    });
+  viewToggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    turnShell();
   });
 
   $("power-switch").addEventListener("pointerdown", (event) => {

@@ -134,6 +134,7 @@ html, body {
 
 @media (prefers-reduced-motion: reduce) {
   #shell-scale.turning #device-rotator { animation: none; }
+  .view-toggle-label, .view-toggle-knob { transition: none; }
 }
 #shoulders {
   /* traced bezier caps: arc over each corner, tapering down the side.
@@ -520,16 +521,58 @@ html, body {
   color: #494b90;
   text-shadow: 0 1px 0 rgba(255,255,255,.18);
   box-shadow: inset 0 1px 2px rgba(0,0,0,.25);
-  appearance: none;
   background: transparent;
   font-family: inherit;
+  pointer-events: none;
+}
+
+#device-view-toggle {
+  appearance: none;
+  position: fixed;
+  right: 18px;
+  top: 18px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: #8f91b7;
+  background: rgba(16,17,36,.9);
+  border: 1px solid rgba(148,176,194,.38);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.08);
+  font: 7px 'Press Start 2P', monospace;
   cursor: pointer;
 }
-.shell-tag:hover, .shell-tag:focus-visible {
-  color: #d7d8e8;
-  border-color: rgba(244,244,244,.55);
+#device-view-toggle:hover,
+#device-view-toggle:focus-visible {
+  border-color: var(--sky);
   outline: none;
 }
+.view-toggle-label { transition: color .2s ease; }
+#device-view-toggle:not(.back-active) .view-front,
+#device-view-toggle.back-active .view-back { color: var(--parch); }
+.view-toggle-track {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  background: #292b52;
+  border: 2px solid #56598d;
+  border-radius: 999px;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.45);
+}
+.view-toggle-knob {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: linear-gradient(#f4f4f4, #bfc1d2);
+  box-shadow: 0 1px 3px rgba(0,0,0,.5);
+  transition: transform .26s cubic-bezier(.42,0,.2,1);
+}
+#device-view-toggle.back-active .view-toggle-knob { transform: translateX(18px); }
 
 /* ============================ REVERSE SHELL ============================ */
 
@@ -554,6 +597,7 @@ html, body {
 #rear-cart-back {
   position: absolute;
   left: 50%;
+  z-index: 2;
   width: 232px;
   transform: translateX(-50%);
 }
@@ -593,12 +637,27 @@ html, body {
   position: absolute;
   left: 162px;
   top: 7px;
+  z-index: 1;
   width: 250px;
   height: 62px;
   background: linear-gradient(155deg, #5d62b8, #494e9f);
   border: 3px solid #34366f;
   border-radius: 8px 8px 11px 11px;
   box-shadow: inset 0 5px 9px rgba(0,0,0,.24), 0 2px 0 rgba(255,255,255,.08);
+}
+.rear-cartridge-lip {
+  position: absolute;
+  left: 162px;
+  top: 25px;
+  z-index: 3;
+  width: 250px;
+  height: 16px;
+  background: linear-gradient(155deg, #565bad, #454a98);
+  border: 3px solid #34366f;
+  border-top-color: #3e427f;
+  border-radius: 0 0 11px 11px;
+  box-shadow: inset 0 -3px 5px rgba(0,0,0,.18), 0 1px 0 rgba(255,255,255,.08);
+  pointer-events: none;
 }
 
 .rear-screw {
@@ -701,7 +760,7 @@ html, body {
   position: absolute;
   left: 7px;
   right: 7px;
-  top: 33px;
+  top: 39px;
   width: calc(100% - 14px);
   border-collapse: separate;
   border-spacing: 0;
@@ -763,7 +822,6 @@ html, body {
   border-radius: 2px;
 }
 .rear-brand {
-  appearance: none;
   position: absolute;
   left: 50%;
   top: 58px;
@@ -776,12 +834,7 @@ html, body {
   box-shadow: inset 0 2px 3px rgba(0,0,0,.18), 0 1px 0 rgba(255,255,255,.11);
   font: 12px 'Press Start 2P', monospace;
   text-shadow: 0 1px 0 rgba(255,255,255,.13);
-  cursor: pointer;
-}
-.rear-brand:hover, .rear-brand:focus-visible {
-  color: #d7d8e8;
-  border-color: rgba(244,244,244,.55);
-  outline: none;
+  pointer-events: none;
 }
 .rear-port {
   position: absolute;

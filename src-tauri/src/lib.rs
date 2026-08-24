@@ -46,6 +46,7 @@ struct Cartridge {
     id: String,
     title: String,
     branch: String,
+    revision: String,
     color: String,
     path: String,
     mode: String,
@@ -104,6 +105,18 @@ fn repository_branch(path: &std::path::Path) -> String {
         .map(|branch| sanitized_metadata(&branch, 48))
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| "DETACHED HEAD".to_string())
+}
+
+fn repository_revision(path: &std::path::Path) -> String {
+    git_repo_command(path)
+        .args(["rev-parse", "--short=7", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|revision| sanitized_metadata(&revision, 12).to_ascii_lowercase())
+        .filter(|revision| !revision.is_empty())
+        .unwrap_or_else(|| "-------".to_string())
 }
 
 fn sanitized_metadata(value: &str, max_chars: usize) -> String {
@@ -286,10 +299,12 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     };
     let provenance = repository_provenance(&canon);
     let branch = repository_branch(&canon);
+    let revision = repository_revision(&canon);
     Ok(Cartridge {
         id: p.clone(),
         title: name,
         branch,
+        revision,
         color: palette[h % palette.len()].to_string(),
         path: p,
         mode: mode.to_string(),
@@ -986,6 +1001,26 @@ mod question_policy_tests {
 
         let cartridge = build_cartridge(&repo).unwrap();
         assert_eq!(cartridge.branch, "story/cartridge-label");
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn cartridge_reports_the_repositorys_short_head_revision() {
+        let repo = temporary_git_repo();
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2024-01-02T12:00:00Z",
+            "Create cartridge",
+        );
+        let expected = git_out(&repo, &["rev-parse", "--short=7", "HEAD"])
+            .trim()
+            .to_string();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.revision, expected);
 
         remove_temporary_repo(repo);
     }

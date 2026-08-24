@@ -71,7 +71,7 @@
               <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
               <div class="speaker"></div>
               <div id="power-switch" title="POWER" role="button" aria-label="Power switch" tabindex="0"><span class="ps-nub"></span></div>
-              <button class="shell-tag" type="button" data-device-turn aria-label="Turn device over to see keyboard controls" title="TURN UNIT OVER · F1">CQA-001</button>
+              <span class="shell-tag" aria-hidden="true">CQA-001</span>
             </div>
           </div>
 
@@ -92,6 +92,7 @@
 
             <section id="rear-shell" aria-label="Back of CODEQUEST ADVANCE">
               <div class="rear-cartridge-well" aria-hidden="true"></div>
+              <div class="rear-cartridge-lip" aria-hidden="true"></div>
 
               <span class="rear-screw rear-screw-nw" aria-hidden="true"></span>
               <span class="rear-screw rear-screw-ne" aria-hidden="true"></span>
@@ -102,7 +103,7 @@
                 <div class="rear-label-identity">
                   <div class="rear-label-title"><strong>CODEQUEST ADVANCE</strong></div>
                   <div class="rear-label-model">MODEL CQA-001</div>
-                  <div class="rear-serial">CQA 0005957</div>
+                  <div class="rear-serial" id="rear-serial">-------</div>
                 </div>
                 <div class="rear-label-adapter">KEYBOARD ADAPTER</div>
                 <table>
@@ -111,21 +112,24 @@
                     <tr><th>D-PAD</th><td>ARROW KEYS</td><th>A</th><td>D</td></tr>
                     <tr><th>B</th><td>S</td><th>START</th><td>ENTER</td></tr>
                     <tr><th>SELECT</th><td>SHIFT</td><th>L / R</th><td>A / F</td></tr>
-                    <tr><th>POWER</th><td>P</td><th>SLOT</th><td>C</td></tr>
-                    <tr><th>TURN UNIT</th><td>F1</td><th aria-hidden="true"></th><td aria-hidden="true"></td></tr>
                   </tbody>
                 </table>
               </section>
 
               <div class="rear-battery-door">
                 <div class="rear-latch" aria-hidden="true"></div>
-                <button class="rear-brand" type="button" data-device-turn aria-label="Turn device back to the front" title="TURN UNIT TO FRONT · F1">CODEQUEST</button>
+                <div class="rear-brand" aria-hidden="true">CODEQUEST</div>
               </div>
               <div class="rear-port" aria-hidden="true"></div>
             </section>
           </div>
         </div>
       </div>
+      <button id="device-view-toggle" type="button" role="switch" aria-checked="false" aria-label="Show back of device">
+        <span class="view-toggle-label view-front">FRONT</span>
+        <span class="view-toggle-track" aria-hidden="true"><span class="view-toggle-knob"></span></span>
+        <span class="view-toggle-label view-back">BACK</span>
+      </button>
       <div id="cart-tray" class="hidden">
         <div class="tray-panel">
           <div class="tray-head">SELECT CARTRIDGE</div>
