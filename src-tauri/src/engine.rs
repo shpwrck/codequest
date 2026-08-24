@@ -340,6 +340,7 @@ pub struct QuizQuestion {
 
 pub type QuestionLoader =
     Arc<dyn Fn(String, u32, usize) -> Vec<QuizQuestion> + Send + Sync + 'static>;
+pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, String) + Send + Sync + 'static>;
 
 pub fn quiz_question_fits(question: &str, choices: &[String], answer: usize) -> bool {
     !question.trim().is_empty()
@@ -496,6 +497,10 @@ enum EngineEffect {
         level: u32,
         count: usize,
     },
+    RecordAnsweredQuestion {
+        cartridge_id: String,
+        question: String,
+    },
 }
 
 #[derive(Resource, Default)]
@@ -525,13 +530,23 @@ impl Framebuffer {
     }
 
     fn blit_rgb(&mut self, rgb: &[u8; NATIVE_RGB_BYTES]) {
-        for (source, destination) in rgb.chunks_exact(3).zip(self.pixels.chunks_exact_mut(4)) {
+        for (source, destination) in rgb
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
+        {
             destination.copy_from_slice(&[source[0], source[1], source[2], 255]);
         }
     }
 
     fn blit_rgb_graded(&mut self, rgb: &[u8; NATIVE_RGB_BYTES], base: u16, cyan: u16, gold: u16) {
-        for (source, destination) in rgb.chunks_exact(3).zip(self.pixels.chunks_exact_mut(4)) {
+        for (source, destination) in rgb
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
+        {
             let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
             let scale = if blue > red.saturating_add(12) && green > red {
                 cyan
@@ -556,8 +571,10 @@ impl Framebuffer {
         let ambient_strength = 34 + ticks.min(236) as u16 * 38 / 236;
 
         for (index, (source, destination)) in ORACLE_AWAKENING
-            .chunks_exact(3)
-            .zip(self.pixels.chunks_exact_mut(4))
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
             .enumerate()
         {
             let x = (index % WIDTH) as i32;
@@ -1165,7 +1182,10 @@ pub struct EngineRuntime {
 }
 
 impl EngineRuntime {
-    pub fn spawn(question_loader: QuestionLoader) -> Self {
+    pub fn spawn(
+        question_loader: QuestionLoader,
+        answered_question_recorder: AnsweredQuestionRecorder,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let frame = Arc::new(RwLock::new(vec![0; FRAME_BYTES]));
         let shared_frame = Arc::clone(&frame);
@@ -1184,7 +1204,13 @@ impl EngineRuntime {
                     }
                     engine.update();
                     for effect in engine.take_effects() {
-                        handle_effect(effect, &engine_sender, &running_child, &question_loader);
+                        handle_effect(
+                            effect,
+                            &engine_sender,
+                            &running_child,
+                            &question_loader,
+                            &answered_question_recorder,
+                        );
                     }
                     if let Ok(mut target) = shared_frame.write() {
                         target.copy_from_slice(engine.frame());
@@ -1421,11 +1447,12 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                     state.signal(SceneSignal::Back);
                 }
                 Button::A => {
-                    let answer = state
-                        .cartridge
-                        .as_ref()
-                        .and_then(|cart| cart.questions.get(run.question))
-                        .map_or(0, |question| question.answer);
+                    let answered = state.cartridge.as_ref().and_then(|cart| {
+                        cart.questions.get(run.question).map(|question| {
+                            (cart.id.clone(), question.question.clone(), question.answer)
+                        })
+                    });
+                    let answer = answered.as_ref().map_or(0, |(_, _, answer)| *answer);
                     let correct = run.selected == answer;
                     if correct {
                         run.score += 100;
@@ -1435,6 +1462,12 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                         run.streak = 0;
                     }
                     run.feedback = Some((correct, QUIZ_FEEDBACK_TICKS));
+                    if let Some((cartridge_id, question, _)) = answered {
+                        effects.0.push_back(EngineEffect::RecordAnsweredQuestion {
+                            cartridge_id,
+                            question,
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -2784,6 +2817,7 @@ fn handle_effect(
     sender: &mpsc::Sender<EngineCommand>,
     child: &Arc<Mutex<Option<Child>>>,
     question_loader: &QuestionLoader,
+    answered_question_recorder: &AnsweredQuestionRecorder,
 ) {
     match effect {
         EngineEffect::RunQuest(command) => run_quest(command, sender.clone(), Arc::clone(child)),
@@ -2809,6 +2843,10 @@ fn handle_effect(
                 });
             });
         }
+        EngineEffect::RecordAnsweredQuestion {
+            cartridge_id,
+            question,
+        } => answered_question_recorder(cartridge_id, question),
     }
 }
 
@@ -3009,7 +3047,14 @@ mod tests {
         let directory = std::path::Path::new(&directory);
         std::fs::create_dir_all(directory).expect("preview directory should be writable");
         let mut ppm = format!("P6\n{WIDTH} {HEIGHT}\n255\n").into_bytes();
-        ppm.extend(frame.chunks_exact(4).flat_map(|pixel| &pixel[..3]).copied());
+        ppm.extend(
+            frame
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|pixel| &pixel[..3])
+                .copied(),
+        );
         std::fs::write(directory.join(format!("{name}.ppm")), ppm)
             .expect("preview should be writable");
     }
@@ -3135,6 +3180,28 @@ mod tests {
         engine
     }
 
+    #[test]
+    fn committing_an_answer_records_that_question_for_future_runs() {
+        let mut engine = playing_quiz_engine();
+        let _ = engine.take_effects();
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::A,
+                pressed: true,
+            },
+        );
+
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion {
+                cartridge_id,
+                question,
+            } if cartridge_id == "/tmp/engine-test" && question == "WHO OWNS THE GAME LOOP?"
+        )));
+    }
+
     fn color_pixels_in_region(
         frame: &[u8],
         color: Color,
@@ -3149,7 +3216,9 @@ mod tests {
 
     fn total_luminance(frame: &[u8]) -> u64 {
         frame
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| pixel[0] as u64 + pixel[1] as u64 + pixel[2] as u64)
             .sum()
     }
@@ -5376,9 +5445,16 @@ mod tests {
             ("data", ORACLE_DATA_DROP.as_slice()),
             ("bug", ORACLE_BUG_DROP.as_slice()),
         ] {
-            let visible_pixels = sprite.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
+            let visible_pixels = sprite
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[3] > 0)
+                .count();
             let bright_pixels = sprite
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|pixel| {
                     pixel[3] > 0 && pixel[..3].iter().copied().max().unwrap_or(0) >= 128
                 })

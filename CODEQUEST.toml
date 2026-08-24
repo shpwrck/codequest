@@ -53,7 +53,7 @@ feedback = ["Use distinct packet and crossed-bug silhouettes in addition to gree
 id = "answer-question"
 summary = "Choose one of four answers to a conceptual project question."
 inputs = ["d-pad", "a", "b"]
-rules = ["Exactly one answer is correct.", "A wrong answer costs one heart.", "Correct answers increase score and streak.", "After commitment, hold the revealed answer for 45 ticks; all inputs are intentionally inactive until the automatic transition completes."]
+rules = ["Exactly one answer is correct.", "A wrong answer costs one heart.", "Correct answers increase score and streak.", "Committing an answer records that question in the cartridge save; future runs and launches skip every recorded question.", "After commitment, hold the revealed answer for 45 ticks; all inputs are intentionally inactive until the automatic transition completes."]
 feedback = ["Reveal whether the answer was correct through text, shape, animation, and color.", "Show the correct answer after a mistake.", "Replace active answer/back prompts with REVIEW ANSWER during the 45-tick result hold.", "Use distinct cursor, commitment, correct, wrong, low-heart, streak, and batch-complete responses."]
 
 [[mechanics]]

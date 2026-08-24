@@ -41,9 +41,11 @@ Loading a valid cartridge also creates an emulator-style save beside it. For
 example, `/games/demo` uses `/games/demo.sav`; the git repository itself stays
 untouched. The versioned JSON save is a generic namespaced data store so each
 game style can own independent state without changing the file format. Quiz
-mode currently uses one namespace for validated Claude question batches, which
-lets later runs reuse generated results while retaining their level boundaries.
-Ejecting or recycling a cartridge does not delete its save.
+mode uses one namespace for validated Claude question batches and another for
+answered-question history. Committing an answer records it immediately; later
+runs and launches reuse generated results while filtering every recorded
+question, so play continues with unseen material. Ejecting or recycling a
+cartridge does not delete its save.
 
 A repo cartridge's quests are generated from its contents: repo scrying
 (`git status`), history (`git log`), and drift (`git diff`) always; plus a

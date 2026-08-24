@@ -58,6 +58,10 @@ creates new renderer code.
   the level.
 - **Failure/recovery:** A wrong answer costs one heart and reveals the correct
   choice. At zero hearts, show the final score and a one-button replay path.
+- **Save continuity:** Committing an answer records the question in the
+  cartridge save. Later runs and launches compare normalized text and filter all
+  recorded questions. Hearts, score, and presentation remain run-specific;
+  hero identity is not save-backed across app launches.
 - **Latency loop:** Request the first batch as soon as the cartridge is
   accepted, then continue behind the copyright, fanfare, title, menu, and hero
   creation. In Oracle Datafall, move into falling data to collect it on contact
@@ -238,7 +242,9 @@ and Claude retries.
 - **Inputs:** D-pad, A, B.
 - **Rules:** Exactly four distinct choices, one correct answer, a maximum of
   four 31-character question lines, and 31 characters per choice. Wrong costs
-  one heart; correct adds score and streak. After commitment, hold the revealed
+  one heart; correct adds score and streak. Commitment immediately records the
+  question in the cartridge save; future runs or launches compare normalized
+  text and skip every recorded question. After commitment, hold the revealed
   answer for 45 ticks with every input intentionally inactive.
 - **Feedback:** Keep the correct choice visible in green after either result;
   show an incorrect committed choice in red. Do not add redundant correct/wrong
@@ -331,6 +337,7 @@ engine does not load or play them yet.
 | Oracle Datafall with safe recovery | Implemented in this pass | Held horizontal movement, deterministic falling objects, automatic data/bug collision counters, split top/bottom HUD, and B-back close the indefinite wait. |
 | Safe Oracle-to-quiz input boundary | Implemented | A/Start are ignored in Oracle; B exits to the menu; held D-pad controls have no answer action after the automatic transition. |
 | Quiz result and reward input boundaries | Implemented in this pass | The 45-tick answer reveal replaces active controls, and level-up enforces a 60-tick hold before A/Start can leave. |
+| Answered-question continuity | Implemented | Answer commitment records question text under `quiz.progress`; cartridge reload compares normalized text and filters recorded questions while serialized save updates preserve the independent Claude-batch namespace. |
 | Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
 | Concise answer review and reduced motion | Partially implemented | Green/red answer copy, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
 | Visual templates selected from manifest | Implemented | Eleven typed built-in templates are selected by `art[].template`; `oracle-awakening` selects five art-ID-addressed opening plates, other Oracle templates composite their native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
@@ -368,11 +375,15 @@ engine does not load or play them yet.
 10. **Completed — Executable scene graph:** Add schema v2 handlers, semantic
    transitions, timing gates, reachability validation, built-in quiz/quest
    templates, and schema-v1 compatibility.
+11. **Completed — Answered-question continuity:** Record committed questions in
+    the cartridge save, filter them on later runs and launches, and serialize
+    namespace updates so background batch writes cannot erase progress.
 
 ## Open decisions
 
 - Should the generated question payload eventually include a short explanation,
   or is revealing the correct choice enough feedback at this resolution?
-- Which run records, if any, should persist per cartridge across launches?
+- Beyond answered-question history, should score, hearts, hero identity, or
+  presentation tier persist per cartridge across launches?
 - Should B from an active quiz abandon immediately, or use an in-scene
   confirmation state before leaving the run?
