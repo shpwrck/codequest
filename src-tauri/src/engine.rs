@@ -70,6 +70,14 @@ const HERO_STYLES: [&str; 5] = ["EMBER", "OCEAN", "FOREST", "GOLD", "VOID"];
 const HERO_STYLE_COLORS: [Color; 5] = [RED, SKY, GREEN, GOLD, PLUM];
 
 const ORACLE_CHRONICLE: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/chronicle.rgb");
+const ORACLE_AWAKENING_SOURCE: &[u8; NATIVE_RGB_BYTES] =
+    include_bytes!("../assets/oracle/awakening-source.rgb");
+const ORACLE_AWAKENING_SIGNAL: &[u8; NATIVE_RGB_BYTES] =
+    include_bytes!("../assets/oracle/awakening-signal.rgb");
+const ORACLE_AWAKENING_ARCHIVE: &[u8; NATIVE_RGB_BYTES] =
+    include_bytes!("../assets/oracle/awakening-archive.rgb");
+const ORACLE_AWAKENING_CONVERGENCE: &[u8; NATIVE_RGB_BYTES] =
+    include_bytes!("../assets/oracle/awakening-convergence.rgb");
 const ORACLE_AWAKENING: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/awakening.rgb");
 const ORACLE_GATEWAY: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/gateway.rgb");
 const ORACLE_ATELIER: &[u8; NATIVE_RGB_BYTES] = include_bytes!("../assets/oracle/atelier.rgb");
@@ -811,6 +819,16 @@ enum OracleDropKind {
     Bug,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpeningBeat {
+    Legacy,
+    SourceEmber,
+    ArchiveAnswer,
+    MemoryVault,
+    Convergence,
+    OracleAwakening,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct OracleDrop {
     x: i32,
@@ -990,6 +1008,47 @@ impl GameState {
                 .iter()
                 .any(|art| art.id == *art_id && art.template == Some(template))
         })
+    }
+
+    fn uses_art(&self, expected_art_id: &str) -> bool {
+        let Some(config) = self
+            .cartridge
+            .as_ref()
+            .and_then(|cartridge| cartridge.codequest.as_deref())
+        else {
+            return false;
+        };
+        let Some(scene_id) = self.machine.as_ref().map(SceneMachine::current_scene) else {
+            return false;
+        };
+        config
+            .scenes
+            .iter()
+            .find(|scene| scene.id == scene_id)
+            .is_some_and(|scene| scene.art.iter().any(|art_id| art_id == expected_art_id))
+    }
+
+    fn declares_art(&self, expected_art_id: &str) -> bool {
+        self.cartridge
+            .as_ref()
+            .and_then(|cartridge| cartridge.codequest.as_deref())
+            .is_some_and(|config| config.art.iter().any(|art| art.id == expected_art_id))
+    }
+
+    fn opening_beat(&self) -> OpeningBeat {
+        if self.uses_art("opening-source") {
+            OpeningBeat::SourceEmber
+        } else if self.uses_art("opening-signal") {
+            OpeningBeat::ArchiveAnswer
+        } else if self.uses_art("opening-archive") {
+            OpeningBeat::MemoryVault
+        } else if self.uses_art("opening-convergence") {
+            OpeningBeat::Convergence
+        } else if self.uses_art("opening-fanfare") && self.declares_art("opening-source") {
+            OpeningBeat::OracleAwakening
+        } else {
+            OpeningBeat::Legacy
+        }
     }
 }
 
@@ -1697,8 +1756,19 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
     }
 }
 
+fn render_oracle_opening_beat(frame: &mut Framebuffer, beat: OpeningBeat, ticks: u64) {
+    match beat {
+        OpeningBeat::Legacy => frame.blit_awakening(ticks),
+        OpeningBeat::SourceEmber => frame.blit_rgb(ORACLE_AWAKENING_SOURCE),
+        OpeningBeat::ArchiveAnswer => frame.blit_rgb(ORACLE_AWAKENING_SIGNAL),
+        OpeningBeat::MemoryVault => frame.blit_rgb(ORACLE_AWAKENING_ARCHIVE),
+        OpeningBeat::Convergence => frame.blit_rgb(ORACLE_AWAKENING_CONVERGENCE),
+        OpeningBeat::OracleAwakening => frame.blit_awakening(ticks.saturating_add(188)),
+    }
+}
+
 fn render_oracle_awakening(frame: &mut Framebuffer, state: &GameState) {
-    frame.blit_awakening(state.screen_ticks);
+    render_oracle_opening_beat(frame, state.opening_beat(), state.screen_ticks);
     if state.can_signal(SceneSignal::Continue) {
         frame.rect(164, 149, 76, 11, VOID);
         frame.text(166, 151, "A/START:SKIP", MIST, 1);
@@ -5007,6 +5077,100 @@ mod tests {
     }
 
     #[test]
+    fn oracle_opening_auto_advances_through_five_story_scenes() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(oracle_template_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+
+        for _ in 0..179 {
+            engine.update();
+        }
+        let scene_id = |engine: &GameEngine| {
+            engine
+                .app
+                .world()
+                .resource::<GameState>()
+                .machine
+                .as_ref()
+                .expect("the cartridge should own a scene machine")
+                .current_scene()
+                .to_string()
+        };
+        assert_eq!(scene_id(&engine), "opening-fanfare");
+
+        for (ticks, expected_scene) in [
+            (96, "archive-answer"),
+            (66, "memory-vault"),
+            (66, "convergence"),
+            (66, "oracle-awakening"),
+            (66, "title"),
+        ] {
+            for _ in 0..ticks {
+                engine.update();
+            }
+            assert_eq!(scene_id(&engine), expected_scene);
+        }
+        assert_eq!(engine.screen(), Screen::Title);
+    }
+
+    #[test]
+    fn single_scene_oracle_opening_keeps_the_legacy_luminance_timeline() {
+        let config = CodeQuestConfig::parse(
+            r#"
+                schema_version = 2
+
+                [game]
+                type = "quiz"
+                start_scene = "opening-fanfare"
+
+                [[art]]
+                id = "opening-fanfare"
+                kind = "scene-vfx"
+                summary = "One-plate Oracle opening."
+                template = "oracle-awakening"
+
+                [[scenes]]
+                id = "opening-fanfare"
+                title = "Opening Fanfare"
+                kind = "cinematic"
+                handler = "opening-fanfare"
+                art = ["opening-fanfare"]
+
+                [[scenes.transitions]]
+                signal = "elapsed"
+                target = "title"
+                after_ticks = 330
+
+                [[scenes]]
+                id = "title"
+                title = "Title"
+                kind = "title"
+                handler = "title"
+            "#,
+        )
+        .expect("the legacy single-scene fixture should parse");
+        let mut cartridge = quiz_cartridge();
+        cartridge.machine = Box::new(
+            config
+                .runtime_machine()
+                .expect("the fixture scene graph should compile")
+                .expect("schema v2 should produce a machine"),
+        );
+        cartridge.codequest = Some(Box::new(config));
+        let state = GameState {
+            machine: Some(SceneMachine::new((*cartridge.machine).clone())),
+            cartridge: Some(cartridge),
+            ..Default::default()
+        };
+
+        assert_eq!(state.opening_beat(), OpeningBeat::Legacy);
+    }
+
+    #[test]
     fn opening_scenes_render_distinct_frames() {
         let mut engine = GameEngine::new();
         issue(
@@ -5056,32 +5220,29 @@ mod tests {
             "the archive begins without emissive light"
         );
 
-        for _ in 0..180 {
-            state.tick_machine();
+        let beats = [
+            OpeningBeat::SourceEmber,
+            OpeningBeat::ArchiveAnswer,
+            OpeningBeat::MemoryVault,
+            OpeningBeat::Convergence,
+            OpeningBeat::OracleAwakening,
+        ];
+        let mut frames = Vec::new();
+        let mut luminance = Vec::new();
+        for beat in beats {
+            render_oracle_opening_beat(&mut frame, beat, 66);
+            luminance.push(total_luminance(&frame.pixels));
+            frames.push(frame.pixels.clone());
         }
-        assert_eq!(state.screen, Screen::OpeningFanfare);
-        render_opening_fanfare(&mut frame, &state);
-        let opening_bright = color_pixels_in_region(&frame.pixels, CYAN, 0..WIDTH, 0..HEIGHT)
-            + color_pixels_in_region(&frame.pixels, AMBER, 0..WIDTH, 0..HEIGHT);
-        assert_eq!(opening_bright, 0, "the fanfare also starts dormant");
-        let opening_luminance = total_luminance(&frame.pixels);
 
-        state.screen_ticks = 96;
-        render_opening_fanfare(&mut frame, &state);
-        let cyan_signal_luminance = total_luminance(&frame.pixels);
-
-        state.screen_ticks = 168;
-        render_opening_fanfare(&mut frame, &state);
-        let convergence_luminance = total_luminance(&frame.pixels);
-
-        state.screen_ticks = 260;
-        render_opening_fanfare(&mut frame, &state);
-        let crescendo_luminance = total_luminance(&frame.pixels);
         assert!(
-            opening_luminance < cyan_signal_luminance
-                && cyan_signal_luminance < convergence_luminance
-                && convergence_luminance < crescendo_luminance,
-            "the Oracle luminance must climb through dormant, cyan signal, convergence, and crescendo"
+            luminance.windows(2).all(|pair| pair[0] < pair[1]),
+            "each authored story scene must increase luminance toward the Oracle climax: {luminance:?}"
+        );
+        assert_eq!(
+            frames.iter().collect::<HashSet<_>>().len(),
+            5,
+            "the opening must render five distinct authored scenes"
         );
     }
 
@@ -5098,8 +5259,10 @@ mod tests {
             ],
             answer: 0,
         };
+        let machine = SceneMachine::new((*cartridge.machine).clone());
         let mut state = GameState {
             cartridge: Some(cartridge),
+            machine: Some(machine),
             quiz: Some(QuizRun {
                 question: 0,
                 completed_batches: 3,
@@ -5133,23 +5296,31 @@ mod tests {
         let mut boot = Framebuffer::default();
         render_boot(&mut boot, &state);
         maybe_write_preview("00-boot", &boot.pixels);
-        for (name, ticks) in [
-            ("02a-awakening-dormant", 0),
-            ("02b-awakening-cyan", 96),
-            ("02c-awakening-convergence", 168),
-            ("02d-awakening-crescendo", 260),
+        for _ in 0..180 {
+            state.screen_ticks = state.screen_ticks.saturating_add(1);
+            state.tick_machine();
+        }
+        for (name, advance_ticks) in [
+            ("02a-source-ember", 90),
+            ("02b-archive-answer", 54),
+            ("02c-memory-vault", 66),
+            ("02d-convergence", 66),
+            ("02e-oracle-awakening", 78),
         ] {
-            state.screen_ticks = ticks;
+            for _ in 0..advance_ticks {
+                state.screen_ticks = state.screen_ticks.saturating_add(1);
+                state.tick_machine();
+            }
             let mut frame = Framebuffer::default();
             render_oracle_awakening(&mut frame, &state);
             maybe_write_preview(name, &frame.pixels);
+            previews.push(frame.pixels);
         }
         for (name, renderer) in [
             (
                 "01-chronicle",
                 render_oracle_chronicle as fn(&mut Framebuffer, &GameState),
             ),
-            ("02-awakening", render_oracle_awakening),
             ("03-title", render_oracle_title),
             ("04-menu", render_oracle_menu),
             ("05-atelier", render_oracle_atelier),
@@ -5159,7 +5330,6 @@ mod tests {
             ("09-aftermath", render_oracle_aftermath),
         ] {
             state.screen_ticks = match name {
-                "02-awakening" => 260,
                 "03-title" => 60,
                 _ => 90,
             };
@@ -5178,7 +5348,7 @@ mod tests {
         let distinct = previews.iter().collect::<HashSet<_>>();
         assert_eq!(
             distinct.len(),
-            9,
+            13,
             "every reachable scene needs its own authored composition"
         );
         assert!(previews.iter().all(|frame| frame.len() == FRAME_BYTES));

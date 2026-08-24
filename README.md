@@ -126,8 +126,8 @@ On Linux, make the AppImage executable and run it; there is nothing to install
 and no toolchain required:
 
 ```bash
-chmod +x code-quest-advance_0.2.1_amd64.AppImage
-./code-quest-advance_0.2.1_amd64.AppImage
+chmod +x code-quest-advance_0.2.3_amd64.AppImage
+./code-quest-advance_0.2.3_amd64.AppImage
 ```
 
 It carries GTK3 and WebKitGTK 4.1 inside it (~200 libraries), which matters most
@@ -139,7 +139,7 @@ and render on RHEL 9 (glibc 2.34) and Fedora 43 (glibc 2.42).
 The host supplies only its own graphics stack and fonts. On a machine with a
 desktop session those are already present; on a bare/minimal host you need
 `libGLESv2.so.2` (`libglvnd-gles`) and some fonts. If the host has no FUSE, run
-it as `./code-quest-advance_0.2.1_amd64.AppImage --appimage-extract-and-run`.
+it as `./code-quest-advance_0.2.3_amd64.AppImage --appimage-extract-and-run`.
 
 On Windows, use either installer. On macOS, open the DMG and drag the app to
 Applications. CI macOS packages use an ad-hoc signature so they can be built
@@ -203,11 +203,13 @@ fix and why it exists. The build fails rather than emitting an artifact that
 would die on a RHEL 9 loader.
 
 The `Package` GitHub Actions workflow runs the Linux container build, Windows
-MSI/NSIS build, and universal macOS app/DMG build in parallel. Run it manually
-to obtain workflow artifacts, or push a `v*` tag to attach all packages and
-checksums to a GitHub release. Windows packages are unsigned and macOS packages
-are ad-hoc signed until platform signing credentials are supplied; signing does
-not affect local or CI compilation.
+MSI/NSIS build, and universal macOS app/DMG build in parallel for every pull
+request. Fresh runner jobs download the exact uploaded artifacts, verify their
+checksums, and launch the packaged applications on Linux, Windows, and macOS.
+Run the workflow manually to obtain tested workflow artifacts, or push a `v*`
+tag to publish them only after all three artifact gates pass. Windows packages
+are unsigned and macOS packages are ad-hoc signed until platform signing
+credentials are supplied; signing does not affect local or CI compilation.
 
 Verify a change by rebuilding and re-running the smoke test in
 `docs/runbooks/headless-gui-smoke-test/`, which drives the gameplay loop without

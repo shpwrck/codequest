@@ -442,16 +442,30 @@ mod tests {
         assert!(copyright.transitions.iter().all(|transition| {
             transition.target == "opening-fanfare" && transition.after_ticks.is_some()
         }));
-        let fanfare = config
-            .scenes
-            .iter()
-            .find(|scene| scene.id == "opening-fanfare")
-            .expect("the storyboard should include an opening fanfare");
-        assert_eq!(fanfare.handler, Some(SceneHandler::OpeningFanfare));
-        assert!(fanfare
-            .transitions
-            .iter()
-            .all(|transition| transition.target == "title"));
+        let opening_story = [
+            ("opening-fanfare", "opening-source", "archive-answer"),
+            ("archive-answer", "opening-signal", "memory-vault"),
+            ("memory-vault", "opening-archive", "convergence"),
+            ("convergence", "opening-convergence", "oracle-awakening"),
+            ("oracle-awakening", "opening-fanfare", "title"),
+        ];
+        for (scene_id, art_id, elapsed_target) in opening_story {
+            let scene = config
+                .scenes
+                .iter()
+                .find(|scene| scene.id == scene_id)
+                .unwrap_or_else(|| panic!("the storyboard should include `{scene_id}`"));
+            assert_eq!(scene.handler, Some(SceneHandler::OpeningFanfare));
+            assert!(scene.art.iter().any(|id| id == art_id));
+            assert!(scene.transitions.iter().any(|transition| {
+                transition.signal == SceneSignal::Continue && transition.target == "title"
+            }));
+            assert!(scene.transitions.iter().any(|transition| {
+                transition.signal == SceneSignal::Elapsed
+                    && transition.target == elapsed_target
+                    && transition.after_ticks.is_some()
+            }));
+        }
         let oracle = config
             .scenes
             .iter()

@@ -14,7 +14,7 @@ metadata.
 ## Experience frame
 
 **Pitch:** A copyright-style repository chronicle names the people and history
-behind the cartridge, then erupts into an original code-fantasy fanfare before
+behind the cartridge, then unfolds through an original five-scene code-fantasy fanfare before
 the player binds a small code-seer, consults an Oracle, and proves their
 understanding through increasingly difficult conceptual questions. The first
 question request runs behind the opening spectacle, and any remaining latency
@@ -47,7 +47,7 @@ creates new renderer code.
 
 ## Session and loops
 
-- **Session shape:** Copyright → opening fanfare → title → quiz menu → hero
+- **Session shape:** Copyright → five-scene opening story → title → quiz menu → hero
   creation → Oracle → questions → level-up or game-over. A run lasts until the
   player loses three hearts or returns to the menu.
 - **Core loop:** Consult Oracle → receive one valid question → choose an answer
@@ -100,7 +100,11 @@ proposed until the runtime owns sound playback.
 | ID | Purpose | Player actions and feedback | Exit and next scenes | Mechanics | Art |
 |---|---|---|---|---|---|
 | `copyright` | Credit the repository's authors and real timeline while the first question request starts. | Read a deliberately dormant archive composition; A/Start skips after its minimum dwell. Never infer a legal owner from commit authorship. | `opening-fanfare` | `present-copyright` | `copyright-card`, `opening-soundscape` |
-| `opening-fanfare` | Turn early generation time into a finite original spectacle. | Watch light propagate from one cyan node through two sigils and crescendo into the complete Oracle; A/Start skips after the impact is readable. | `title` | `play-opening-fanfare` | `opening-fanfare`, `opening-soundscape` |
+| `opening-fanfare` | Introduce the code-seer and the source ember at a deliberately restrained baseline. | Watch the lone cyan ember in the dormant cathedral; A/Start becomes a visible skip after the 1.5-second minimum dwell. | Timed exit to `archive-answer`; skip to `title`. | `play-opening-fanfare` | `opening-source`, `opening-soundscape` |
+| `archive-answer` | Turn discovery into a causal response from the world. | The same code-seer reaches toward the ember as the altar and nearest monoliths answer in cyan. | Timed exit to `memory-vault`; A/Start skips to `title`. | `play-opening-fanfare` | `opening-signal`, `opening-soundscape` |
+| `memory-vault` | Reveal that the cathedral contains the repository's living history. | Follow the code-seer through opened archive doors into a canyon of commit constellations. | Timed exit to `convergence`; A/Start skips to `title`. | `play-opening-fanfare` | `opening-archive`, `opening-soundscape` |
+| `convergence` | Join source energy and earned knowledge without spending the climax early. | Cyan enters from the left, gold from the right, and an incomplete Oracle eye forms around a dark seed. | Timed exit to `oracle-awakening`; A/Start skips to `title`. | `play-opening-fanfare` | `opening-convergence`, `opening-soundscape` |
+| `oracle-awakening` | Resolve the story in the existing hero image instead of using it as the whole intro. | The complete cyan-and-gold Oracle sigil ignites around the code-seer; the frame reaches the sequence's maximum contrast. | Timed or A/Start exit to `title`. | `play-opening-fanfare` | `opening-fanfare`, `opening-soundscape` |
 | `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; the redrawn Oracle motif and title remain readable without glow. | `quiz-menu` | `begin-from-title` | `title-mark`, `ui-soundscape` |
 | `quiz-menu` | Explain the run and offer a safe return. | D-pad selects; A/Start confirms; B returns; focus is visible by shape and color. | `character-creation` or `title` | `navigate-menu` | `menu-frame`, `ui-soundscape` |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, path, and aura through centered identity rows; aura selects an authored hero colorway without procedural equipment overlays. | `oracle` | `customize-hero` | `hero-set`, `character-frame`, `ui-soundscape` |
@@ -124,11 +128,13 @@ their characters or layouts.
 
 | Beat | Target time | Presentation | Question-generation behavior | Player agency |
 |---|---:|---|---|---|
-| Copyright card | 0.0–1.5s | Begin almost black. The repository title, up to three author lines, and earliest → latest commit dates are engraved in a dim archive frame with no emissive glow. Show a literal © owner only when an explicit repository notice supplies it. | The first request has already started when the cartridge was accepted. | A/Start becomes available after the text has had one readable second. |
-| First signal | 1.5–3.0s | The archive clears to dormant cathedral silhouettes. One cyan commit node appears, then light travels through a sparse constellation; real tag or release landmarks may answer with a restrained pulse. | Continue silently; no percentage, spinner claim, or completion implication. | A/Start advances to the fanfare. |
-| Sigil propagation | 3.0–5.0s | Two abstract code sigils remain mostly dark while cyan and gold segments illuminate outward from the commit path. Their readable silhouettes precede the bright collision. | Continue in the background; cache an early result without interrupting the sequence. | A/Start may skip after the impact is readable. |
-| Oracle crescendo | 5.0–7.0s | The sigils collide once. Their joined crest branches like a commit graph and resolves into the complete cyan/gold Oracle eye—the opening's brightest, densest frame. Hold long enough to read it. Reduced motion uses clean staged cuts and fades. | Finishing this beat never promises that questions are ready. | No input required. |
-| Title handoff | 7.0–8.5s | Energy recedes while the eye silhouette remains. The title scene starts from a fresh clear and redraws that motif at a restrained baseline; no fanfare layer leaks across the state boundary. | Continue generation through title, menu, and hero creation if needed. | A/Start begins the normal menu flow. |
+| Copyright card | Before the six-second story | Begin almost black. The repository title, up to three author lines, and earliest → latest commit dates are engraved in a dim archive frame with no emissive glow. Show a literal © owner only when an explicit repository notice supplies it. | The first request has already started when the cartridge was accepted. | A/Start becomes available after the text has had one readable second. |
+| `opening-fanfare` — Source ember | 0.0–1.6s | A lone code-seer enters a vast dormant code-cathedral and discovers one cyan source ember over an ancient altar. The Oracle and gold are absent. | Continue silently; no percentage, spinner claim, or completion implication. | A/Start becomes available after 1.5 seconds and skips directly to title. |
+| `archive-answer` — Archive answer | 1.6–2.7s | The code-seer reaches out. One cyan pulse travels through the altar and wakes the nearest archive monoliths. | Continue in the background; cache an early result without interrupting the sequence. | A/Start skips directly to title. |
+| `memory-vault` — Memory vault | 2.7–3.8s | The monoliths split into enormous vault doors. The code-seer crosses a bridge beneath a deep constellation of commits and branching memory. | Continue generation without changing timing. | A/Start skips directly to title. |
+| `convergence` — Convergence | 3.8–4.9s | Cyan source streams and restrained gold knowledge streams meet in a circular chamber. Only an incomplete eye appears inside the still-dark Oracle seed. | Continue generation without implying readiness. | A/Start skips directly to title. |
+| `oracle-awakening` — Oracle climax | 4.9–6.0s | The existing `awakening.png` composition resolves the story: the complete cyan/gold Oracle eye ignites above the same code-seer at maximum luminance. | Finishing this beat never promises that questions are ready. | A/Start or the timer exits to title. |
+| Title handoff | After 6.0s | Energy clears completely. The title scene redraws the eye motif at a restrained baseline; no fanfare layer leaks across the state boundary. | Continue generation through title, menu, and hero creation if needed. | A/Start begins the normal menu flow. |
 
 If the first batch is ready early, it waits safely for the player. If it is
 still unavailable after hero creation, the existing Oracle scene communicates
@@ -166,15 +172,16 @@ and Claude retries.
 
 ### `play-opening-fanfare`
 
-- **Decision:** Watch the complete five-to-seven-second spectacle or skip after
+- **Decision:** Watch the complete six-second spectacle or skip after
   its opening impact.
 - **Inputs:** A or Start.
 - **Rules:** The sequence is finite and deterministic. Completion never implies
   question readiness. Reduced motion changes transitions, not duration or data.
-- **Feedback:** Dark silhouettes resolve through a repository crest and commit
-  constellation into the Oracle sigil, then cut cleanly to the title scene.
-  Sound grows from one node pulse to the full Oracle cadence in sync with that
-  luminance arc.
+- **Feedback:** Carry one code-seer through five distinct authored frames:
+  source ember, archive answer, memory vault, convergence, and complete Oracle.
+  Each cut changes place or causality—not merely brightness—and total luminance
+  rises monotonically into the existing climax. Sound grows from one node pulse
+  to the full Oracle cadence in sync with that arc.
 
 ### `navigate-menu`
 
@@ -263,7 +270,11 @@ and Claude retries.
 | ID | Kind | Used by scenes | Purpose and required states | Constraints | Status |
 |---|---|---|---|---|---|
 | `copyright-card` | UI | `copyright` | Establish authorship and history; title, primary authors, date range, optional explicit notice, and missing-data states. | Legible at 240×160; never infer legal ownership; body text stays at native size. | `oracle-chronicle` implemented; dormant luminance and staged reveal tested. |
-| `opening-fanfare` | Scene/VFX | `opening-fanfare` | Create anticipation from a completely dormant cathedral through first signal, sigil propagation, one collision, repository crest, and Oracle crescendo. | Original characters/composition; five-to-seven seconds; maximum cyan/gold only at the climax; no full-frame flashes; clean title handoff. | `oracle-awakening` implemented; dormant-to-crescendo luminance tested. |
+| `opening-source` | Scene | `opening-fanfare` | Establish the code-seer, dormant cathedral, and isolated source ember. | Authored 240×160 plate; no Oracle or gold; quiet skip region. | `awakening-source.png` implemented and native-inspected. |
+| `opening-signal` | Scene | `archive-answer` | Show the code-seer's action causing the altar and monoliths to wake. | Authored 240×160 plate; same character/world; more cyan without Oracle or gold. | `awakening-signal.png` implemented and native-inspected. |
+| `opening-archive` | Scene | `memory-vault` | Open repository history into a bridge-and-commit-constellation vista. | Authored 240×160 plate; distinct depth composition; restrained amber nodes only. | `awakening-archive.png` implemented and native-inspected. |
+| `opening-convergence` | Scene | `convergence` | Bring cyan and gold together around an incomplete Oracle seed. | Authored 240×160 plate; distinct circular chamber; no completed sigil or maximum white. | `awakening-convergence.png` implemented and native-inspected. |
+| `opening-fanfare` | Scene/VFX | `oracle-awakening` | Resolve the five-scene story in the complete Oracle crescendo. | Existing authored 240×160 plate; brightest cyan/gold only here; clean title handoff. | `awakening.png` retained as the climax; five-beat luminance and distinctness tested. |
 | `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | `oracle-title` implemented. |
 | `menu-frame` | UI | `quiz-menu` | Carry the cathedral/rune language into focused and idle menu states. | Focus differs by pointer, shape, and color; no unowned empty space. | `oracle-menu` implemented. |
 | `character-frame` | UI/scene | `character-creation` | Stage the customizable hero inside the same world with centered name, path, and aura rows plus loading, retry, and ready states. | Labels and values remain native-scale and centered in their measured interiors; status is truthful. | `oracle-atelier` implemented. |
@@ -281,7 +292,7 @@ engine does not load or play them yet.
 
 | ID | Used by scenes | Player-facing purpose | Cues/loops and variants | Constraints and acceptance | Status |
 |---|---|---|---|---|---|
-| `opening-soundscape` | `copyright`, `opening-fanfare` | Make the dormant-to-Oracle reveal audible and give the credits intentional restraint. | Archival tick, first-node pulse, branching sequence, sigil collision, Oracle cadence, clean tail. | Constrained chip-style palette; starts near silent; fullest arrangement only at the crescendo; reduced-audio variant. | Proposed |
+| `opening-soundscape` | `copyright` and all five opening story scenes | Make the dormant-to-Oracle reveal audible and give the credits intentional restraint. | Archival tick, source pulse, archive answer, vault branches, convergence, Oracle cadence, clean tail. | Constrained chip-style palette; starts near silent; fullest arrangement only at the crescendo; reduced-audio variant. | Proposed |
 | `ui-soundscape` | `title`, `quiz-menu`, `character-creation` | Make focus, choice, cancel, customization, and confirmation instantly legible. | Navigate, confirm, cancel, unavailable, trait variants, begin-run cadence. | One input edge produces at most one cue; no cue crosses scenes unintentionally. | Proposed |
 | `oracle-soundscape` | `oracle` | Separate Datafall play from truthful loading state without overwhelming it. | Low ambience; data, bug, retry, ready, and B-back cues; three progression-tier variants. | Loops stop on quiz/menu transition; status remains readable when muted. | Proposed |
 | `quiz-soundscape` | `quiz` | Clarify cursor movement, answer commitment, result, danger, and batch completion. | Cursor, commit, correct, wrong, low-heart, streak, batch-complete cues. | Correct/wrong never rely on sound alone; prevent stacked result cues. | Proposed |
@@ -292,7 +303,11 @@ engine does not load or play them yet.
 | Scene | Static | Motion | Sound | Mechanical closure | Felt progression | Evidence/status |
 |---|---|---|---|---|---|---|
 | `copyright` | Dim archive frame with hierarchy equal to gameplay; no glow. | Credits reveal in fixed readable steps, then clear cleanly. | Intentional near-silence; archival ticks remain proposed. | A/Start after minimum dwell or timed exit; missing provenance has explicit copy. | Establishes the dormant baseline and repository identity. | Visual template implemented and native-frame tested; audio proposed. |
-| `opening-fanfare` | Cathedral, sigils, commit path, and crest use the shared code-fantasy language. | Dormant → first node → propagation → collision → complete Oracle → title handoff. | Layered cadence remains proposed. | Skip and elapsed paths land on a fresh title frame. | Establishes the visual range the run later earns back. | Visual template and luminance arc implemented/tested; audio proposed. |
+| `opening-fanfare` | Lone code-seer, dormant cathedral depth, and one cyan ember establish a clear focal hierarchy. | A 1.6-second held establishing shot gives the story and skip gate time to read. | One source pulse remains proposed. | Elapsed enters `archive-answer`; A/Start becomes visible at 1.5 seconds and skips to title. | Establishes the darkest authored opening baseline. | Dedicated native plate and executable transitions implemented/tested; audio proposed. |
+| `archive-answer` | Same code-seer and cathedral, with lit floor paths and waking monolith silhouettes. | The composition itself advances causality; staged cut avoids a full-frame flash. | Altar response remains proposed. | Elapsed enters `memory-vault`; A/Start skips to title. | Cyan expands into a second visual channel: environment response. | Dedicated native plate and executable transitions implemented/tested; audio proposed. |
+| `memory-vault` | Foreground doors, bridge, and deep commit constellation create a new three-plane composition. | Staged cut moves the player deeper into the archive. | Branching commit sequence remains proposed. | Elapsed enters `convergence`; A/Start skips to title. | Space, node density, and narrative scale visibly expand. | Dedicated native plate and executable transitions implemented/tested; audio proposed. |
+| `convergence` | Circular chamber, same code-seer, opposing cyan/gold streams, and incomplete dark eye. | Staged cut turns propagation into convergence without spending maximum white. | Two-voice convergence remains proposed. | Elapsed enters `oracle-awakening`; A/Start skips to title. | Gold joins cyan and the goal is visibly telegraphed. | Dedicated native plate and executable transitions implemented/tested; audio proposed. |
+| `oracle-awakening` | Existing high-detail awakening composition becomes the earned final image. | Center luminance rises during the final hold, then clears cleanly to title. | Full Oracle cadence remains proposed. | Elapsed or A/Start lands on a fresh title frame. | Reaches the opening's brightest/densest state after four distinct scenes. | Existing plate retained; five-frame distinctness and luminance arc implemented/tested; audio proposed. |
 | `title` | Restrained Oracle motif and legible title at native scale. | One controlled eye/prompt pulse never competes with title. | Title loop and start cue remain proposed. | A/Start continues; unavailable cartridge state remains honest. | Returns to an Initiate baseline while preserving the Oracle promise. | Visual template implemented/tested; audio proposed. |
 | `quiz-menu` | Rune frame and shaped focus for both choices. | Focus moves on input edge. | Navigate, confirm, and cancel cues remain proposed. | Begin and back are explicit; held input cannot double-confirm. | New run previews the Initiate palette and reset. | Visual template implemented/tested; audio proposed. |
 | `character-creation` | Authored hero, centered identity rows, and Oracle status form one staged composition. | Aura changes the authored colorway; identity rows react immediately; begin has one clean handoff. | Trait and begin cues remain proposed. | Every row stays centered and contained; B returns; loading/retry/ready states are truthful. | Establishes identity that remains visible across the run. | Visual template implemented/tested; audio proposed. |
@@ -310,7 +325,7 @@ engine does not load or play them yet.
 | Mechanic and presentation graph | Mixed | Mechanics and audio remain metadata; typed visual templates are parsed, validated, and executed by scene renderers. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
 | Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
-| Copyright and opening-fanfare screens | Implemented with asset-backed templates | Trusted Bevy handlers render the illustrated chronicle and staged awakening before `Title`; manifest timing gates control skip/auto-advance while fanfare/title frames remain separate. |
+| Copyright and five-scene opening story | Implemented with asset-backed templates | Trusted Bevy handlers render the chronicle, source ember, archive answer, memory vault, convergence, and Oracle awakening before `Title`; manifest timing gates control per-scene auto-advance and direct skip while fanfare/title frames remain separate. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Trusted handlers own input and rendering while the manifest routes their semantic events. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
 | Oracle Datafall with safe recovery | Implemented in this pass | Held horizontal movement, deterministic falling objects, automatic data/bug collision counters, split top/bottom HUD, and B-back close the indefinite wait. |
@@ -318,7 +333,7 @@ engine does not load or play them yet.
 | Quiz result and reward input boundaries | Implemented in this pass | The 45-tick answer reveal replaces active controls, and level-up enforces a 60-tick hold before A/Start can leave. |
 | Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
 | Concise answer review and reduced motion | Partially implemented | Green/red answer copy, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
-| Visual templates selected from manifest | Implemented in this pass | Eleven typed built-in templates are selected by `art[].template`; Oracle templates composite native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
+| Visual templates selected from manifest | Implemented | Eleven typed built-in templates are selected by `art[].template`; `oracle-awakening` selects five art-ID-addressed opening plates, other Oracle templates composite their native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
 | Whole-game sound design and playback | Configured/metadata; runtime proposed | Every scene references an audio requirement, but the current engine has no sound asset selection or playback system. |
 | Felt presentation progression | Visual runtime implemented; audio proposed | Initiate, Adept, and Oracle-bound change palette, circuit density, crest geometry, and reward/result presentation; native-frame tests verify a non-numeric final-tier channel. |
 
@@ -342,8 +357,9 @@ engine does not load or play them yet.
 6. **Continuity pass:** Show the previous lesson and batch status during a wait
    using state the engine already owns.
 7. **Completed — Whole-game presentation pass:** Eleven typed built-in visual
-   templates cover all nine scenes, beginning with the dormant
-   `copyright-card` and culminating in the Oracle crescendo.
+   templates cover all thirteen reachable scenes, beginning with the dormant
+   `copyright-card` and culminating in the fifth opening beat's Oracle
+   crescendo.
 8. **Sound runtime pass:** Add bounded template-audio selection and playback,
    then implement every entry in the sound ledger with scene-owned loop exits.
 9. **Partially completed — Felt-progression pass:** Tiered visuals carry the
