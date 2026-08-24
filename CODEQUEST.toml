@@ -46,15 +46,15 @@ feedback = ["Update each identity label immediately; aura changes the authored h
 id = "consult-oracle"
 summary = "Play Oracle Datafall while the next question is prepared."
 inputs = ["left", "right", "b"]
-rules = ["Data packets and bugs fall in deterministic lanes while the Oracle holds the run for a valid question.", "Left and Right move the hero to dodge bugs or line up with data.", "B abandons the wait and returns to the quiz menu on its input edge.", "Contact with data increments the data counter automatically; contact with a bug increments the bug counter.", "Up, Down, A, Start, and shoulders do nothing in this scene, so their input cannot carry into a newly loaded question.", "Datafall counters are cosmetic and never change quiz score, hearts, question timing, or generation.", "A failed generation attempt is retried instead of replaced with filler."]
-feedback = ["Use distinct packet and crossed-bug silhouettes in addition to green and red.", "Keep Oracle Datafall, truthful Claude status, and animated dots in the top quiz header.", "Keep the data count, bug count, and move/back prompts in the bottom game strip.", "Show loading, retry, and ready status without a percentage.", "Give data, bug, retry, ready, and back distinct responses while keeping ambience below quiz feedback."]
+rules = ["Data packets and bugs fall in deterministic lanes while the Oracle holds the run for a valid question.", "Left and Right move the hero to dodge bugs or line up with data.", "B abandons the wait and returns to the quiz menu on its input edge.", "Contact with data increments the data counter automatically; contact with a bug increments the bug counter.", "Data charge lights a seal at 3, 6, and 9 collected shards; corruption breaks a containment seal at 1, 3, and 5 bug hits.", "Up, Down, A, Start, and shoulders do nothing in this scene, so their input cannot carry into a newly loaded question.", "Datafall counters and their staged seals are expressive rewards and warnings; they never change quiz score, wards, question timing, or generation.", "A failed generation attempt is retried instead of replaced with filler."]
+feedback = ["Use distinct authored crystal and corruption silhouettes in addition to green and red.", "Keep Oracle Datafall and truthful Claude status in the top quiz header.", "Keep the data count, bug count, three charging runes, three breakable containment runes, and move/back prompts in the bottom game strip.", "Show loading, retry, and ready status without a percentage.", "Give each data-charge and corruption-breach threshold a legible fill/fracture state plus distinct response while keeping ambience below quiz feedback."]
 
 [[mechanics]]
 id = "answer-question"
 summary = "Choose one of four answers to a conceptual project question."
 inputs = ["d-pad", "a", "b"]
-rules = ["Exactly one answer is correct.", "A wrong answer costs one heart.", "Correct answers increase score and streak.", "Committing an answer records that question in the cartridge save; future runs and launches skip every recorded question.", "After commitment, hold the revealed answer for 45 ticks; all inputs are intentionally inactive until the automatic transition completes."]
-feedback = ["Reveal whether the answer was correct through text, shape, animation, and color.", "Show the correct answer after a mistake.", "Replace active answer/back prompts with REVIEW ANSWER during the 45-tick result hold.", "Use distinct cursor, commitment, correct, wrong, low-heart, streak, and batch-complete responses."]
+rules = ["Exactly one answer is correct.", "A wrong answer costs one ward and resets flow; three, two, one, and zero wards are full, strained, fractured, and broken stages.", "Correct answers build flow: streaks 0-2 award x1 score, 3-5 award x2, and 6 or more award x3.", "Cumulative score awakens Insight Runes I, II, and III at 300, 900, and 1800 points.", "Committing an answer records that question in the cartridge save; future runs and launches skip every recorded question.", "After commitment, hold the revealed answer for 45 ticks; all inputs are intentionally inactive until the automatic transition completes."]
+feedback = ["Reveal whether the answer was correct through text, shape, animation, and color.", "Show the correct answer after a mistake.", "Use three authored Oracle ward runes for health instead of generic pips; communicate full, strained, fractured, and broken states through fill, count, color, and a concise review banner.", "Show flow multiplier, raw score, and three awakening Insight Rune marks together; announce exact threshold crossings before establishing the new baseline.", "Replace active answer/back prompts with the owned review, ward, flow, or rune response during the 45-tick result hold."]
 
 [[mechanics]]
 id = "continue-after-reward"
@@ -131,7 +131,7 @@ id = "character-frame"
 kind = "ui-scene"
 summary = "A staged code-fantasy workshop for hero customization and truthful Oracle status."
 template = "oracle-atelier"
-requirements = ["Fits the authored hero, centered native-scale identity labels, and controls inside 240x160.", "Supports loading, retry, and ready without fake progress.", "Keeps the hero preview visually dominant over status copy.", "Does not layer lower-fidelity procedural accessories or weapons over the authored hero sprite."]
+requirements = ["Fits the authored hero, centered native-scale identity labels, and controls inside 240x160.", "Keeps the heading disjoint from every identity row, centers action copy in the usable button interior, and anchors the hero's visible feet to the stage support line.", "Supports loading, retry, and ready without fake progress.", "Keeps the hero preview visually dominant over status copy.", "Does not layer lower-fidelity procedural accessories or weapons over the authored hero sprite."]
 
 [[art]]
 id = "hero-set"
@@ -145,14 +145,14 @@ id = "oracle-sanctum"
 kind = "scene"
 summary = "A readable falling-object playfield that makes question generation feel active."
 template = "oracle-sanctum"
-requirements = ["Supports the customized hero moving across the full playfield.", "Uses authored cyan-and-gold crystal shards for data and asymmetric magenta corruption glyphs for bugs; no procedural boxes or crossed lines.", "Keeps every falling sprite contained within the live playfield and distinct by silhouette, value, and hue.", "Reserves a top quiz header for the title, Claude status, and animated dots.", "Reserves a bottom game strip for counters plus move and B-back prompts.", "Has clear loading, retry, ready, and safe-exit states.", "Reflects the current Initiate, Adept, or Oracle-bound presentation tier."]
+requirements = ["Supports the customized hero moving across the full playfield.", "Uses authored cyan-and-gold crystal shards for data and asymmetric magenta corruption glyphs for bugs; no procedural boxes or crossed lines.", "Keeps every falling sprite contained within the live playfield and distinct by silhouette, value, and hue.", "Reserves a top quiz header for the title and Claude status.", "Composes data and corruption counts with themed three-rune meters in the bottom strip; data fills at 3, 6, and 9 while bug hits break containment at 1, 3, and 5.", "Keeps both threshold instruments disjoint from move and B-back prompts at worst-case two-digit counts.", "Has clear loading, retry, ready, and safe-exit states.", "Reflects the current Initiate, Adept, or Oracle-bound presentation tier."]
 
 [[art]]
 id = "quiz-frame"
 kind = "ui"
-summary = "Question, answer, score, streak, and heart presentation."
+summary = "Question, answer, score, flow, and ward-health presentation."
 template = "oracle-trial"
-requirements = ["Supports four lines of 31-character question copy and four 31-character choices with visible spacing between glyphs and right-side breathing room.", "Keeps focus visible in every state.", "Turns the correct choice green and an incorrect committed choice red during review without redundant result words.", "Carries the hero and earned presentation tier without reducing question readability."]
+requirements = ["Supports four lines of 31-character question copy and four 31-character choices with visible spacing between glyphs and right-side breathing room.", "Keeps every answer glyph and inter-glyph cell disjoint from panel dividers and other static ornaments.", "Keeps focus visible in every state.", "Uses Oracle ward runes, flow multiplier, Insight Rune stages, and raw score to fill the header intentionally without collisions or generic star/heart pips.", "Shows exact 300, 900, and 1800 score crossings and x1, x2, and x3 flow stages while retaining the readable numeric score.", "Turns the correct choice green and an incorrect committed choice red during review without redundant result words.", "Carries the hero and earned presentation tier without reducing question readability."]
 
 [[art]]
 id = "reward-frame"
@@ -173,7 +173,7 @@ id = "run-progression"
 kind = "presentation-system"
 summary = "Initiate, Adept, and Oracle-bound presentation tiers that make quiz progression perceptible through the final result."
 template = "oracle-progression"
-requirements = ["Changes at least two non-numeric channels across a run.", "Carries the earned crest and environment state through Oracle, quiz, level-up, and game-over scenes.", "Resets deterministically when a new run begins."]
+requirements = ["Changes at least two non-numeric channels across a run.", "Gives every visible tracked quantity a desirable direction, exact staged thresholds, crossing response, cap, and reset.", "Carries earned bond, Insight Rune, ward, flow, data-charge, and containment states through the scenes where they matter.", "Resets deterministically when a new run begins."]
 
 [[art]]
 id = "opening-soundscape"
@@ -197,7 +197,7 @@ requirements = ["Distinguishes data, bug, retry, ready, and B-back.", "Provides 
 id = "quiz-soundscape"
 kind = "audio"
 summary = "A quiz cue set for focus, commitment, result, danger, streak, and batch completion."
-requirements = ["Distinguishes cursor, commit, correct, wrong, low-heart, streak, and batch-complete.", "Prevents result cues from stacking.", "Keeps all required answer feedback visible when muted."]
+requirements = ["Distinguishes cursor, commit, correct, wrong, low-ward, flow-stage, and batch-complete.", "Prevents result cues from stacking.", "Keeps all required answer feedback visible when muted."]
 
 [[art]]
 id = "progression-soundscape"

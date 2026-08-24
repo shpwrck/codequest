@@ -119,6 +119,30 @@ production metadata from assets the runtime actually loads. Add a polish matrix
 to the brief. Do not call the game polished while any reachable scene has an
 unspecified surface, an unhandled player/system event, or an unowned handoff.
 
+For native layout, inspect the final plate-plus-live-UI composite rather than
+approving isolated rectangles. Record each plate's usable content interiors,
+static foreground ornaments, character support lines, and live bounds. Center
+copy in the usable interior rather than the decorative shell; anchor a sprite's
+visible alpha bounds to its support surface; and test every sibling pair plus
+worst-case copy for intersections. A panel passes only when borders, dividers,
+and other plate details remain outside the glyph cells they frame.
+
+Audit instrumentation as authored game art, not placeholder notation. Health,
+score, resources, counters, pips, cursors, markers, and status glyphs must use
+the game's established material and shape language, compose deliberately into
+their available space, and remain legible by silhouette, fill, position, or a
+short label. Reject generic stars, dots, emoji, stock hearts, and arbitrary
+bars when a themed stateful mark can communicate the same value.
+
+Give every player-visible tracked quantity a threshold contract. Record what
+the quantity means, whether higher or lower is desirable, its reachable range,
+named breakpoints, the staged mechanical or expressive reward/consequence at
+each breakpoint, how the next threshold is telegraphed, and how the state caps
+or resets. A bare number that changes without a threshold response is not a
+finished system; either make its stages meaningful or remove it from the HUD.
+Ordinal navigation such as `question 4 of 10` may use an existing batch or
+completion threshold, but it still needs an owned completion response.
+
 ### 7. Audit design versus runtime
 
 Classify each important element as:
@@ -198,6 +222,15 @@ Then perform a traceability pass:
 - Every scene appears in the brief and manifest with the same ID.
 - Implemented/configured/proposed claims match repository evidence.
 - Every reachable scene has explicit static, motion, and sound intent.
+- Every aligned label/action is centered in the measured usable interior; every
+  visible character support point meets its intended placement surface; and no
+  live glyph cell intersects a plate ornament or sibling foreground bound.
+- Every HUD counter, pip, marker, and glyph belongs to the game's visual
+  language, uses its allocated space compositionally, and exposes empty,
+  intermediate, full, gain, and loss states without relying on color alone.
+- Every player-visible tracked quantity declares desirable direction,
+  thresholds, staged reward/consequence, telegraph, cap, and reset; tests cross
+  the exact breakpoints instead of sampling only minimum and maximum values.
 - Every player input and asynchronous outcome is handled, ignored deliberately,
   or routed to a visible recovery state; no FSM state is left open.
 - Loops, one-shots, held inputs, skip paths, and scene exits hand off cleanly.
