@@ -833,7 +833,9 @@ html, body {
   inset: 0 0 37px;
   z-index: 1;
   overflow: hidden;
-  background: linear-gradient(155deg, #25264a, #111225 72%);
+  background:
+    linear-gradient(90deg, rgba(113,117,199,.09), transparent 22% 78%, rgba(113,117,199,.09)),
+    linear-gradient(155deg, #25264a, #111225 72%);
   border: 3px solid #292b5b;
   border-radius: 10px 10px 7px 7px;
   box-shadow:
@@ -841,16 +843,75 @@ html, body {
     inset 0 -2px 0 rgba(112,117,199,.25),
     0 1px 0 rgba(255,255,255,.08);
 }
+.battery-hardware {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.battery-cradle {
+  position: absolute;
+  left: 32px;
+  right: 32px;
+  height: 43px;
+  background: linear-gradient(to bottom, #090a16, #1b1d37 48%, #080913 100%);
+  border: 2px solid #343763;
+  border-radius: 22px;
+  box-shadow:
+    inset 0 5px 8px rgba(0,0,0,.72),
+    inset 0 -2px 2px rgba(107,111,185,.18);
+}
+.battery-cradle.top { top: 4px; }
+.battery-cradle.bottom { top: 48px; }
+.battery-contact {
+  position: absolute;
+  z-index: 2;
+  filter: drop-shadow(0 2px 1px rgba(0,0,0,.75));
+}
+.battery-contact.spring {
+  width: 31px;
+  height: 22px;
+  background: repeating-linear-gradient(
+    104deg,
+    transparent 0 4px,
+    #5e606a 4px 6px,
+    #e2e3e6 6px 8px,
+    #777985 8px 10px,
+    transparent 10px 14px
+  );
+  border-right: 3px solid #bfc1c7;
+}
+.battery-contact.leaf {
+  width: 29px;
+  height: 19px;
+  background: linear-gradient(90deg, #555861, #e5e6e8 38%, #898b94 62%, #4c4e57);
+  border: 1px solid #2e3038;
+  border-radius: 8px 2px 2px 8px;
+  box-shadow: inset 0 2px 1px rgba(255,255,255,.38);
+}
+.battery-contact.top-left { left: 20px; top: 16px; }
+.battery-contact.top-right { right: 17px; top: 14px; }
+.battery-contact.bottom-left {
+  left: 17px;
+  top: 59px;
+  transform: scaleX(-1);
+}
+.battery-contact.bottom-right {
+  right: 20px;
+  top: 60px;
+  transform: scaleX(-1);
+}
 .battery-pack {
   appearance: none;
   position: absolute;
-  left: 9px;
-  top: 8px;
-  width: 292px;
-  height: 78px;
+  left: 53px;
+  top: 6px;
+  z-index: 3;
+  width: 210px;
+  height: 83px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   padding: 0;
   color: inherit;
   background: transparent;
@@ -859,49 +920,77 @@ html, body {
   image-rendering: auto;
 }
 .battery-pack.hidden { display: none; }
-.battery-pack:hover .aa-battery,
-.battery-pack:focus-visible .aa-battery {
-  filter: brightness(1.12);
-  box-shadow: 0 0 0 2px #f4f4f4, 0 2px 4px rgba(0,0,0,.55);
+.battery-pack:focus-visible {
+  outline: 2px solid rgba(255,255,255,.92);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
-.battery-pack:focus-visible { outline: none; }
 .aa-battery {
   position: relative;
   display: block;
-  height: 37px;
-  padding: 0 7px;
+  flex: 0 0 39px;
   border: 1px solid #080914;
-  border-radius: 19px;
-  background: linear-gradient(#4d4f59, #191a20 48%, #090a0e 52%, #33353e);
-  box-shadow: inset 0 2px 1px rgba(255,255,255,.18), 0 2px 3px rgba(0,0,0,.55);
+  border-radius: 50%;
+  background: linear-gradient(to bottom, #d7d9dd 0%, #777a84 11%, #30323a 28%, #111218 58%, #05060a 76%, #686b74 94%, #c5c7cc 100%);
+  box-shadow:
+    inset 0 2px 1px rgba(255,255,255,.32),
+    inset 0 -2px 2px rgba(0,0,0,.5),
+    0 3px 4px rgba(0,0,0,.65);
+}
+.battery-pack:hover .aa-battery,
+.battery-pack:focus-visible .aa-battery {
+  filter: brightness(1.13);
 }
 .aa-battery::before,
 .aa-battery::after {
   content: '';
   position: absolute;
-  top: 10px;
   z-index: 2;
-  width: 8px;
-  height: 15px;
   background: linear-gradient(90deg, #777982, #f1f1ef 48%, #777982);
   border: 1px solid #363740;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.55), 0 1px 2px rgba(0,0,0,.65);
 }
-.aa-battery::before { left: -5px; border-radius: 4px 0 0 4px; }
-.aa-battery::after { right: -5px; border-radius: 0 4px 4px 0; }
+.aa-battery.top::before,
+.aa-battery.bottom::after {
+  top: 10px;
+  width: 14px;
+  height: 18px;
+}
+.aa-battery.top::before {
+  left: -12px;
+  border-radius: 50% 2px 2px 50%;
+}
+.aa-battery.bottom::after {
+  right: -12px;
+  border-radius: 2px 50% 50% 2px;
+}
+.aa-battery.top::after,
+.aa-battery.bottom::before {
+  top: 4px;
+  width: 9px;
+  height: 29px;
+}
+.aa-battery.top::after {
+  right: -5px;
+  border-radius: 0 50% 50% 0;
+}
+.aa-battery.bottom::before {
+  left: -5px;
+  border-radius: 50% 0 0 50%;
+}
 .aa-battery-label {
-  position: relative;
+  position: absolute;
+  inset: 3px 2px;
   z-index: 1;
-  width: 100%;
-  height: 100%;
   display: grid;
-  grid-template-columns: 31px 43px 1fr 31px;
+  grid-template-columns: 27px 34px 1fr 27px;
   align-items: center;
   overflow: hidden;
-  border-radius: 16px;
+  border-radius: 50%;
   font-family: Inter, Aptos, "Segoe UI", Arial, sans-serif;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 800;
-  letter-spacing: 1.2px;
+  letter-spacing: .9px;
   line-height: 1;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
@@ -911,7 +1000,7 @@ html, body {
 .battery-polarity {
   position: relative;
   z-index: 1;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 500;
   text-align: center;
 }
@@ -922,8 +1011,8 @@ html, body {
   z-index: 1;
   grid-column: 2;
   justify-self: center;
-  width: 35px;
-  height: 25px;
+  width: 28px;
+  height: 23px;
   display: grid;
   place-items: center;
   color: #2459e0;
@@ -946,15 +1035,19 @@ html, body {
 .battery-pack.codex { --battery-accent: #2459e0; }
 .battery-pack.codex .aa-battery-label {
   color: #fff;
-  background: linear-gradient(90deg, #2459e0 0 30%, #111217 30% 100%);
+  background:
+    linear-gradient(to bottom, rgba(255,255,255,.30), rgba(255,255,255,.07) 27%, rgba(0,0,0,.12) 58%, rgba(0,0,0,.5)),
+    linear-gradient(90deg, #2459e0 0 33%, #111217 33% 100%);
 }
 .battery-pack.codex .battery-polarity.positive { color: #fff; }
 .battery-pack.codex .battery-polarity.negative { color: #fff; }
 .battery-pack.claude { --battery-accent: #d95f3f; }
 .battery-pack.claude .aa-battery-label {
-  grid-template-columns: 36px 0 1fr 36px;
+  grid-template-columns: 30px 0 1fr 30px;
   color: #28272d;
-  background: linear-gradient(90deg, #d95f3f 0 22%, #f3e7d0 22% 82%, #2b2a30 82% 100%);
+  background:
+    linear-gradient(to bottom, rgba(255,255,255,.30), rgba(255,255,255,.07) 27%, rgba(0,0,0,.12) 58%, rgba(0,0,0,.42)),
+    linear-gradient(90deg, #d95f3f 0 23%, #f3e7d0 23% 80%, #2b2a30 80% 100%);
 }
 .battery-pack.claude .battery-logo { display: none; }
 .battery-pack.claude .battery-polarity { color: #fff; }
@@ -963,6 +1056,7 @@ html, body {
   left: 12px;
   right: 12px;
   top: 23px;
+  z-index: 4;
   height: 48px;
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -997,7 +1091,8 @@ html, body {
   position: absolute;
   left: 8px;
   right: 8px;
-  bottom: 14px;
+  bottom: 4px;
+  z-index: 4;
   color: #aeb2d4;
   font: 700 7px/10px Inter, Aptos, "Segoe UI", Arial, sans-serif;
   letter-spacing: .9px;
@@ -1019,21 +1114,20 @@ html, body {
   padding: 0;
   background: linear-gradient(150deg, #595eb2, #474b9c);
   border: 3px solid #34366f;
-  border-radius: 10px 10px 38px 38px / 10px 10px 18px 18px;
+  border-radius: 10px;
   box-shadow: inset 0 2px 0 rgba(255,255,255,.10), inset 0 -5px 0 rgba(0,0,0,.15);
   cursor: pointer;
   transition: transform .28s cubic-bezier(.2,.75,.25,1), filter .18s ease;
 }
 .rear-battery-door:hover,
 .rear-battery-door:focus-visible { filter: brightness(1.08); outline: none; }
-.battery-compartment.open .rear-battery-door { transform: translateY(101px); }
+.battery-compartment.open .rear-battery-door { transform: translateY(116px); }
 .battery-compartment.locked .rear-battery-door { cursor: not-allowed; }
 .battery-compartment.checking .battery-pack { animation: batteryChecking .8s ease-in-out infinite; }
 @keyframes batteryChecking { 50% { filter: brightness(1.3); } }
 .battery-compartment.opening .rear-battery-door { pointer-events: none; }
 .battery-compartment:not(.open) .battery-bay { visibility: hidden; }
 .battery-compartment.open .battery-bay { visibility: visible; }
-.battery-compartment.open .rear-latch { transform: translateX(-50%) rotate(180deg); }
 .battery-compartment.open .rear-brand { opacity: .55; }
 .battery-compartment.open .battery-pack,
 .battery-compartment.open .battery-chooser { pointer-events: auto; }
@@ -1041,36 +1135,24 @@ html, body {
 .battery-compartment:not(.open) .battery-chooser { pointer-events: none; }
 .battery-compartment.open .battery-status { opacity: 1; }
 .battery-compartment:not(.open) .battery-status { opacity: 0; }
-.battery-compartment .rear-latch,
-.battery-compartment .rear-brand { transition: transform .28s ease, opacity .18s ease; }
+.battery-compartment .rear-brand { transition: opacity .18s ease; }
 @media (prefers-reduced-motion: reduce) {
   .rear-battery-door,
-  .battery-compartment .rear-latch,
   .battery-compartment .rear-brand { transition: none; }
   .battery-compartment.checking .battery-pack { animation: none; filter: brightness(1.22); }
 }
 .rear-latch {
   position: absolute;
   left: 50%;
-  top: -18px;
-  width: 72px;
-  height: 30px;
+  bottom: 11px;
+  width: 44px;
+  height: 10px;
   transform: translateX(-50%);
-  background: #42468f;
-  border: 3px solid #292b5b;
-  border-radius: 6px;
-  box-shadow: inset 0 -7px 0 rgba(0,0,0,.22);
+  background: linear-gradient(to bottom, #8d91df, #7175c7);
+  border: 1px solid rgba(41,43,91,.7);
+  border-radius: 5px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 1px 2px rgba(0,0,0,.26);
   pointer-events: none;
-}
-.rear-latch::after {
-  content: '';
-  position: absolute;
-  left: 22px;
-  right: 22px;
-  bottom: 3px;
-  height: 6px;
-  background: #7175c7;
-  border-radius: 2px;
 }
 .rear-brand {
   position: absolute;

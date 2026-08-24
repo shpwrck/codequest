@@ -41,6 +41,21 @@ assert.equal(
   2,
   "The installed provider must be represented by exactly two AA cells",
 );
+assert.equal(
+  [...html.matchAll(/class="battery-contact /g)].length,
+  4,
+  "The two AA bays must expose all four electrical contacts",
+);
+assert.equal(
+  [...html.matchAll(/class="battery-cradle /g)].length,
+  2,
+  "Each AA cell must sit in a visible molded cradle",
+);
+assert.match(
+  html,
+  /<button id="battery-door"[\s\S]*?<span class="rear-latch"[\s\S]*?<\/button>/,
+  "The light latch must be part of the removable battery cover",
+);
 
 assert.match(block(".battery-compartment"), /position:\s*absolute/, "The battery bay must belong to the rear shell");
 assert.match(
@@ -48,6 +63,25 @@ assert.match(
   /transform:\s*translateY\(/,
   "Opening the compartment must move the physical door",
 );
+assert.doesNotMatch(
+  block(".battery-compartment.open .rear-battery-door"),
+  /rotate\(/,
+  "The battery cover must lift away without spinning",
+);
+assert.doesNotMatch(
+  css,
+  /\.battery-compartment\.open\s+\.rear-latch\s*\{[^}]*rotate\(/s,
+  "The latch must not rotate independently from the cover",
+);
+const batteryBody = block(".aa-battery");
+assert.match(batteryBody, /linear-gradient\(to bottom/, "AA cells need cylindrical cross-body shading");
+assert.match(batteryBody, /border-radius:\s*50%/, "AA cells need rounded cylindrical ends");
+assert.match(
+  block(".battery-contact.spring"),
+  /repeating-linear-gradient/,
+  "The spring leads must be visibly modeled",
+);
+assert.match(block(".battery-contact.leaf"), /background:/, "The flat electrical leads must be visible");
 const batteryLabel = block(".aa-battery-label");
 assert.match(batteryLabel, /font-family:\s*[^;]*sans-serif/, "Battery labels must use smooth product typography");
 assert.match(batteryLabel, /-webkit-font-smoothing:\s*antialiased/, "Battery labels must be anti-aliased");
