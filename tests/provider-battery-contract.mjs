@@ -89,17 +89,17 @@ assert.match(
   /overflow:\s*visible/,
   "The rear shell must not clip the fully removed cover",
 );
-assert.ok(
-  pixels("#shell-scale.battery-door-open", "height") >= 446,
-  "The open-device fit box must include the fully removed cover",
-);
+assert.doesNotMatch(css, /#shell-scale\.battery-door-open/, "Opening the cover must not resize the device");
+const openDoor = block(".battery-compartment.open .rear-battery-door");
 assert.match(
-  block(".battery-compartment.open .rear-battery-door"),
+  openDoor,
   /transform:\s*translateY\(/,
   "Opening the compartment must move the physical door",
 );
+const coverTravel = Number(openDoor.match(/translateY\((\d+)px\)/)?.[1] || 0);
+assert.ok(coverTravel >= 170, "The removed cover must continue completely off screen");
 assert.doesNotMatch(
-  block(".battery-compartment.open .rear-battery-door"),
+  openDoor,
   /rotate\(/,
   "The battery cover must lift away without spinning",
 );
@@ -146,12 +146,8 @@ assert.match(
   "The engine must not power on until provider verification succeeds",
 );
 assert.match(adapter, /function rejectPowerOn\(/, "Missing the failed power-on recovery path");
-assert.match(adapter, /const OPEN_DEVICE_HEIGHT = 446/, "The open cover must participate in native window fitting");
-assert.match(
-  adapter,
-  /scaleEl\.classList\.toggle\("battery-door-open", batteryDoorOpen && shellBackVisible\)/,
-  "The native fit box must expand only while the back cover is open",
-);
+assert.doesNotMatch(adapter, /OPEN_DEVICE_HEIGHT|battery-door-open/, "The open cover must not affect native fitting");
+assert.match(adapter, /window\.innerHeight \/ DEVICE_HEIGHT/, "Device fitting must use one stable height");
 assert.match(adapter, /powerLed\.classList\.add\("rejected"\)/, "The power indicator never receives its red failure state");
 assert.doesNotMatch(
   adapter,

@@ -79,7 +79,6 @@ html, body {
   height: 368px;
   flex: none;
 }
-#shell-scale.battery-door-open { height: 446px; }
 #device-rotator {
   position: absolute;
   inset: 0;
@@ -1188,11 +1187,11 @@ html, body {
   border-radius: 10px;
   box-shadow: inset 0 2px 0 rgba(255,255,255,.10), inset 0 -5px 0 rgba(0,0,0,.15);
   cursor: pointer;
-  transition: transform .28s cubic-bezier(.2,.75,.25,1), filter .18s ease;
+  transition: transform .38s cubic-bezier(.2,.75,.25,1), filter .18s ease;
 }
 .rear-battery-door:hover,
 .rear-battery-door:focus-visible { filter: brightness(1.08); outline: none; }
-.battery-compartment.open .rear-battery-door { transform: translateY(101px); }
+.battery-compartment.open .rear-battery-door { transform: translateY(174px); }
 .battery-compartment.locked .rear-battery-door { cursor: not-allowed; }
 .battery-compartment.checking .battery-pack { animation: batteryChecking .8s ease-in-out infinite; }
 @keyframes batteryChecking { 50% { filter: brightness(1.3); } }

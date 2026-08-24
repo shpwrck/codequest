@@ -17,7 +17,6 @@ import {
   const FRAME_BYTES = WIDTH * HEIGHT * 4;
   const DEVICE_WIDTH = 618;
   const DEVICE_HEIGHT = 368;
-  const OPEN_DEVICE_HEIGHT = 446;
   const BOOT_DURATION_MS = 2600;
   const BOOT_SKIP_DELAY_MS = 650;
   const TURN_DURATION_MS = 520;
@@ -77,16 +76,11 @@ import {
   const swallowedByBoot = Object.create(null);
 
   function fit() {
-    const openBack = shellBackVisible && batteryDoorOpen;
     const available = Math.min(
       window.innerWidth / DEVICE_WIDTH,
-      window.innerHeight / (openBack ? OPEN_DEVICE_HEIGHT : DEVICE_HEIGHT),
+      window.innerHeight / DEVICE_HEIGHT,
     );
-    const snapped = openBack
-      ? Math.max(0.35, Math.round(available * 0.82 * 10) / 10)
-      : available >= 1
-        ? Math.floor(available * 2) / 2
-        : Math.max(0.35, available);
+    const snapped = available >= 1 ? Math.floor(available * 2) / 2 : Math.max(0.35, available);
     scaleEl.style.zoom = snapped;
   }
 
@@ -201,7 +195,6 @@ import {
     }
     batteryDoorOpen = nextOpen;
     batteryCompartment.classList.toggle("open", batteryDoorOpen);
-    scaleEl.classList.toggle("battery-door-open", batteryDoorOpen && shellBackVisible);
     batteryCompartment.classList.toggle("locked", powered);
     batteryDoor.setAttribute("aria-expanded", String(batteryDoorOpen));
     batteryDoor.setAttribute(
@@ -212,7 +205,6 @@ import {
     );
     batteryPack.inert = !batteryDoorOpen;
     batteryChooser.inert = !batteryDoorOpen;
-    fit();
     return true;
   }
 
