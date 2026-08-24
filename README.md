@@ -168,7 +168,7 @@ instead of silently falling back.
 
 All physical controls are clickable. The floating FRONT/BACK switch turns the
 whole unit over; the rear label lists gameplay bindings and the serial plate
-shows the inserted repository's short commit hash.
+shows the short commit hash of the running CODE QUEST ADVANCE build.
 
 | Keyboard | Handheld input | Current use |
 |---|---|---|

@@ -5,6 +5,7 @@ const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8")
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const adapter = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+const build = readFileSync(new URL("../src-tauri/build.rs", import.meta.url), "utf8");
 
 function block(selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -155,9 +156,23 @@ assert.match(adapter, /ShiftLeft:\s*"select",\s*ShiftRight:\s*"select"/, "SELECT
 assert.match(adapter, /viewToggle\.addEventListener\("click"/, "The floating front/back switch is not wired");
 assert.match(adapter, /viewToggle\.setAttribute\("aria-checked",\s*String\(shellBackVisible\)\)/, "The slider's accessible state does not follow the visible face");
 
-assert.match(html, /id="rear-serial">-------<\/div>/, "The empty serial plate needs a neutral revision placeholder");
-assert.match(adapter, /rearSerial\.textContent\s*=\s*cartridge\?\.revision\s*\|\|\s*"-------"/, "The serial plate does not show the inserted repository revision");
+assert.match(html, /id="rear-serial">-------<\/div>/, "The serial plate needs a neutral bootstrap placeholder");
+assert.match(
+  adapter,
+  /rearSerial\.textContent\s*=\s*await invoke\("app_revision"\)/,
+  "The serial plate does not load the running CODE QUEST ADVANCE revision",
+);
+const renderCartridge = adapter.match(/function renderCartridge\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
+assert.doesNotMatch(
+  renderCartridge,
+  /rearSerial/,
+  "Inserting or ejecting a cartridge must not change the device revision",
+);
+assert.match(rust, /fn app_revision\(\)[\s\S]*?CQA_APP_REVISION/, "The native shell does not expose its build revision");
+assert.match(rust, /generate_handler!\[[\s\S]*?app_revision/, "The build revision command is not registered with Tauri");
+assert.match(build, /rev-parse[\s\S]*?--short=7[\s\S]*?HEAD/, "The build does not read the app repository's short HEAD");
+assert.match(build, /cargo:rustc-env=CQA_APP_REVISION=/, "The app revision is not embedded into the native build");
 assert.match(rust, /revision:\s*String/, "Cartridge metadata does not carry a revision");
 assert.match(rust, /rev-parse",\s*"--short=7",\s*"HEAD"/, "Cartridge revisions are not loaded from short HEAD");
 
-console.log("Device reverse contract OK: recessed cartridge, floating switch, compact hotkey label, revision serial");
+console.log("Device reverse contract OK: recessed cartridge, floating switch, compact hotkey label, device revision serial");
