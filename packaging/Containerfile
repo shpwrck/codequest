@@ -35,6 +35,7 @@ RUN npm ci
 
 COPY src ./src
 COPY src-tauri ./src-tauri
+ARG CQA_BUILD_REVISION
 RUN npm run tauri build -- --bundles appimage
 
 # --- EL9 compatibility pass --------------------------------------------------
