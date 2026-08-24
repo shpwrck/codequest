@@ -128,6 +128,7 @@ assert.doesNotMatch(html, /<button class="shell-tag"/, "The front model badge mu
 assert.doesNotMatch(html, /<button class="rear-brand"/, "The rear brand mark must remain molded decoration");
 assert.match(html, /id="device-back"[^>]*aria-hidden="true"/, "The rear face must start hidden from assistive technology");
 assert.match(block("#device-view-toggle"), /position:\s*fixed/, "The front/back switch should float independently of the shell");
+assert.match(block("#device-view-toggle"), /font:\s*10px\s+'Press Start 2P'/, "The front/back labels must remain legible");
 assert.match(css, /#device-view-toggle\.back-active[\s\S]*?\.view-toggle-knob/, "The slider does not expose its rear position");
 
 assert.match(css, /#shell-scale\.turning\s+#device-rotator\s*\{[^}]*animation:\s*deviceTurn/s, "The whole device does not own the turn animation");
