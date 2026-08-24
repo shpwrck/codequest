@@ -1,222 +1,270 @@
 # CODE QUEST ADVANCE
 
-![Title screen](docs/screenshots/shot1-title.png)
-![Battle](docs/screenshots/shot3-battle.png)
+Turn a local Git repository into a cartridge and learn it through a retro
+handheld game. CODE QUEST ADVANCE inspects the repository on your machine,
+generates conceptual questions with the local Claude CLI, and runs the game in
+a native Tauri app backed by a headless Bevy engine.
 
-## Controls
+![CODE QUEST ADVANCE running the Oracle cartridge](docs/screenshots/oracle-title-shell.png)
 
-| Input | GBA | Action |
-|-------|-----|--------|
-| Arrow keys | D-pad | Navigate menus / play Oracle Datafall |
-| D | A | Confirm / answer / fight |
-| S | B | Back / abort quest |
-| Enter | START | Start / confirm |
-| Shift | SELECT | Reserved |
-| A / F | L / R | Page the quest menu |
+| Oracle Datafall | Concept trial |
+|---|---|
+| ![The Oracle Datafall scene with charged data runes and broken corruption seals](docs/screenshots/oracle-datafall.png) | ![A concept question with wards, flow, Insight Runes, and score](docs/screenshots/oracle-trial.png) |
 
-All shell buttons are also clickable, including the L/R shoulders and the
-power switch. Use the floating FRONT/BACK switch to turn the unit over; the
-reverse label lists the gameplay bindings and shows the inserted repository's
-short commit hash in its serial plate. An inserted cartridge sits visibly inside
-the rear recess. The console starts powered off — flip the switch to boot.
+## What is playable now
 
-## Cartridges
+The repository's own [`CODEQUEST.toml`](CODEQUEST.toml) is the reference
+cartridge. It defines a manifest-driven Oracle quiz with this complete loop:
 
-Cartridges are **local git repositories**. Click the cartridge slot on the
-top edge while the power is off, then **+ ADD FROM DISK** to
-pick a directory with the native folder dialog. If the directory is a git
-repo it loads as a cartridge — title from the directory name, label color
-from a path hash — and is cached in the three-slot rack for future launches.
-Drag a cached cartridge upward toward the device to load it; drag it downward
-to recycle its rack entry without touching the repository on disk. Each label
-shows the repository's current branch under its title and refreshes when the
-rack opens. Click or Enter still loads, and Delete provides a keyboard recycle
-action. If it isn't a git repo, the cartridge is refused with a message. The loaded cart
-peeks out of the top-back slot GBA-style and is remembered between launches;
-powering on with an empty slot halts on the boot logo, like real hardware.
-Git trust is scoped to each command for the selected cartridge, allowing Windows
-checkouts owned by an administrator account without changing global Git settings.
+1. Insert the repository while the console is off, then switch on the power.
+2. Watch repository credits and a five-scene Oracle awakening while the first
+   question batch is generated in the background.
+3. Create a hero by choosing a name, path, and aura.
+4. Play **Oracle Datafall** while the next valid question is loading: move left
+   or right, collect data shards, and avoid corruption glyphs.
+5. Answer conceptual questions about the project's purpose, architecture,
+   responsibilities, interactions, invariants, and tradeoffs.
+6. Complete an accepted question batch to level up and increase the next
+   batch's difficulty. Lose all three wards to end the run.
 
-Loading a valid cartridge also creates an emulator-style save beside it. For
-example, `/games/demo` uses `/games/demo.sav`; the git repository itself stays
-untouched. The versioned JSON save is a generic namespaced data store so each
-game style can own independent state without changing the file format. Quiz
-mode uses one namespace for validated Claude question batches and another for
-answered-question history. Committing an answer records it immediately; later
-runs and launches reuse generated results while filtering every recorded
-question, so play continues with unseen material. Ejecting or recycling a
-cartridge does not delete its save.
+The current progression model is visible as well as numeric:
 
-A repo cartridge's quests are generated from its contents: repo scrying
-(`git status`), history (`git log`), and drift (`git diff`) always; plus a
-Lint Gauntlet / Forge / Test Dungeon for `package.json` scripts, a Crate
-Forge when `Cargo.toml` exists, and Make Mines for a `Makefile`. Swapping
-requires ejecting first — remove and insert animations included.
+- Correct-answer flow awards x1 at streaks 0–2, x2 at 3–5, and x3 at 6+.
+- Cumulative scores of 300, 900, and 1800 awaken Insight Runes I, II, and III.
+- Datafall charge lights at 3, 6, and 9 collected shards; corruption breaks
+  containment seals at 1, 3, and 5 hits. These are expressive Datafall goals
+  and do not alter quiz score, wards, or question generation.
+- Oracle bond presentation advances from Initiate at level 1, to Adept at
+  levels 2–3, to Oracle-bound at level 4 and above.
 
-**Game modes.** A repo may declare a versioned `CODEQUEST.toml` to select
-`quiz` or `quest` mode, override its cartridge title, and define the finite-state
-scene graph that the Bevy engine executes. Each scene chooses a trusted built-in
-handler and routes its semantic events to other scenes. Mechanics remain linked
-design requirements, while typed art templates can select trusted built-in
-renderers. This repository's root
-[`CODEQUEST.toml`](CODEQUEST.toml) makes CODE QUEST itself the reference
-cartridge for exercising that contract. See the
-[v2 contract](docs/reference/codequest-toml.md), its
-[maintained example](docs/examples/CODEQUEST.toml), and the
-[Oracle quiz storyboard](docs/game-design/oracle-quiz.md). Schema v1 manifests
-still load as metadata and receive the built-in flow. Without a manifest, a repo
-with `CODEQUEST.md` loads the legacy quest-battle mode and any other repo loads
-the **ENDLESS REPO QUIZ**. Cartridge contents are data only: a cartridge cannot
-add JavaScript, arbitrary conditions, or replace the game loop.
-
-Quiz cartridges contain no preloaded questions. Inserting one makes the Bevy
-engine ask the `claude` CLI for the first batch immediately. Character
-creation, Oracle travel, and level-up screens keep the game moving while
-Claude writes or prefetches the next batch; the Oracle waits and retries if a
-batch fails instead of substituting generic questions. During the wait, use
-Left/Right to dodge falling bugs and move into falling data. Contact collects
-data automatically; Up, Down, and face buttons are inactive so input cannot
-carry into a newly loaded question. Generated questions
-cover the project's purpose, architecture, responsibilities, interactions,
-invariants, and tradeoffs. The prompt and accepted-output policy live in
-`src-tauri/src/lib.rs`: file and repository trivia is rejected, questions
-must fit four 31-character lines, and each of four distinct choices must fit
-31 characters. Set `CQA_NO_AI=1` to disable generation for diagnostics (the
-Oracle will continue waiting); `0`, `false`, `no`, and `off` leave generation
-enabled. Set `CQA_CLAUDE_MODEL` to select the model.
-Quest-battle commands are selected from the Rust-derived cartridge quest list
-and are started, streamed, and stopped by the Bevy runtime.
-
-## Architecture
-
-- `src-tauri/src/engine.rs` — the game. A headless Bevy app owns navigation,
-  input edges, fixed-step timing, quiz/battle state, command execution, and a
-  CPU-rendered 240×160 RGBA framebuffer.
-- `src-tauri/src/codequest.rs` — the versioned `CODEQUEST.toml` data contract,
-  parser, and cross-reference validation.
-- `src-tauri/src/scene_machine.rs` — compilation and execution of cartridge
-  scene graphs plus the built-in quiz and quest templates.
-- `src-tauri/src/lib.rs` — the platform adapter. It validates git-repo
-  cartridges, prepares data, and exposes only power, boot completion,
-  cartridge, input, and framebuffer operations to the device UI.
-- `src-tauri/src/save.rs` — the versioned, game-style-independent cartridge
-  save store. It preserves namespaced payloads with atomic file replacement.
-- `src/` — the JavaScript device shell. It owns the physical controls,
-  cartridge tray, window fitting, the fixed device-firmware boot overlay, and
-  copies the fixed-size Rust framebuffer into one canvas. It contains no
-  gameplay state or game rendering. Bevy remains at its boot boundary until
-  the device animation explicitly completes.
-
-The framebuffer is always exactly 240×160 (153,600 RGBA bytes). Each pixel is
-32-bit RGBA (8 bits per channel). Game text uses a purpose-built 5×7 glyph in
-a 6×8 cell, the smallest size that keeps letters, digits, punctuation, and
-repository paths distinct while fitting 40 columns. Button
-presses can change its pixels, but cannot change its dimensions or the CSS
-layout of the device, which prevents the mid-game rasterization shift that
-the DOM-rendered version could trigger.
+The game has no filler question deck. If Claude is unavailable or returns an
+invalid batch, the Oracle keeps Datafall playable and retries; press B to leave
+the wait safely. Runtime audio is not implemented yet. Audio entries in the
+manifest are production requirements, not playable sound.
 
 ## Install
 
-Tagged releases publish native packages for all supported desktop platforms:
+Download the current packages from the
+[latest release](https://github.com/shpwrck/codequest/releases/latest).
+Tagged packages can lag the source tree; the screenshots and feature
+descriptions in this README track the current repository state.
 
 | Platform | Package | Architecture |
-|----------|---------|--------------|
+|---|---|---|
 | Linux | `.AppImage` | x86_64 |
-| Windows | NSIS `.exe` and WiX `.msi` | x86_64 |
-| macOS | `.dmg` and zipped `.app` | Universal (Apple Silicon + Intel) |
+| Windows | NSIS `.exe` or WiX `.msi` | x86_64 |
+| macOS | `.dmg` or zipped `.app` | Universal (Apple Silicon + Intel) |
 
-On Linux, make the AppImage executable and run it; there is nothing to install
-and no toolchain required:
+Linux AppImages are portable and need no installed toolchain:
 
 ```bash
 chmod +x code-quest-advance_0.2.3_amd64.AppImage
 ./code-quest-advance_0.2.3_amd64.AppImage
 ```
 
-It carries GTK3 and WebKitGTK 4.1 inside it (~200 libraries), which matters most
-on RHEL 9: that distro ships only the webkit2gtk **4.0** API, in BaseOS,
-AppStream, CRB and EPEL alike, so Tauri v2 cannot be built or installed there at
-all from stock packages. The AppImage sidesteps that entirely. Verified to boot
-and render on RHEL 9 (glibc 2.34) and Fedora 43 (glibc 2.42).
+If FUSE is unavailable, add `--appimage-extract-and-run`. The packaged AppImage
+carries GTK3 and WebKitGTK 4.1 and is verified on RHEL 9 and Fedora 43; the host
+still supplies its graphics stack and fonts.
 
-The host supplies only its own graphics stack and fonts. On a machine with a
-desktop session those are already present; on a bare/minimal host you need
-`libGLESv2.so.2` (`libglvnd-gles`) and some fonts. If the host has no FUSE, run
-it as `./code-quest-advance_0.2.3_amd64.AppImage --appimage-extract-and-run`.
+The desktop package is only the game runtime. Its cartridges use local command
+line tools:
 
-On Windows, use either installer. On macOS, open the DMG and drag the app to
-Applications. CI macOS packages use an ad-hoc signature so they can be built
-without repository secrets; a public production release should be rebuilt with
-a Developer ID certificate and notarized.
+- `git` is required for every cartridge.
+- `claude` is required for quiz question generation and must already be
+  authenticated.
+- `bash` is required for quest-battle commands. Git for Windows supplies the
+  supported Windows shell; WSL Bash is deliberately ignored because it cannot
+  consume the Windows repository paths used by the quest runner.
 
-At runtime the app shells out, so `git` — plus `claude`, for AI question
-generation — must be installed. On macOS the app repairs the restricted `PATH`
-inherited by GUI applications before looking for them. Quest mode also needs
-`bash`; macOS and Linux include it, and Git for Windows supplies it on Windows.
-Folder selection uses each operating system's native dialog and has no external
-helper.
+On Windows, standard Git for Windows and Claude installation locations are
+discovered automatically. Custom or portable installs can set `CQA_GIT`,
+`CQA_CLAUDE`, and `CQA_SHELL` to an executable name on `PATH` or an absolute
+path. macOS GUI launches repair their restricted `PATH` before tool discovery.
 
-On Windows, the app discovers Git for Windows and the native Claude executable
-from `PATH` and their standard installation directories, so launching from the
-Start menu does not depend on a terminal's environment. Portable or custom
-installs can be selected with `CQA_GIT`, `CQA_CLAUDE`, and `CQA_SHELL`; each
-value may be an executable name on `PATH` or an absolute path. The Windows quest
-runner deliberately ignores the WSL `bash.exe` launcher because WSL cannot use
-the Windows repository paths embedded in cartridge commands. Git, Claude, and
-quest commands run as background processes without opening console windows.
+## Load a cartridge
 
-## Build & run
+A cartridge is a **local Git repository**.
+
+1. Leave the power off and click the top cartridge slot, or press C, to open
+   the rack.
+2. Choose **+ ADD FROM DISK** and select a repository with the native folder
+   picker.
+3. Drag the cartridge up to load it, or focus it and press Enter.
+4. Close the rack and switch on the power, or press P.
+
+The rack caches at most three repositories. Labels show the current branch and
+refresh whenever the rack opens. Drag a cartridge down, press Delete, or use its
+recycle action to remove only the rack entry; repository files and saves remain
+on disk. A loaded cartridge must be ejected before another can be inserted.
+
+Loading a repository creates a versioned, namespaced save beside it, never
+inside it: `/games/demo` uses `/games/demo.sav`. Quiz saves retain validated
+Claude batches and answered-question history. Committing an answer records it
+immediately, and later runs and launches filter every recorded question so the
+cartridge continues with unseen material. Ejecting or recycling a cartridge
+does not delete its save.
+
+Loading alone does not modify the selected repository. Quest mode can run the
+repository's own lint, build, or test scripts, so those commands have whatever
+side effects the project itself defines.
+
+## Game modes
+
+Cartridge selection follows this order:
+
+| Repository contents | Mode |
+|---|---|
+| Valid `CODEQUEST.toml` | The manifest's `quiz` or `quest` game type |
+| No manifest, but `CODEQUEST.md` exists | Legacy quest-battle mode |
+| Neither file exists | Endless repository quiz |
+
+### Quiz
+
+Quiz cartridges request six questions from Claude as soon as they are accepted,
+even while the device remains off. Generated questions must have four distinct
+choices, exactly one correct answer, no repository trivia, no more than four
+31-character lines for the prompt, and no more than 31 characters per choice.
+Valid questions survive a mixed batch, so an accepted batch can contain fewer
+than six. Accepted batches are cached in the sibling save and prefetched while
+the player continues.
+
+Set `CQA_CLAUDE_MODEL` to choose the model used by the Claude CLI. Set
+`CQA_NO_AI=1` to disable generation for diagnostics; `0`, `false`, `no`, and
+`off` leave it enabled.
+
+### Quest battle
+
+Quest cartridges turn repository operations into streamed command battles.
+Every repository receives:
+
+- **Scrying Pool:** `git status --short --branch`
+- **The Log Barrow:** a decorated 12-commit history
+- **Diff Marsh:** working-tree and staged diff statistics
+
+The engine also adds quests for `lint`, `build`, and `test` scripts in
+`package.json`, `cargo check` when `Cargo.toml` exists, and a `make -n` dry run
+when a `Makefile` exists. The Bevy runtime starts, streams, and aborts these
+commands; B aborts an active battle.
+
+### `CODEQUEST.toml`
+
+`CODEQUEST.toml` is an optional, strict cartridge contract. Schema v2 selects a
+trusted game family, a start scene, built-in scene handlers, semantic
+transitions, and built-in visual templates. It can reorder and reuse supported
+behavior, but it cannot load cartridge JavaScript, add arbitrary conditions,
+execute custom commands, or replace the engine loop. Mechanics and template-less
+art entries remain validated design metadata.
+
+Schema v1 still loads as metadata and runs the matching built-in quiz or quest
+flow. Invalid manifests, unknown keys, unresolved references, unreachable
+scenes, and unsupported handler/signal combinations refuse the cartridge
+instead of silently falling back.
+
+- [`CODEQUEST.toml` v2 reference](docs/reference/codequest-toml.md)
+- [Maintained complete example](docs/examples/CODEQUEST.toml)
+- [Oracle quiz design and runtime traceability](docs/game-design/oracle-quiz.md)
+
+## Controls
+
+All physical controls are clickable. The floating FRONT/BACK switch turns the
+whole unit over; the rear label lists gameplay bindings and the serial plate
+shows the inserted repository's short commit hash.
+
+| Keyboard | Handheld input | Current use |
+|---|---|---|
+| Arrow keys | D-pad | Navigate; move during Datafall |
+| D | A | Confirm, answer, or start a quest |
+| S | B | Back, leave the Oracle, or abort a quest |
+| Enter | START | Start or confirm |
+| Shift | SELECT | Reserved |
+| A / F | L / R | Page the quest list |
+| P | Power switch | Turn the device on or off |
+| C | Cartridge slot | Open or close the rack while powered off |
+| F1 | FRONT/BACK switch | Turn the device over |
+
+The engine consumes input edges, not browser key-repeat events. During the
+Datafall-to-question handoff and the 45-tick answer review, inactive controls are
+explicitly ignored so a held key cannot answer the next question accidentally.
+
+## Architecture
+
+Gameplay and device presentation have a hard boundary:
+
+| Path | Responsibility |
+|---|---|
+| `src/` | JavaScript/CSS physical shell, cartridge rack, native-dialog bridge, boot overlay, input forwarding, window fitting, and framebuffer canvas |
+| `src-tauri/src/engine.rs` | Headless Bevy game state, fixed-step timing, input edges, Oracle/quiz/quest behavior, command effects, and CPU rendering |
+| `src-tauri/src/scene_machine.rs` | Executable finite-state machine and built-in quiz/quest templates |
+| `src-tauri/src/codequest.rs` | `CODEQUEST.toml` parser, validation, and runtime compilation |
+| `src-tauri/src/lib.rs` | Tauri boundary, Git cartridge inspection, provenance, quest construction, Claude prompting, and question persistence |
+| `src-tauri/src/external_tools.rs` | Cross-platform Git, Claude, and shell discovery |
+| `src-tauri/src/save.rs` | Versioned namespaced saves with atomic file replacement |
+| `src-tauri/assets/oracle/` | Authored 240×160 Oracle plates, hero sprites, portraits, and Datafall sprites embedded into the engine |
+
+Bevy always produces one 240×160 RGBA framebuffer: 153,600 bytes at 8 bits per
+channel. The shell copies that buffer into a fixed-size, pixelated canvas and
+contains no gameplay state or game rendering. Text uses a purpose-built 5×7
+font in 6×8 cells, giving the display 40 columns without allowing game content
+to change the device layout.
+
+## Develop and verify
+
+Use Node.js 22, stable Rust, and the native Tauri v2 prerequisites for your
+platform. Then:
 
 ```bash
 npm ci
 npm run tauri -- dev
-npm run tauri -- build
 ```
 
-For local Windows development, run those commands from PowerShell with Node.js,
-the stable Rust MSVC toolchain, Microsoft C++ Build Tools plus a Windows SDK,
-and the WebView2 runtime installed. A release build creates the application and
-Windows bundles under `src-tauri/target/release/`.
-
-Tauri produces native packages for the host operating system, so Windows and
-macOS bundles must be built on their corresponding runners. For a universal
-macOS package, install both Rust targets and request the virtual universal
-target:
+Run the same core checks used by CI:
 
 ```bash
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm run tauri -- build --bundles app,dmg --target universal-apple-darwin
+node --check src/main.js
+npm test
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run tauri -- build --no-bundle
+python3 .agents/skills/codequest-game-designer/scripts/validate_codequest.py CODEQUEST.toml
 ```
 
-A native Linux host build is suitable for development but not for distribution:
-a binary built on Fedora needs GLIBC_2.39 and will not start on RHEL 9, which has
-2.34.
-
-## Packaging a release
+Oracle render changes can emit every native scene without launching the shell:
 
 ```bash
-./packaging/build-appimage.sh    # Podman or Docker; writes dist/
+CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
+  cargo test --manifest-path src-tauri/Cargo.toml \
+  oracle_templates_produce_nine_distinct_native_scene_frames --lib
 ```
 
-That builds inside an Ubuntu 22.04 container — the oldest base carrying
-webkit2gtk-4.1, which pins the portability floor at glibc 2.35 — then patches
-the bundle down to RHEL 9's glibc 2.34 and repackages it. `packaging/Containerfile`
-is the authoritative list of build dependencies and documents each compatibility
-fix and why it exists. The build fails rather than emitting an artifact that
-would die on a RHEL 9 loader.
+Recompile edited Oracle PNG sources before running that preview test:
 
-The `Package` GitHub Actions workflow runs the Linux container build, Windows
-MSI/NSIS build, and universal macOS app/DMG build in parallel for every pull
-request. Fresh runner jobs download the exact uploaded artifacts, verify their
-checksums, and launch the packaged applications on Linux, Windows, and macOS.
-Run the workflow manually to obtain tested workflow artifacts, or push a `v*`
-tag to publish them only after all three artifact gates pass. Windows packages
-are unsigned and macOS packages are ad-hoc signed until platform signing
-credentials are supplied; signing does not affect local or CI compilation.
+```bash
+./scripts/compile-oracle-assets.sh
+```
 
-Verify a change by rebuilding and re-running the smoke test in
-`docs/runbooks/headless-gui-smoke-test/`, which drives the gameplay loop without
-touching the desktop.
+The [headless GUI smoke-test runbook](docs/runbooks/headless-gui-smoke-test/README.md)
+launches the real Tauri app under Xvfb, drives it with XTEST input, and captures
+the rendered shell without touching the desktop session.
 
-Engine status: playable end to end, with asset-backed Oracle scene templates,
-native 240×160 hero sprites, staged opening luminance, and live FSM-owned UI.
+## Packaging and release gates
+
+Tauri packages the host platform. Windows and macOS artifacts therefore build
+on their corresponding GitHub runners. The `Package` workflow builds Linux,
+Windows, and macOS packages for every pull request, downloads the exact uploaded
+artifacts into fresh jobs, verifies checksums, and launches each packaged app.
+A `v*` tag publishes a GitHub release only after all three artifact tests pass.
+
+For a local portable Linux package:
+
+```bash
+./packaging/build-appimage.sh
+```
+
+The script uses Podman or Docker and writes to `dist/`. Its Ubuntu 22.04 build
+container and compatibility checks keep the AppImage usable on RHEL 9's glibc
+2.34 floor.
+
+Windows release packages are currently unsigned. macOS CI packages use an
+ad-hoc signature; public production distribution still needs a Developer ID
+certificate and notarization.
