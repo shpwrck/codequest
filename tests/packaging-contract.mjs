@@ -2,6 +2,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const workflow = readFileSync(new URL("../.github/workflows/package.yml", import.meta.url), "utf8");
+const linuxArtifactTest = readFileSync(
+  new URL("../scripts/test-release-picker.sh", import.meta.url),
+  "utf8",
+);
+const macosArtifactTest = readFileSync(
+  new URL("../scripts/test-macos-packages.sh", import.meta.url),
+  "utf8",
+);
+const windowsArtifactTest = readFileSync(
+  new URL("../scripts/test-windows-packages.ps1", import.meta.url),
+  "utf8",
+);
 const cargo = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
 const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const externalTools = readFileSync(
@@ -18,14 +30,28 @@ const tauriConfig = JSON.parse(
 assert.match(workflow, /runs-on: ubuntu-22\.04/);
 assert.match(workflow, /--bundles msi,nsis/);
 assert.match(workflow, /runs-on: windows-2025/);
-assert.match(workflow, /Smoke-test Windows executable/);
-assert.match(workflow, /Start-Process .* -WindowStyle Hidden/);
 assert.match(workflow, /--bundles app,dmg --target universal-apple-darwin/);
 assert.match(workflow, /runs-on: macos-15/);
-assert.doesNotMatch(workflow, /^\s*pull_request:/m);
+assert.match(workflow, /^\s*pull_request:/m);
 assert.match(workflow, /^\s*workflow_dispatch:/m);
 assert.match(workflow, /^\s*push:\n\s+tags:\n\s+- "v\*"/m);
 assert.equal([...workflow.matchAll(/if-no-files-found: error/g)].length, 3);
+assert.equal([...workflow.matchAll(/actions\/download-artifact@v4/g)].length, 4);
+assert.match(workflow, /name: Test uploaded Linux AppImage/);
+assert.match(workflow, /name: Test uploaded Windows installers/);
+assert.match(workflow, /name: Test uploaded macOS packages/);
+assert.match(workflow, /needs: \[test-linux, test-windows, test-macos\]/);
+
+assert.match(linuxArtifactTest, /--appimage-extract-and-run/);
+assert.match(linuxArtifactTest, /SELECT CARTRIDGE \(GIT REPO\)/);
+assert.match(windowsArtifactTest, /msiexec\.exe/);
+assert.match(windowsArtifactTest, /\/a .*\/qn TARGETDIR=/);
+assert.match(windowsArtifactTest, /\/S \/D=/);
+assert.match(windowsArtifactTest, /Test-ApplicationStartup/);
+assert.match(macosArtifactTest, /shasum -a 256 -c/);
+assert.match(macosArtifactTest, /codesign --verify --deep --strict/);
+assert.match(macosArtifactTest, /lipo -archs/);
+assert.match(macosArtifactTest, /hdiutil attach/);
 
 assert.equal(packageJson.scripts.tauri, "tauri");
 assert.ok(tauriConfig.bundle.icon.includes("icons/icon.icns"));

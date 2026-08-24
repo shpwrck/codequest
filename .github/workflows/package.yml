@@ -1,6 +1,7 @@
 name: Package
 
 on:
+  pull_request:
   workflow_dispatch:
   push:
     tags:
@@ -54,23 +55,6 @@ jobs:
 
       - name: Build MSI and NSIS installers
         run: npm run tauri -- build --bundles msi,nsis
-
-      - name: Smoke-test Windows executable
-        shell: pwsh
-        run: |
-          $env:CQA_NO_AI = "1"
-          $applicationPath = Resolve-Path "src-tauri/target/release/code-quest-advance.exe"
-          $application = Start-Process -FilePath $applicationPath -WindowStyle Hidden -PassThru
-          try {
-            Start-Sleep -Seconds 5
-            if ($application.HasExited) {
-              throw "Windows application exited during startup with code $($application.ExitCode)"
-            }
-          } finally {
-            if (!$application.HasExited) {
-              Stop-Process -Id $application.Id -Force
-            }
-          }
 
       - name: Collect Windows packages
         shell: pwsh
@@ -131,10 +115,77 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  test-linux:
+    name: Test uploaded Linux AppImage
+    needs: linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux package
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist
+
+      - name: Install desktop smoke-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            fonts-dejavu-core \
+            imagemagick \
+            libegl1 \
+            libgl1 \
+            libgles2 \
+            x11-utils \
+            xdotool \
+            xvfb
+
+      - name: Verify and launch uploaded AppImage
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          appimages=(dist/*.AppImage)
+          test "${#appimages[@]}" -eq 1
+          chmod +x "${appimages[0]}"
+          ./scripts/test-release-picker.sh "${appimages[0]}"
+
+  test-windows:
+    name: Test uploaded Windows installers
+    needs: windows
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows packages
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist
+
+      - name: Verify and launch installed MSI and NSIS payloads
+        shell: pwsh
+        run: ./scripts/test-windows-packages.ps1 -ArtifactDirectory dist
+
+  test-macos:
+    name: Test uploaded macOS packages
+    needs: macos
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download macOS packages
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-universal
+          path: dist
+
+      - name: Verify and launch packaged apps from ZIP and DMG
+        run: ./scripts/test-macos-packages.sh dist
+
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, windows, macos]
+    needs: [test-linux, test-windows, test-macos]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

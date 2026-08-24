@@ -71,8 +71,13 @@ sleep .3
 DISPLAY="$task_display" xdotool mousemove 512 343 click 1
 sleep 1
 
-DISPLAY="$task_display" xwd -root -silent |
-  magick xwd:- "$task_tmpdir/after-picker-click.png"
+if command -v magick >/dev/null; then
+  DISPLAY="$task_display" xwd -root -silent |
+    magick xwd:- "$task_tmpdir/after-picker-click.png"
+else
+  DISPLAY="$task_display" xwd -root -silent |
+    convert xwd:- "$task_tmpdir/after-picker-click.png"
+fi
 task_named_windows=$(DISPLAY="$task_display" \
   xdotool search --onlyvisible --name '.+' getwindowname %@ 2>/dev/null || true)
 task_picker_windows=$(printf '%s\n' "$task_named_windows" |
