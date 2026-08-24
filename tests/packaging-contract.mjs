@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const workflow = readFileSync(new URL("../.github/workflows/package.yml", import.meta.url), "utf8");
+const appImageBuilder = readFileSync(
+  new URL("../packaging/build-appimage.sh", import.meta.url),
+  "utf8",
+);
+const appImageContainer = readFileSync(
+  new URL("../packaging/Containerfile", import.meta.url),
+  "utf8",
+);
 const linuxArtifactTest = readFileSync(
   new URL("../scripts/test-release-picker.sh", import.meta.url),
   "utf8",
@@ -42,6 +50,16 @@ assert.match(workflow, /x11-apps/);
 assert.match(workflow, /name: Test uploaded Windows installers/);
 assert.match(workflow, /name: Test uploaded macOS packages/);
 assert.match(workflow, /needs: \[test-linux, test-windows, test-macos\]/);
+assert.match(
+  appImageBuilder,
+  /--build-arg\s+"CQA_BUILD_REVISION=\$build_revision"/,
+  "The container build must receive the checked-out app revision",
+);
+assert.match(
+  appImageContainer,
+  /ARG CQA_BUILD_REVISION[\s\S]*?RUN npm run tauri build -- --bundles appimage/,
+  "The AppImage build must expose the app revision to Cargo",
+);
 
 assert.match(linuxArtifactTest, /--appimage-extract-and-run/);
 assert.match(linuxArtifactTest, /SELECT CARTRIDGE \(GIT REPO\)/);

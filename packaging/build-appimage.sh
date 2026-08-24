@@ -9,6 +9,15 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 container_image=${CQA_CONTAINER_IMAGE:-code-quest-advance-builder}
 out_dir=$repo_root/dist
+build_revision=${CQA_BUILD_REVISION:-}
+
+if [[ -z "$build_revision" ]]; then
+  build_revision=$(git -C "$repo_root" rev-parse HEAD)
+fi
+if [[ ! "$build_revision" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+  echo "CQA_BUILD_REVISION must be a Git commit SHA" >&2
+  exit 1
+fi
 
 container_engine=${CONTAINER_ENGINE:-}
 if [[ -z "$container_engine" ]]; then
@@ -28,6 +37,7 @@ command -v "$container_engine" >/dev/null || {
 
 "$container_engine" build \
   --file "$repo_root/packaging/Containerfile" \
+  --build-arg "CQA_BUILD_REVISION=$build_revision" \
   --tag "$container_image" \
   "$repo_root"
 

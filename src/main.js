@@ -206,7 +206,6 @@ import {
       rearSlot.className = "loaded";
       rearSlot.style.setProperty("--cart-color", cartridge.color || "#6a6fd1");
       rearSlot.title = `CARTRIDGE: ${cartridge.title}`;
-      rearSerial.textContent = cartridge?.revision || "-------";
     } else {
       slot.className = "empty";
       slot.style.removeProperty("--cart-color");
@@ -214,7 +213,6 @@ import {
       rearSlot.className = "empty";
       rearSlot.style.removeProperty("--cart-color");
       rearSlot.title = "CARTRIDGE SLOT (EMPTY)";
-      rearSerial.textContent = "-------";
     }
     updateControlGuides();
   }
@@ -630,6 +628,7 @@ import {
   async function initialize() {
     fit();
     setShellBackVisible(false);
+    rearSerial.textContent = await invoke("app_revision");
     const savedPath = localStorage.getItem("cqa-cart-id");
     try {
       const stored = JSON.parse(localStorage.getItem("cqa-repo-carts")) || [];
@@ -670,6 +669,7 @@ import {
     }
     return async (command, args) => {
       if (command === "engine_frame") return frame.buffer;
+      if (command === "app_revision") return "0000000";
       if (["engine_power", "engine_finish_boot", "engine_input"].includes(command)) return null;
       if (command === "engine_set_cartridge" && args?.path == null) return null;
       if (command === "engine_set_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");

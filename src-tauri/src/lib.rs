@@ -790,6 +790,11 @@ fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
     tauri::ipc::Response::new(state.0.frame())
 }
 
+#[tauri::command]
+fn app_revision() -> &'static str {
+    env!("CQA_APP_REVISION")
+}
+
 fn environment_flag_enabled(value: Option<&str>) -> bool {
     value.is_some_and(|value| {
         matches!(
@@ -831,6 +836,7 @@ pub fn run() {
             answered_question_recorder,
         )))
         .invoke_handler(tauri::generate_handler![
+            app_revision,
             pick_cartridge,
             cartridge_branch,
             engine_set_cartridge,
@@ -856,6 +862,15 @@ mod question_policy_tests {
             assert!(!environment_flag_enabled(Some(disabled)), "{disabled}");
         }
         assert!(!environment_flag_enabled(None));
+    }
+
+    #[test]
+    fn application_revision_is_a_short_lowercase_git_sha() {
+        let revision = app_revision();
+        assert_eq!(revision.len(), 7);
+        assert!(revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
     }
 
     fn temporary_git_repo() -> std::path::PathBuf {
