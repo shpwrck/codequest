@@ -11,8 +11,8 @@ templates selected by `art[].template` in `CODEQUEST.toml`.
 | `oracle-menu` | `gateway.png` | Focus, contained action labels, and controls |
 | `oracle-atelier` | `atelier.png` | Hero, customization values, truthful generation status, focus |
 | `oracle-hero` | `hero-*.png`, `portrait-*.png` | Selected authored colorway with no procedural accessory or weapon overlays |
-| `oracle-sanctum` | `sanctum.png`, `drop-*.png` | Authored Datafall collectibles and hazards, hero movement, counters, status, tier grading |
-| `oracle-trial` | `trial.png` | Question, choices, focus, hearts, score, correctness, review lock |
+| `oracle-sanctum` | `sanctum.png`, `drop-*.png` | Authored Datafall collectibles/hazards, hero movement, raw counts, 3/6/9 charge runes, 1/3/5 containment breaches, status, tier grading |
+| `oracle-trial` | `trial.png` | Question, choices, focus, Oracle ward runes, x1/x2/x3 flow, 300/900/1800 Insight Runes, raw score, correctness, review lock |
 | `oracle-ascension` | `ascension.png` | Hero rise, earned tier, level, batch, hold/continue state |
 | `oracle-aftermath` | `aftermath.png` | Defeated hero, final score, earned tier, replay prompt |
 | `oracle-progression` | shared plates | Cyan/gold balance, hero identity, and earned tier across the run |
@@ -47,6 +47,15 @@ runtime buffers and refuses incorrect dimensions or byte counts.
 - Datafall uses an authored cyan-and-gold crystal shard for data and an
   asymmetric magenta corruption glyph for bugs. Their silhouettes, values, and
   hues remain distinct without procedural boxes or crossed lines.
+- Dynamic HUD instruments reuse the Oracle's diamond-rune shape language:
+  health is three fillable ward seals, score is paired with three awakening
+  Insight Runes, and Datafall uses charge and breakable containment seals.
+  Empty, intermediate, full, gain, and loss states remain legible by fill,
+  count, fracture, label, and position rather than color alone.
+- Every visible run metric has explicit breakpoints. Native previews and tests
+  cover values immediately below, at, and above score, streak, data-charge,
+  corruption, ward, batch, and bond thresholds; a changing raw number alone is
+  not treated as progression.
 - The opening uses five distinct authored compositions. It begins with one
   restrained cyan ember, opens the archive, carries the code-seer into the
   memory vault, adds gold at convergence, and reveals the complete Oracle only

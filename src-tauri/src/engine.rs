@@ -37,6 +37,9 @@ const ORACLE_DROP_INTERVAL: u64 = 30;
 const ORACLE_COLLISION_Y: i32 = 100;
 const QUIZ_FEEDBACK_TICKS: u16 = 45;
 const LEVEL_UP_HOLD_TICKS: u64 = 60;
+const SCORE_RUNE_THRESHOLDS: [u32; 3] = [300, 900, 1_800];
+const DATA_CHARGE_THRESHOLDS: [u32; 3] = [3, 6, 9];
+const BUG_BREACH_THRESHOLDS: [u32; 3] = [1, 3, 5];
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -224,9 +227,9 @@ const MENU_FOOTER_BOX: UiBox = UiBox {
     height: 16,
 };
 const ATELIER_HEADER_BOX: UiBox = UiBox {
-    x: 8,
+    x: 6,
     y: 4,
-    width: 126,
+    width: 106,
     height: 16,
 };
 const ATELIER_ROW_BOXES: [UiBox; 3] = [
@@ -274,6 +277,20 @@ const ATELIER_BIND_BOX: UiBox = UiBox {
     width: 55,
     height: 21,
 };
+const ATELIER_BIND_TEXT_BOX: UiBox = UiBox {
+    x: 137,
+    y: 113,
+    width: 55,
+    height: 12,
+};
+const ATELIER_HERO_X: i32 = 32;
+const ATELIER_HERO_Y: i32 = 38;
+const ATELIER_HERO_SCALE: i32 = 2;
+const TRIAL_CHOICE_TEXT_X: i32 = 39;
+const TRIAL_WARD_X: i32 = 126;
+const TRIAL_STREAK_X: i32 = 180;
+const TRIAL_SCORE_RUNES_X: i32 = 194;
+const TRIAL_SCORE_X: i32 = 215;
 const ASCENSION_TITLE_BOX: UiBox = UiBox {
     x: 47,
     y: 68,
@@ -304,6 +321,63 @@ enum PresentationTier {
     Initiate,
     Adept,
     OracleBound,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum InsightStage {
+    Unlit,
+    RuneOne,
+    RuneTwo,
+    RuneThree,
+}
+
+impl InsightStage {
+    fn from_score(score: u32) -> Self {
+        match threshold_stage(score, &SCORE_RUNE_THRESHOLDS) {
+            0 => Self::Unlit,
+            1 => Self::RuneOne,
+            2 => Self::RuneTwo,
+            _ => Self::RuneThree,
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Unlit => "UNLIT",
+            Self::RuneOne => "I",
+            Self::RuneTwo => "II",
+            Self::RuneThree => "III",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Unlit => MIST,
+            Self::RuneOne => CYAN,
+            Self::RuneTwo => AMBER,
+            Self::RuneThree => MAGENTA,
+        }
+    }
+}
+
+fn threshold_stage(value: u32, thresholds: &[u32]) -> usize {
+    thresholds.partition_point(|threshold| value >= *threshold)
+}
+
+fn streak_multiplier(streak: u32) -> u32 {
+    match streak {
+        0..=2 => 1,
+        3..=5 => 2,
+        _ => 3,
+    }
+}
+
+fn score_award_for_streak(streak: u32) -> u32 {
+    100 * streak_multiplier(streak)
 }
 
 impl PresentationTier {
@@ -1455,8 +1529,8 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                     let answer = answered.as_ref().map_or(0, |(_, _, answer)| *answer);
                     let correct = run.selected == answer;
                     if correct {
-                        run.score += 100;
                         run.streak += 1;
+                        run.score = run.score.saturating_add(score_award_for_streak(run.streak));
                     } else {
                         run.hearts = run.hearts.saturating_sub(1);
                         run.streak = 0;
@@ -2093,9 +2167,15 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
         ATELIER_HEADER_BOX.height,
         CYAN_DIM,
     );
-    frame.centered_text_box(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", AMBER, 1);
+    frame.centered_compact_text_box(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", AMBER);
     let bob = ((state.screen_ticks / 22) % 2) as i32;
-    draw_hero(frame, 32, 47 - bob, 2, state);
+    draw_hero(
+        frame,
+        ATELIER_HERO_X,
+        ATELIER_HERO_Y - bob,
+        ATELIER_HERO_SCALE,
+        state,
+    );
 
     let rows = [
         ("NAME", HERO_NAMES[state.hero_name]),
@@ -2128,7 +2208,7 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
         );
     }
     frame.centered_text_box(
-        ATELIER_BIND_BOX,
+        ATELIER_BIND_TEXT_BOX,
         "BIND",
         if state.hero_row == 3 { PARCH } else { MIST },
         1,
@@ -2188,7 +2268,29 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
         GREEN,
         1,
     );
+    let data_stage = threshold_stage(state.oracle_data, &DATA_CHARGE_THRESHOLDS);
+    draw_oracle_rune_meter(
+        frame,
+        49,
+        143,
+        data_stage,
+        if data_stage >= 2 { AMBER } else { CYAN },
+    );
     frame.centered_text(143, "L/R MOVE  B:BACK", PARCH, 1);
+    let breach_stage = threshold_stage(state.oracle_bug_hits, &BUG_BREACH_THRESHOLDS);
+    let containment_color = match breach_stage {
+        0 => CYAN,
+        1 => AMBER,
+        2 => MAGENTA,
+        _ => RED,
+    };
+    draw_oracle_rune_meter(
+        frame,
+        173,
+        143,
+        3usize.saturating_sub(breach_stage),
+        containment_color,
+    );
     frame.text(
         201,
         143,
@@ -2263,7 +2365,29 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         GREEN,
         1,
     );
+    let data_stage = threshold_stage(state.oracle_data, &DATA_CHARGE_THRESHOLDS);
+    draw_oracle_rune_meter(
+        frame,
+        49,
+        149,
+        data_stage,
+        if data_stage >= 2 { AMBER } else { CYAN },
+    );
     frame.centered_text(149, "L/R:MOVE  B:LEAVE", PARCH, 1);
+    let breach_stage = threshold_stage(state.oracle_bug_hits, &BUG_BREACH_THRESHOLDS);
+    let containment_color = match breach_stage {
+        0 => CYAN,
+        1 => AMBER,
+        2 => MAGENTA,
+        _ => RED,
+    };
+    draw_oracle_rune_meter(
+        frame,
+        173,
+        149,
+        3usize.saturating_sub(breach_stage),
+        containment_color,
+    );
     frame.text(
         198,
         149,
@@ -2297,6 +2421,90 @@ fn draw_oracle_bug(frame: &mut Framebuffer, x: i32, y: i32) {
     );
 }
 
+fn draw_oracle_rune(frame: &mut Framebuffer, x: i32, y: i32, lit: bool, color: Color) {
+    let outline = if lit { color } else { ASH };
+    for (dx, dy) in [
+        (2, 0),
+        (1, 1),
+        (3, 1),
+        (0, 2),
+        (4, 2),
+        (0, 3),
+        (4, 3),
+        (0, 4),
+        (4, 4),
+        (1, 5),
+        (3, 5),
+        (2, 6),
+    ] {
+        frame.pixel(x + dx, y + dy, outline);
+    }
+    if lit {
+        for (dx, dy) in [(2, 2), (1, 3), (2, 3), (3, 3), (2, 4)] {
+            frame.pixel(x + dx, y + dy, PARCH);
+        }
+    }
+}
+
+fn draw_oracle_rune_meter(frame: &mut Framebuffer, x: i32, y: i32, lit_runes: usize, color: Color) {
+    for index in 0..3 {
+        draw_oracle_rune(frame, x + index as i32 * 7, y, index < lit_runes, color);
+    }
+}
+
+fn ward_color(hearts: u8) -> Color {
+    match hearts {
+        3.. => CYAN,
+        2 => AMBER,
+        _ => RED,
+    }
+}
+
+fn draw_oracle_ward_meter(frame: &mut Framebuffer, x: i32, y: i32, hearts: u8) {
+    let color = ward_color(hearts);
+    frame.text(x, y, "WARD", color, 1);
+    draw_oracle_rune_meter(frame, x + 27, y, hearts.min(3) as usize, color);
+}
+
+fn crossed_insight_stage(run: &QuizRun) -> Option<InsightStage> {
+    if !matches!(run.feedback, Some((true, _))) {
+        return None;
+    }
+    let current = InsightStage::from_score(run.score);
+    let previous_score = run.score.saturating_sub(score_award_for_streak(run.streak));
+    let previous = InsightStage::from_score(previous_score);
+    (current > previous).then_some(current)
+}
+
+fn quiz_feedback_banner(run: &QuizRun) -> String {
+    match run.feedback {
+        Some((true, _)) => {
+            if let Some(stage) = crossed_insight_stage(run) {
+                format!("RUNE {} AWAKENS", stage.label())
+            } else if streak_multiplier(run.streak) > 1 {
+                format!("FLOW X{}", streak_multiplier(run.streak))
+            } else {
+                "REVIEW ANSWER".into()
+            }
+        }
+        Some((false, _)) => match run.hearts {
+            0 => "WARD BROKEN".into(),
+            1 => "WARD FRACTURES".into(),
+            _ => "WARD STRAINED".into(),
+        },
+        None => "A:ANSWER B:LEAVE".into(),
+    }
+}
+
+fn quiz_feedback_color(run: &QuizRun) -> Color {
+    match run.feedback {
+        Some((true, _)) if crossed_insight_stage(run).is_some() => AMBER,
+        Some((true, _)) => CYAN,
+        Some((false, _)) => ward_color(run.hearts),
+        None => MIST,
+    }
+}
+
 fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
     if state.uses_visual_template(VisualTemplate::Trial) {
         render_oracle_trial(frame, state);
@@ -2309,14 +2517,23 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
     frame.rect(0, 0, WIDTH as i32, 16, INK);
     frame.text(5, 4, &format!("Q{:02}", run.question + 1), SKY, 1);
     draw_hero(frame, 47, 1, 1, state);
+    draw_oracle_ward_meter(frame, 84, 4, run.hearts);
     frame.text(
-        84,
+        176,
         4,
-        &format!("HP {}", "*".repeat(run.hearts as usize)),
-        RED,
+        &format!("X{}", streak_multiplier(run.streak)),
+        CYAN,
         1,
     );
-    frame.text(211, 4, &format!("{:04}", run.score), GOLD, 1);
+    let insight = InsightStage::from_score(run.score);
+    draw_oracle_rune_meter(frame, 192, 4, insight.index(), insight.color());
+    frame.text(
+        215,
+        4,
+        &format!("{:04}", run.score.min(9999)),
+        insight.color(),
+        1,
+    );
     let Some(cart) = state.cartridge.as_ref() else {
         return;
     };
@@ -2350,7 +2567,7 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
         frame.text(21, y, &truncate(choice, QUIZ_CHOICE_CHARS), color, 1);
     }
     if run.feedback.is_some() {
-        frame.centered_text(151, "REVIEW ANSWER", MIST, 1);
+        frame.centered_text(151, &quiz_feedback_banner(run), quiz_feedback_color(run), 1);
     } else {
         frame.text(5, 151, "A:ANSWER", MIST, 1);
         frame.text(199, 151, "B:BACK", MIST, 1);
@@ -2384,14 +2601,29 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         CYAN,
         1,
     );
+    draw_oracle_ward_meter(frame, TRIAL_WARD_X, 7, run.hearts);
     frame.text(
-        151,
+        TRIAL_STREAK_X,
         7,
-        &format!("HP {}", "*".repeat(run.hearts.min(3) as usize)),
-        RED,
+        &format!("X{}", streak_multiplier(run.streak)),
+        CYAN,
         1,
     );
-    frame.text(215, 7, &format!("{:04}", run.score.min(9999)), AMBER, 1);
+    let insight = InsightStage::from_score(run.score);
+    draw_oracle_rune_meter(
+        frame,
+        TRIAL_SCORE_RUNES_X,
+        7,
+        insight.index(),
+        insight.color(),
+    );
+    frame.text(
+        TRIAL_SCORE_X,
+        7,
+        &format!("{:04}", run.score.min(9999)),
+        insight.color(),
+        1,
+    );
     frame.text(
         44,
         20,
@@ -2406,12 +2638,8 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
     frame.text(
         126,
         20,
-        if run.feedback.is_some() {
-            "REVIEW"
-        } else {
-            "A:ANSWER B:LEAVE"
-        },
-        if run.feedback.is_some() { AMBER } else { MIST },
+        &quiz_feedback_banner(run),
+        quiz_feedback_color(run),
         1,
     );
 
@@ -2444,7 +2672,13 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
                 color = RED;
             }
         }
-        frame.text(31, y + 7, &truncate(choice, QUIZ_CHOICE_CHARS), color, 1);
+        frame.text(
+            TRIAL_CHOICE_TEXT_X,
+            y + 7,
+            &truncate(choice, QUIZ_CHOICE_CHARS),
+            color,
+            1,
+        );
     }
 }
 
@@ -2587,7 +2821,13 @@ fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
     frame.outline(8, 8, 224, 144, PLUM);
     frame.centered_text(24, "GAME OVER", RED, 2);
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text(57, &format!("SCORE {:04}", run.score), GOLD, 1);
+        frame.centered_text(57, &format!("SCORE {:04}", run.score.min(9999)), GOLD, 1);
+        frame.centered_text(
+            83,
+            &format!("INSIGHT {}", InsightStage::from_score(run.score).label()),
+            InsightStage::from_score(run.score).color(),
+            1,
+        );
         frame.centered_text(70, &format!("LEVEL {} REACHED", run.level), SKY, 1);
         draw_oracle_sigil(frame, 120, 104, 0);
         draw_hero(frame, 106, 99, 1, state);
@@ -2653,6 +2893,15 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
             AFTERMATH_CONTENT_BOX.width,
             &format!("LEVEL {}", run.level.min(99)),
             PARCH,
+            1,
+        );
+        let insight = InsightStage::from_score(run.score);
+        frame.centered_text_in(
+            AFTERMATH_CONTENT_BOX.x,
+            114,
+            AFTERMATH_CONTENT_BOX.width,
+            &format!("RUNE {}", insight.label()),
+            insight.color(),
             1,
         );
         draw_defeated_hero(frame, 52, 106, state);
@@ -3249,6 +3498,33 @@ mod tests {
         }
     }
 
+    fn alpha_bounds(rgba: &[u8], width: usize, height: usize) -> LayoutBounds {
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        let mut found = false;
+        for (index, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let x = index % width;
+            let y = index / width;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+            found = true;
+        }
+        assert!(found, "sprite has no visible pixels");
+        LayoutBounds {
+            x: min_x as i32,
+            y: min_y as i32,
+            width: (max_x - min_x + 1) as i32,
+            height: (max_y - min_y + 1) as i32,
+        }
+    }
+
     fn centered_text_bounds(y: i32, text: &str, scale: i32) -> LayoutBounds {
         let width = text_width(text, scale);
         text_bounds((WIDTH as i32 - width) / 2, y, text, scale)
@@ -3372,6 +3648,7 @@ mod tests {
         let menu_subtitle = ui_box_bounds(GATEWAY_MENU_SUBTITLE_BOX);
         let atelier_label = ui_box_bounds(atelier_label_box(ATELIER_ROW_BOXES[1]));
         let atelier_value = ui_box_bounds(atelier_value_box(ATELIER_ROW_BOXES[1]));
+        let atelier_bind_text = ui_box_bounds(ATELIER_BIND_TEXT_BOX);
         let quiz_question = LayoutBounds {
             x: 20,
             y: 30,
@@ -3412,6 +3689,20 @@ mod tests {
             width: 203,
             height: 28,
         };
+        let trial_ward = LayoutBounds {
+            x: TRIAL_WARD_X,
+            y: 7,
+            width: 46,
+            height: 7,
+        };
+        let trial_streak = text_bounds(TRIAL_STREAK_X, 7, "X3", 1);
+        let trial_score_runes = LayoutBounds {
+            x: TRIAL_SCORE_RUNES_X,
+            y: 7,
+            width: 19,
+            height: 7,
+        };
+        let trial_score = text_bounds(TRIAL_SCORE_X, 7, "9999", 1);
         let ascension_level = ui_box_bounds(ASCENSION_LEVEL_BOX);
         let ascension_batch = ui_box_bounds(ASCENSION_BATCH_BOX);
 
@@ -3509,7 +3800,7 @@ mod tests {
             (
                 "atelier heading",
                 atelier_header,
-                centered_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", 1),
+                centered_compact_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER"),
             ),
             (
                 "atelier row label",
@@ -3523,6 +3814,11 @@ mod tests {
                     atelier_value_box(ATELIER_ROW_BOXES[1]),
                     "<MERGE PALADIN>",
                 ),
+            ),
+            (
+                "atelier bind action",
+                atelier_bind_text,
+                centered_text_box_bounds(ATELIER_BIND_TEXT_BOX, "BIND", 1),
             ),
             (
                 "atelier retry status",
@@ -3554,12 +3850,10 @@ mod tests {
                 trial_header,
                 text_bounds(44, 7, "TRIAL 99", 1),
             ),
-            (
-                "trial hearts",
-                trial_header,
-                text_bounds(151, 7, "HP ***", 1),
-            ),
-            ("trial score", trial_header, text_bounds(215, 7, "9999", 1)),
+            ("trial ward", trial_header, trial_ward),
+            ("trial streak multiplier", trial_header, trial_streak),
+            ("trial score runes", trial_header, trial_score_runes),
+            ("trial score", trial_header, trial_score),
             (
                 "trial tier",
                 trial_header,
@@ -3573,7 +3867,7 @@ mod tests {
             (
                 "quiz longest choice",
                 quiz_choice,
-                text_bounds(31, 76, &"C".repeat(QUIZ_CHOICE_CHARS), 1),
+                text_bounds(TRIAL_CHOICE_TEXT_X, 76, &"C".repeat(QUIZ_CHOICE_CHARS), 1),
             ),
             (
                 "ascension heading",
@@ -3614,6 +3908,11 @@ mod tests {
                 "aftermath controls",
                 aftermath_panel,
                 centered_text_in_bounds(aftermath_panel, 126, "A/B/START:MENU", 1),
+            ),
+            (
+                "aftermath insight rune",
+                aftermath_panel,
+                centered_text_in_bounds(aftermath_panel, 114, "RUNE III", 1),
             ),
         ] {
             assert!(
@@ -3680,7 +3979,7 @@ mod tests {
             (
                 "atelier heading",
                 atelier_header,
-                centered_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", 1),
+                centered_compact_text_box_bounds(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER"),
             ),
             (
                 "atelier row label",
@@ -3694,6 +3993,11 @@ mod tests {
                     atelier_value_box(ATELIER_ROW_BOXES[1]),
                     "<MERGE PALADIN>",
                 ),
+            ),
+            (
+                "atelier bind action",
+                atelier_bind_text,
+                centered_text_box_bounds(ATELIER_BIND_TEXT_BOX, "BIND", 1),
             ),
             (
                 "ascension level",
@@ -3751,6 +4055,11 @@ mod tests {
 
         for (name, left, right) in [
             (
+                "atelier heading and name row",
+                ui_box_bounds(ATELIER_HEADER_BOX),
+                ui_box_bounds(ATELIER_ROW_BOXES[0]),
+            ),
+            (
                 "atelier label and value",
                 centered_text_box_bounds(atelier_label_box(ATELIER_ROW_BOXES[1]), "PATH", 1),
                 centered_compact_text_box_bounds(
@@ -3768,6 +4077,17 @@ mod tests {
                 text_bounds(44, 20, "ORACLE-BOUND", 1),
                 text_bounds(126, 20, "A:ANSWER B:LEAVE", 1),
             ),
+            ("trial ward and streak", trial_ward, trial_streak),
+            (
+                "trial streak and score runes",
+                trial_streak,
+                trial_score_runes,
+            ),
+            (
+                "trial score runes and score",
+                trial_score_runes,
+                trial_score,
+            ),
             (
                 "sanctum tier and status",
                 text_bounds(60, 5, "ORACLE-BOUND", 1),
@@ -3777,6 +4097,16 @@ mod tests {
                 "ascension heading and tier",
                 centered_text_bounds(73, "ORACLE BOND ASCENDS", 1),
                 centered_text_bounds(84, "ORACLE-BOUND", 2),
+            ),
+            (
+                "trial choice ornament and copy",
+                LayoutBounds {
+                    x: 23,
+                    y: 69,
+                    width: 14,
+                    height: 20,
+                },
+                text_bounds(TRIAL_CHOICE_TEXT_X, 76, &"C".repeat(QUIZ_CHOICE_CHARS), 1),
             ),
         ] {
             assert!(
@@ -3801,6 +4131,182 @@ mod tests {
                 "{name} foreground contrast {ratio:.2}:1 is below 4.5:1"
             );
         }
+    }
+
+    #[test]
+    fn atelier_hero_visible_feet_rest_on_the_stage_support_line() {
+        const STAGE_SUPPORT_Y: i32 = 106;
+
+        for hero in ORACLE_HEROES {
+            let visible = alpha_bounds(hero, HERO_SPRITE_WIDTH, HERO_SPRITE_HEIGHT);
+            let visible_bottom =
+                ATELIER_HERO_Y + (visible.y + visible.height) * ATELIER_HERO_SCALE - 1;
+            assert_eq!(
+                visible_bottom,
+                STAGE_SUPPORT_Y - 1,
+                "the hero's visible feet must meet the atelier platform instead of sinking into it"
+            );
+        }
+    }
+
+    #[test]
+    fn tracked_run_metrics_have_staged_thresholds_and_rewards() {
+        assert_eq!(SCORE_RUNE_THRESHOLDS, [300, 900, 1_800]);
+        assert_eq!(DATA_CHARGE_THRESHOLDS, [3, 6, 9]);
+        assert_eq!(BUG_BREACH_THRESHOLDS, [1, 3, 5]);
+
+        assert_eq!(streak_multiplier(0), 1);
+        assert_eq!(streak_multiplier(2), 1);
+        assert_eq!(streak_multiplier(3), 2);
+        assert_eq!(streak_multiplier(4), 2);
+        assert_eq!(streak_multiplier(5), 2);
+        assert_eq!(streak_multiplier(6), 3);
+        assert_eq!(streak_multiplier(7), 3);
+        assert_eq!(score_award_for_streak(2), 100);
+        assert_eq!(score_award_for_streak(3), 200);
+        assert_eq!(score_award_for_streak(6), 300);
+
+        assert_eq!(InsightStage::from_score(299), InsightStage::Unlit);
+        assert_eq!(InsightStage::from_score(300), InsightStage::RuneOne);
+        assert_eq!(InsightStage::from_score(301), InsightStage::RuneOne);
+        assert_eq!(InsightStage::from_score(899), InsightStage::RuneOne);
+        assert_eq!(InsightStage::from_score(900), InsightStage::RuneTwo);
+        assert_eq!(InsightStage::from_score(901), InsightStage::RuneTwo);
+        assert_eq!(InsightStage::from_score(1_799), InsightStage::RuneTwo);
+        assert_eq!(InsightStage::from_score(1_800), InsightStage::RuneThree);
+        assert_eq!(InsightStage::from_score(1_801), InsightStage::RuneThree);
+        assert_eq!(threshold_stage(2, &DATA_CHARGE_THRESHOLDS), 0);
+        assert_eq!(threshold_stage(3, &DATA_CHARGE_THRESHOLDS), 1);
+        assert_eq!(threshold_stage(4, &DATA_CHARGE_THRESHOLDS), 1);
+        assert_eq!(threshold_stage(5, &DATA_CHARGE_THRESHOLDS), 1);
+        assert_eq!(threshold_stage(6, &DATA_CHARGE_THRESHOLDS), 2);
+        assert_eq!(threshold_stage(7, &DATA_CHARGE_THRESHOLDS), 2);
+        assert_eq!(threshold_stage(8, &DATA_CHARGE_THRESHOLDS), 2);
+        assert_eq!(threshold_stage(9, &DATA_CHARGE_THRESHOLDS), 3);
+        assert_eq!(threshold_stage(10, &DATA_CHARGE_THRESHOLDS), 3);
+        assert_eq!(threshold_stage(0, &BUG_BREACH_THRESHOLDS), 0);
+        assert_eq!(threshold_stage(1, &BUG_BREACH_THRESHOLDS), 1);
+        assert_eq!(threshold_stage(2, &BUG_BREACH_THRESHOLDS), 1);
+        assert_eq!(threshold_stage(3, &BUG_BREACH_THRESHOLDS), 2);
+        assert_eq!(threshold_stage(4, &BUG_BREACH_THRESHOLDS), 2);
+        assert_eq!(threshold_stage(5, &BUG_BREACH_THRESHOLDS), 3);
+        assert_eq!(threshold_stage(6, &BUG_BREACH_THRESHOLDS), 3);
+    }
+
+    #[test]
+    fn correct_answers_apply_the_staged_flow_multiplier_to_runtime_score() {
+        let mut engine = playing_quiz_engine();
+        let expected_scores = [100, 200, 400, 600, 800, 1_100, 1_400, 1_700, 2_000];
+
+        for (index, expected_score) in expected_scores.into_iter().enumerate() {
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button: Button::A,
+                    pressed: true,
+                },
+            );
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button: Button::A,
+                    pressed: false,
+                },
+            );
+            let state = engine.app.world().resource::<GameState>();
+            let run = state.quiz.as_ref().unwrap();
+            assert_eq!(run.streak, index as u32 + 1);
+            assert_eq!(run.score, expected_score);
+            assert_eq!(
+                InsightStage::from_score(run.score).index(),
+                [0, 0, 1, 1, 1, 2, 2, 2, 3][index]
+            );
+            engine
+                .app
+                .world_mut()
+                .resource_mut::<GameState>()
+                .quiz
+                .as_mut()
+                .unwrap()
+                .feedback = None;
+        }
+    }
+
+    #[test]
+    fn quiz_review_names_rune_flow_and_ward_threshold_changes() {
+        let mut run = QuizRun {
+            question: 0,
+            completed_batches: 0,
+            selected: 0,
+            hearts: 3,
+            score: 400,
+            level: 1,
+            streak: 3,
+            leveled_up: false,
+            feedback: Some((true, QUIZ_FEEDBACK_TICKS)),
+        };
+        assert_eq!(quiz_feedback_banner(&run), "RUNE I AWAKENS");
+
+        run.score = 600;
+        run.streak = 4;
+        assert_eq!(quiz_feedback_banner(&run), "FLOW X2");
+
+        run.feedback = Some((false, QUIZ_FEEDBACK_TICKS));
+        run.streak = 0;
+        run.hearts = 2;
+        assert_eq!(quiz_feedback_banner(&run), "WARD STRAINED");
+        run.hearts = 1;
+        assert_eq!(quiz_feedback_banner(&run), "WARD FRACTURES");
+        run.hearts = 0;
+        assert_eq!(quiz_feedback_banner(&run), "WARD BROKEN");
+    }
+
+    #[test]
+    fn oracle_ward_runes_show_each_health_threshold_without_generic_pips() {
+        let mut full = Framebuffer::default();
+        let mut strained = Framebuffer::default();
+        let mut fractured = Framebuffer::default();
+        let mut broken = Framebuffer::default();
+        draw_oracle_ward_meter(&mut full, 0, 0, 3);
+        draw_oracle_ward_meter(&mut strained, 0, 0, 2);
+        draw_oracle_ward_meter(&mut fractured, 0, 0, 1);
+        draw_oracle_ward_meter(&mut broken, 0, 0, 0);
+
+        assert_ne!(full.pixels, strained.pixels);
+        assert_ne!(strained.pixels, fractured.pixels);
+        assert_ne!(fractured.pixels, broken.pixels);
+        assert!(color_pixels_in_region(&full.pixels, CYAN, 0..46, 0..7) > 0);
+        assert!(color_pixels_in_region(&strained.pixels, AMBER, 0..46, 0..7) > 0);
+        assert!(color_pixels_in_region(&fractured.pixels, RED, 0..46, 0..7) > 0);
+    }
+
+    #[test]
+    fn threshold_crossings_change_datafall_runes_at_the_declared_breakpoints() {
+        let mut state = GameState {
+            cartridge: Some(oracle_template_cartridge()),
+            questions_loading: true,
+            oracle_data: 2,
+            oracle_bug_hits: 0,
+            ..Default::default()
+        };
+        let mut before = Framebuffer::default();
+        render_oracle_sanctum(&mut before, &state);
+
+        state.oracle_data = 3;
+        state.oracle_bug_hits = 1;
+        let mut after = Framebuffer::default();
+        render_oracle_sanctum(&mut after, &state);
+
+        assert_ne!(
+            frame_region(&before.pixels, 49..68, 149..156),
+            frame_region(&after.pixels, 49..68, 149..156),
+            "the first data charge threshold must light a rune"
+        );
+        assert_ne!(
+            frame_region(&before.pixels, 173..192, 149..156),
+            frame_region(&after.pixels, 173..192, 149..156),
+            "the first corruption threshold must break a containment rune"
+        );
     }
 
     fn frame_region(
@@ -5413,6 +5919,24 @@ mod tests {
         let mut review = Framebuffer::default();
         render_oracle_trial(&mut review, &state);
         maybe_write_preview("07b-trial-review", &review.pixels);
+
+        state.quiz.as_mut().unwrap().feedback = None;
+        for (name, score, streak) in [
+            ("07c-trial-rune-two", 900, 6),
+            ("07d-trial-rune-three", 1_800, 9),
+        ] {
+            state.quiz.as_mut().unwrap().score = score;
+            state.quiz.as_mut().unwrap().streak = streak;
+            let mut threshold = Framebuffer::default();
+            render_oracle_trial(&mut threshold, &state);
+            maybe_write_preview(name, &threshold.pixels);
+        }
+
+        state.oracle_data = 9;
+        state.oracle_bug_hits = 5;
+        let mut datafall_thresholds = Framebuffer::default();
+        render_oracle_sanctum(&mut datafall_thresholds, &state);
+        maybe_write_preview("06b-sanctum-thresholds", &datafall_thresholds.pixels);
 
         let distinct = previews.iter().collect::<HashSet<_>>();
         assert_eq!(

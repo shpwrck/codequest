@@ -37,6 +37,32 @@
         "Keeps the brief and CODEQUEST.toml valid, linked, and honest about implemented versus proposed work."
       ],
       "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Audit the native 240x160 character-creation and quiz frames for polish. The action label looks vertically off-center, the hero seems low on its platform, a heading touches the first identity row, and a decorative divider cuts through answer copy. Fix the design and implementation contracts so these classes of issue are caught elsewhere too.",
+      "expected_output": "A native-composite layout audit and revision that measures usable interiors, visible-alpha support lines, static ornament bounds, worst-case glyph cells, and all sibling intersections instead of approving only outer panel containment.",
+      "expectations": [
+        "Measures centered copy against the usable art interior on both axes rather than the decorative outer shell.",
+        "Anchors the character's visible alpha support point to the platform or floor line rather than using nominal sprite dimensions.",
+        "Checks every relevant sibling foreground pair and catches the heading-to-row intersection.",
+        "Composites worst-case answer text with the plate and keeps decorative dividers outside glyph and inter-glyph cells.",
+        "Adds executable regression evidence for the corrected native layout instead of documenting intent alone."
+      ],
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "Polish the quiz HUD and progression. Health is shown as generic stars, score and streak are bare numbers, and Datafall exposes collectible and hit counts without meaningful stages. Make the UI feel native to the Oracle theme and ensure every tracked quantity rewards or warns the player at explicit thresholds.",
+      "expected_output": "A themed instrumentation and threshold pass that replaces generic HUD notation, defines desirable directions and exact breakpoints for every visible metric, and verifies the native states immediately below, at, and above each threshold.",
+      "expectations": [
+        "Replaces generic health and counter notation with legible Oracle-themed instruments that deliberately use the available HUD space.",
+        "Defines empty, intermediate, full, gain, and loss states through shape, fill, count, fracture, position, or concise labels rather than hue alone.",
+        "Inventories score, streak, health, collectible, hazard, and completion tracking with desirable direction, thresholds, staged reward or consequence, cap, and reset.",
+        "Makes score or streak thresholds mechanically meaningful instead of merely recoloring the same flat reward.",
+        "Adds executable evidence at values immediately below, at, and above the declared breakpoints and inspects the final 240x160 composites."
+      ],
+      "files": []
     }
   ]
 }
