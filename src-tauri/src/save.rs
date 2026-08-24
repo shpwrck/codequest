@@ -1,11 +1,17 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 const SCHEMA_VERSION: u32 = 1;
+
+fn save_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 pub(crate) fn path_for(cartridge_path: &Path) -> PathBuf {
     let mut file_name = cartridge_path
@@ -82,6 +88,9 @@ impl SaveFile {
     }
 
     pub(crate) fn set<T: Serialize>(&mut self, key: &str, value: &T) -> Result<(), String> {
+        let _write_guard = save_write_lock()
+            .lock()
+            .map_err(|_| "COULD NOT WRITE CARTRIDGE SAVE".to_string())?;
         let value = serde_json::to_value(value)
             .map_err(|_| "COULD NOT SERIALIZE CARTRIDGE SAVE".to_string())?;
         self.document = read_document(&self.path)?;

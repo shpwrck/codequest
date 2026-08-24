@@ -6,6 +6,7 @@ mod font5x7;
 mod save;
 pub mod scene_machine;
 
+use std::collections::HashSet;
 use std::io::Read;
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
@@ -370,11 +371,26 @@ struct QQuestion {
 }
 
 const CLAUDE_QUESTION_BATCHES_KEY: &str = "claude.question_batches";
+const QUIZ_PROGRESS_KEY: &str = "quiz.progress";
 
 #[derive(Serialize, Deserialize, Clone)]
 struct SavedQuestionBatch {
     level: u32,
     questions: Vec<QQuestion>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct SavedQuizProgress {
+    #[serde(default)]
+    answered_questions: Vec<String>,
+}
+
+fn question_identity(question: &str) -> String {
+    question
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase()
 }
 
 fn question_is_acceptable(question: &QQuestion) -> bool {
@@ -474,6 +490,35 @@ fn load_saved_question_batches(path: &std::path::Path) -> Result<Vec<SavedQuesti
                 && batch.questions.iter().all(question_is_acceptable)
         })
         .collect())
+}
+
+fn load_answered_questions(path: &std::path::Path) -> Result<HashSet<String>, String> {
+    let save = save::SaveFile::open_or_create(path)?;
+    Ok(save
+        .get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
+        .unwrap_or_default()
+        .answered_questions
+        .into_iter()
+        .map(|question| question_identity(&question))
+        .collect())
+}
+
+fn persist_answered_question(path: &std::path::Path, question: &str) -> Result<(), String> {
+    let mut save = save::SaveFile::open_or_create(path)?;
+    let mut progress = save
+        .get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
+        .unwrap_or_default();
+    let identity = question_identity(question);
+    if identity.is_empty()
+        || progress
+            .answered_questions
+            .iter()
+            .any(|answered| question_identity(answered) == identity)
+    {
+        return Ok(());
+    }
+    progress.answered_questions.push(question.to_string());
+    save.set(QUIZ_PROGRESS_KEY, &progress)
 }
 
 fn persist_claude_question_batch(
@@ -653,20 +698,25 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
         .flatten()
         .unwrap_or_else(|| SceneMachineDefinition::template(template));
     let saved_batches = load_saved_question_batches(std::path::Path::new(&cartridge.path))?;
+    let answered_questions = load_answered_questions(std::path::Path::new(&cartridge.path))?;
     let mut questions = Vec::new();
     let mut question_batch_ends = Vec::with_capacity(saved_batches.len());
     for batch in saved_batches {
+        let batch_start = questions.len();
         questions.extend(
             batch
                 .questions
                 .into_iter()
+                .filter(|question| !answered_questions.contains(&question_identity(&question.q)))
                 .map(|question| engine::QuizQuestion {
                     question: question.q,
                     choices: question.choices,
                     answer: question.answer,
                 }),
         );
-        question_batch_ends.push(questions.len());
+        if questions.len() > batch_start {
+            question_batch_ends.push(questions.len());
+        }
     }
 
     Ok(engine::CartridgeSpec {
@@ -740,9 +790,13 @@ pub fn run() {
         if environment_flag_enabled(std::env::var("CQA_NO_AI").ok().as_deref()) {
             return Vec::new();
         }
-        generate_and_save_questions(std::path::Path::new(&path), level, count)
-            .unwrap_or_default()
+        let questions = generate_and_save_questions(std::path::Path::new(&path), level, count)
+            .unwrap_or_default();
+        let answered_questions =
+            load_answered_questions(std::path::Path::new(&path)).unwrap_or_default();
+        questions
             .into_iter()
+            .filter(|question| !answered_questions.contains(&question_identity(&question.q)))
             .map(|question| engine::QuizQuestion {
                 question: question.q,
                 choices: question.choices,
@@ -750,10 +804,17 @@ pub fn run() {
             })
             .collect()
     });
+    let answered_question_recorder: engine::AnsweredQuestionRecorder =
+        Arc::new(|path, question| {
+            let _ = persist_answered_question(std::path::Path::new(&path), &question);
+        });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(EngineState(engine::EngineRuntime::spawn(question_loader)))
+        .manage(EngineState(engine::EngineRuntime::spawn(
+            question_loader,
+            answered_question_recorder,
+        )))
         .invoke_handler(tauri::generate_handler![
             pick_cartridge,
             cartridge_branch,
@@ -1206,6 +1267,87 @@ mod question_policy_tests {
         assert_eq!(spec.question_batch_ends, vec![1, 2]);
 
         std::fs::remove_file(save_path).unwrap();
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn cartridge_reload_resumes_after_last_answered_question() {
+        let repo = temporary_git_repo();
+        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
+        save.set(
+            "claude.question_batches",
+            &serde_json::json!([
+                {
+                    "level": 1,
+                    "questions": [{
+                        "q": "WHAT SHOULD OWN GAMEPLAY STATE?",
+                        "choices": [
+                            "THE GAME ENGINE",
+                            "THE DEVICE SHELL",
+                            "THE STYLES",
+                            "THE VIEW"
+                        ],
+                        "answer": 0
+                    }]
+                },
+                {
+                    "level": 2,
+                    "questions": [{
+                        "q": "WHY KEEP THE DEVICE SHELL THIN?",
+                        "choices": [
+                            "TO CENTRALIZE GAME RULES",
+                            "TO DUPLICATE GAME STATE",
+                            "TO HIDE ENGINE OUTPUT",
+                            "TO BYPASS THE ENGINE"
+                        ],
+                        "answer": 0
+                    }]
+                }
+            ]),
+        )
+        .unwrap();
+        save.set(
+            "quiz.progress",
+            &serde_json::json!({
+                "answered_questions": ["WHAT SHOULD OWN GAMEPLAY STATE?"]
+            }),
+        )
+        .unwrap();
+
+        let spec = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
+
+        assert_eq!(spec.questions.len(), 1);
+        assert_eq!(
+            spec.questions[0].question,
+            "WHY KEEP THE DEVICE SHELL THIN?"
+        );
+        assert_eq!(spec.question_batch_ends, vec![1]);
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn answered_question_progress_is_namespaced_and_idempotent() {
+        let repo = temporary_git_repo();
+        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
+        save.set(
+            CLAUDE_QUESTION_BATCHES_KEY,
+            &serde_json::json!([{ "level": 1, "questions": [] }]),
+        )
+        .unwrap();
+
+        persist_answered_question(&repo, "WHAT OWNS GAMEPLAY STATE?").unwrap();
+        persist_answered_question(&repo, "  what owns gameplay state?  ").unwrap();
+
+        let reloaded = save::SaveFile::open_or_create(&repo).unwrap();
+        let progress = reloaded
+            .get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
+            .unwrap();
+        assert_eq!(progress.answered_questions, ["WHAT OWNS GAMEPLAY STATE?"]);
+        assert!(reloaded
+            .get::<serde_json::Value>(CLAUDE_QUESTION_BATCHES_KEY)
+            .is_some());
+
         remove_temporary_repo(repo);
     }
 
