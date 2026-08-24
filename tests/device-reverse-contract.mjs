@@ -148,7 +148,9 @@ assert.match(adapter, /function turnShell\(/, "The adapter does not coordinate a
 assert.match(adapter, /TURN_DURATION_MS\s*\/\s*2/, "The shell face does not swap at the edge-on midpoint");
 assert.match(adapter, /turning-to-back/, "The adapter does not distinguish the front-to-back display handoff");
 assert.match(adapter, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)/, "Reduced-motion users still receive the turn animation");
-assert.doesNotMatch(adapter, /event\.code === "(?:F1|KeyP|KeyC)"/, "Shell actions should not retain hidden hotkeys");
+for (const shortcut of ["F1", "KeyP", "KeyC"]) {
+  assert.match(adapter, new RegExp(`event\\.code === "${shortcut}"`), `${shortcut} shell shortcut must remain available`);
+}
 assert.match(adapter, /ShiftLeft:\s*"select",\s*ShiftRight:\s*"select"/, "SELECT must remain mapped to Shift");
 assert.match(adapter, /viewToggle\.addEventListener\("click"/, "The floating front/back switch is not wired");
 assert.match(adapter, /viewToggle\.setAttribute\("aria-checked",\s*String\(shellBackVisible\)\)/, "The slider's accessible state does not follow the visible face");

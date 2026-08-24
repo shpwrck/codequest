@@ -535,6 +535,19 @@ import {
   };
 
   window.addEventListener("keydown", (event) => {
+    if (event.code === "F1") {
+      event.preventDefault();
+      if (!event.repeat) turnShell();
+      return;
+    }
+    if (event.code === "KeyP") {
+      if (!event.repeat) setPower(!powered);
+      return;
+    }
+    if (event.code === "KeyC") {
+      if (!event.repeat) trayOpen ? closeTray() : openTray();
+      return;
+    }
     if (trayOpen && (event.key === "Escape" || event.code === "KeyS")) {
       closeTray();
       return;
