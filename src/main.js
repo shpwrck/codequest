@@ -17,6 +17,7 @@ import {
   const FRAME_BYTES = WIDTH * HEIGHT * 4;
   const DEVICE_WIDTH = 618;
   const DEVICE_HEIGHT = 368;
+  const OPEN_DEVICE_HEIGHT = 446;
   const BOOT_DURATION_MS = 2600;
   const BOOT_SKIP_DELAY_MS = 650;
   const TURN_DURATION_MS = 520;
@@ -76,11 +77,16 @@ import {
   const swallowedByBoot = Object.create(null);
 
   function fit() {
+    const openBack = shellBackVisible && batteryDoorOpen;
     const available = Math.min(
       window.innerWidth / DEVICE_WIDTH,
-      window.innerHeight / DEVICE_HEIGHT,
+      window.innerHeight / (openBack ? OPEN_DEVICE_HEIGHT : DEVICE_HEIGHT),
     );
-    const snapped = available >= 1 ? Math.floor(available * 2) / 2 : Math.max(0.35, available);
+    const snapped = openBack
+      ? Math.max(0.35, Math.round(available * 0.82 * 10) / 10)
+      : available >= 1
+        ? Math.floor(available * 2) / 2
+        : Math.max(0.35, available);
     scaleEl.style.zoom = snapped;
   }
 
@@ -195,6 +201,7 @@ import {
     }
     batteryDoorOpen = nextOpen;
     batteryCompartment.classList.toggle("open", batteryDoorOpen);
+    scaleEl.classList.toggle("battery-door-open", batteryDoorOpen && shellBackVisible);
     batteryCompartment.classList.toggle("locked", powered);
     batteryDoor.setAttribute("aria-expanded", String(batteryDoorOpen));
     batteryDoor.setAttribute(
@@ -205,6 +212,7 @@ import {
     );
     batteryPack.inert = !batteryDoorOpen;
     batteryChooser.inert = !batteryDoorOpen;
+    fit();
     return true;
   }
 
@@ -269,13 +277,13 @@ import {
     hideDeviceBoot();
     lastPowerFailure = installedProvider ? `${providerLabel()} NOT READY` : "NO BATTERIES";
     powerSwitch.classList.remove("checking");
-    powerSwitch.classList.add("on", "power-rejected");
+    powerSwitch.classList.add("on");
     powerLed.classList.remove("off", "checking");
     powerLed.classList.add("rejected");
     powerSwitch.setAttribute("aria-label", `Power rejected: ${lastPowerFailure}`);
     await invoke("engine_power", { powered: false }).catch(() => {});
     await wait(POWER_REJECTION_MS);
-    powerSwitch.classList.remove("on", "power-rejected");
+    powerSwitch.classList.remove("on");
     powerLed.classList.remove("rejected");
     powerLed.classList.add("off");
     updateControlGuides();
@@ -390,7 +398,7 @@ import {
     }
 
     powered = false;
-    powerSwitch.classList.remove("on", "checking", "power-rejected");
+    powerSwitch.classList.remove("on", "checking");
     powerLed.classList.remove("checking", "rejected");
     powerLed.classList.add("off");
     batteryCompartment.classList.remove("locked");

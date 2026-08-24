@@ -18,6 +18,12 @@ function block(selector) {
   return match[1];
 }
 
+function pixels(selector, property) {
+  const match = block(selector).match(new RegExp(`${property}:\\s*(\\d+)px`));
+  assert.ok(match, `Missing ${property} on ${selector}`);
+  return Number(match[1]);
+}
+
 for (const id of [
   "battery-compartment",
   "battery-bay",
@@ -59,6 +65,20 @@ assert.match(
 
 assert.match(block(".battery-compartment"), /position:\s*absolute/, "The battery bay must belong to the rear shell");
 assert.match(
+  block(".battery-compartment.open"),
+  /overflow:\s*visible/,
+  "The removed cover must remain fully visible below the device",
+);
+assert.match(
+  block("#rear-shell"),
+  /overflow:\s*visible/,
+  "The rear shell must not clip the fully removed cover",
+);
+assert.ok(
+  pixels("#shell-scale.battery-door-open", "height") >= 446,
+  "The open-device fit box must include the fully removed cover",
+);
+assert.match(
   block(".battery-compartment.open .rear-battery-door"),
   /transform:\s*translateY\(/,
   "Opening the compartment must move the physical door",
@@ -82,6 +102,9 @@ assert.match(
   "The spring leads must be visibly modeled",
 );
 assert.match(block(".battery-contact.leaf"), /background:/, "The flat electrical leads must be visible");
+assert.ok(pixels(".battery-pack", "left") <= 30, "Reference AA cells must reach the compact end contacts");
+assert.ok(pixels(".battery-pack", "width") >= 260, "Reference AA cells must span the molded compartment");
+assert.match(css, /(?:^|\n)\.rear-brand\s*\{[^}]*display:\s*none/s, "The reference cover has no embossed wordmark");
 const batteryLabel = block(".aa-battery-label");
 assert.match(batteryLabel, /font-family:\s*[^;]*sans-serif/, "Battery labels must use smooth product typography");
 assert.match(batteryLabel, /-webkit-font-smoothing:\s*antialiased/, "Battery labels must be anti-aliased");
@@ -93,8 +116,9 @@ assert.match(
 );
 assert.match(css, /\.battery-pack\.codex[\s\S]*?#2459e0/, "Codex batteries must use the blue brand treatment");
 assert.match(css, /\.battery-pack\.claude[\s\S]*?#d95f3f/, "Claude batteries must use the coral brand treatment");
-assert.match(css, /@keyframes powerRejected/, "Rejected power-on attempts need a red flash sequence");
-assert.match(css, /prefers-reduced-motion:[\s\S]*?power-rejected/s, "The rejection feedback needs a reduced-motion state");
+assert.match(css, /@keyframes powerIndicatorRejected/, "Rejected power-on attempts need an LED flash sequence");
+assert.doesNotMatch(css, /#power-switch\.power-rejected/, "The physical power toggle must never flash red");
+assert.match(css, /prefers-reduced-motion:[\s\S]*?\.power-led\.rejected/s, "The rejection LED needs a reduced-motion state");
 
 assert.match(adapter, /const PROVIDER_STORAGE_KEY = "cqa-ai-provider"/, "Provider selection must persist locally");
 assert.match(adapter, /invoke\("engine_set_ai_provider"/, "Battery changes must reach the backend");
@@ -105,7 +129,18 @@ assert.match(
   "The engine must not power on until provider verification succeeds",
 );
 assert.match(adapter, /function rejectPowerOn\(/, "Missing the failed power-on recovery path");
-assert.match(adapter, /power-rejected/, "The power switch never receives its red failure state");
+assert.match(adapter, /const OPEN_DEVICE_HEIGHT = 446/, "The open cover must participate in native window fitting");
+assert.match(
+  adapter,
+  /scaleEl\.classList\.toggle\("battery-door-open", batteryDoorOpen && shellBackVisible\)/,
+  "The native fit box must expand only while the back cover is open",
+);
+assert.match(adapter, /powerLed\.classList\.add\("rejected"\)/, "The power indicator never receives its red failure state");
+assert.doesNotMatch(
+  adapter,
+  /powerSwitch\.classList\.(?:add|remove)\([^)]*power-rejected/,
+  "Rejected power feedback must not recolor the physical toggle",
+);
 assert.match(adapter, /batteryDoor\.addEventListener\("click"/, "The rear battery door is not interactive");
 
 assert.match(externalTools, /CQA_CODEX/, "Codex executable discovery must be configurable");
