@@ -19,7 +19,7 @@ the player binds a small code-seer, consults an Oracle, and proves their
 understanding through increasingly difficult conceptual questions. The first
 question request runs behind the opening spectacle, and any remaining latency
 becomes Oracle Datafall: a Left/Right falling-object game in which the hero
-dodges bugs and runs into data while Claude works.
+dodges bugs and runs into data while the verified battery provider works.
 
 **Player outcome:** Build a durable mental model of a project's purpose,
 responsibilities, interactions, invariants, and tradeoffs—not memorize file
@@ -170,16 +170,16 @@ dependency on generation.
 
 | Beat | Trigger | Presentation | Player agency | Status |
 |---|---|---|---|---|
-| Arrival | Enter `oracle`. | Reset the hero to center, clear in-flight objects, and show the real Claude status. Keep the existing minimum dwell so instant results do not flash past. | Left/Right begins moving immediately; B returns to the quiz menu; all other controls remain inactive. | Implemented. |
+| Arrival | Enter `oracle`. | Reset the hero to center, clear in-flight objects, and show the real selected-provider status. Keep the existing minimum dwell so instant results do not flash past. | Left/Right begins moving immediately; B returns to the quiz menu; all other controls remain inactive. | Implemented. |
 | Datafall | Request is in flight. | Authored cyan-and-gold crystal shards and asymmetric magenta corruption glyphs fall through deterministic lanes. Data and bug-hit counts persist across Oracle visits; three charge runes light at 3/6/9 data while three containment runes break at 1/3/5 hits. | Move into data to collect it automatically; move away from bugs. | Implemented and breakpoint-tested. |
-| Clouded vision | A batch returns empty or invalid. | `CLAUDE RETRYING` distinguishes the real retry delay without a fake percentage. Falling-object play continues. | Left/Right remain available. | Implemented. |
+| Clouded vision | A batch returns empty or invalid. | `<PROVIDER> RETRYING` distinguishes the real retry delay without a fake percentage. Falling-object play continues. | Left/Right remain available. | Implemented. |
 | Vision ready | A valid unanswered question exists. | `QUESTION READY` may appear during the minimum dwell, then the scene transitions automatically. | No confirmation required; held D-pad inputs cannot answer the quiz. | Implemented. |
 | Long wait | Scrying continues beyond the normal beat. | The same deterministic play loop continues under truthful status copy, with no invented scan steps. | Keep playing until the question arrives. | Implemented. |
 
 The Oracle never rewards a slow response, suggests that Datafall speeds up the
 model, or hides a failed request behind invented progress. Datafall score and
 collisions are deliberately isolated from quiz wards, score, question timing,
-and Claude retries.
+and the selected provider retries.
 
 ## Mechanics
 
@@ -369,7 +369,7 @@ engine does not load or play them yet.
 | Themed run instrumentation and score thresholds | Implemented in this pass | Oracle ward glyphs replace stars; x1/x2/x3 flow changes score awards; 300/900/1800 Insight Runes change HUD and review feedback; exact breakpoints and native sibling bounds are tested. |
 | Safe Oracle-to-quiz input boundary | Implemented | A/Start are ignored in Oracle; B exits to the menu; held D-pad controls have no answer action after the automatic transition. |
 | Quiz result and reward input boundaries | Implemented in this pass | The 45-tick answer reveal replaces active controls, and level-up enforces a 60-tick hold before A/Start can leave. |
-| Answered-question continuity | Implemented | Answer commitment records question text under `quiz.progress`; cartridge reload compares normalized text and filters recorded questions while serialized save updates preserve the independent Claude-batch namespace. |
+| Answered-question continuity | Implemented | Answer commitment records question text under `quiz.progress`; cartridge reload compares normalized text and filters recorded questions while serialized save updates preserve the independent AI-batch namespace and read the legacy Claude key. |
 | Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
 | Concise answer review and reduced motion | Partially implemented | Green/red answer copy, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
 | Visual templates selected from manifest | Implemented | Eleven typed built-in templates are selected by `art[].template`; `oracle-awakening` selects five art-ID-addressed opening plates, other Oracle templates composite their native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |

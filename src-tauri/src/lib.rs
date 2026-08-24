@@ -9,7 +9,7 @@ pub mod scene_machine;
 use std::collections::HashSet;
 use std::io::Read;
 use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -31,6 +31,82 @@ struct Quest {
 }
 
 struct EngineState(engine::EngineRuntime);
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum AiProvider {
+    Claude,
+    Codex,
+}
+
+impl AiProvider {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            _ => Err("UNKNOWN AI BATTERY PROVIDER".to_string()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "CLAUDE",
+            Self::Codex => "CODEX",
+        }
+    }
+}
+
+#[derive(Default)]
+struct AiProviderSession {
+    selected: Option<AiProvider>,
+    verified: Option<AiProvider>,
+}
+
+#[derive(Clone, Default)]
+struct AiProviderState(Arc<RwLock<AiProviderSession>>);
+
+impl AiProviderState {
+    fn select(&self, provider: Option<AiProvider>) -> Result<(), String> {
+        let mut session = self
+            .0
+            .write()
+            .map_err(|_| "AI BATTERY STATE UNAVAILABLE".to_string())?;
+        if session.selected != provider {
+            session.verified = None;
+        }
+        session.selected = provider;
+        Ok(())
+    }
+
+    fn selected(&self) -> Option<AiProvider> {
+        self.0.read().ok().and_then(|session| session.selected)
+    }
+
+    fn ready_provider(&self) -> Option<AiProvider> {
+        self.0.read().ok().and_then(|session| {
+            let provider = session.selected?;
+            (session.verified == Some(provider)).then_some(provider)
+        })
+    }
+
+    fn mark_verified(&self, provider: AiProvider) -> Result<(), String> {
+        let mut session = self
+            .0
+            .write()
+            .map_err(|_| "AI BATTERY STATE UNAVAILABLE".to_string())?;
+        if session.selected != Some(provider) {
+            return Err("AI BATTERIES CHANGED DURING CHECK".to_string());
+        }
+        session.verified = Some(provider);
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct AiProviderVerification {
+    provider: AiProvider,
+    ready: bool,
+}
 
 fn quest(id: &str, name: &str, description: &str, boss: &str, command: &str) -> Quest {
     Quest {
@@ -385,7 +461,8 @@ struct QQuestion {
     answer: usize,
 }
 
-const CLAUDE_QUESTION_BATCHES_KEY: &str = "claude.question_batches";
+const AI_QUESTION_BATCHES_KEY: &str = "ai.question_batches";
+const LEGACY_CLAUDE_QUESTION_BATCHES_KEY: &str = "claude.question_batches";
 const QUIZ_PROGRESS_KEY: &str = "quiz.progress";
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -495,9 +572,14 @@ fn accepted_question_batch(
 
 fn load_saved_question_batches(path: &std::path::Path) -> Result<Vec<SavedQuestionBatch>, String> {
     let save = save::SaveFile::open_or_create(path)?;
-    Ok(save
-        .get::<Vec<SavedQuestionBatch>>(CLAUDE_QUESTION_BATCHES_KEY)
-        .unwrap_or_default()
+    let mut batches = save
+        .get::<Vec<SavedQuestionBatch>>(AI_QUESTION_BATCHES_KEY)
+        .unwrap_or_default();
+    batches.extend(
+        save.get::<Vec<SavedQuestionBatch>>(LEGACY_CLAUDE_QUESTION_BATCHES_KEY)
+            .unwrap_or_default(),
+    );
+    Ok(batches
         .into_iter()
         .filter(|batch| {
             batch.level > 0
@@ -536,23 +618,23 @@ fn persist_answered_question(path: &std::path::Path, question: &str) -> Result<(
     save.set(QUIZ_PROGRESS_KEY, &progress)
 }
 
-fn persist_claude_question_batch(
+fn persist_ai_question_batch(
     path: &std::path::Path,
     level: u32,
     questions: &[QQuestion],
 ) -> Result<(), String> {
     if level == 0 || questions.is_empty() || !questions.iter().all(question_is_acceptable) {
-        return Err("INVALID CLAUDE QUESTION BATCH".to_string());
+        return Err("INVALID AI QUESTION BATCH".to_string());
     }
     let mut save = save::SaveFile::open_or_create(path)?;
     let mut batches = save
-        .get::<Vec<SavedQuestionBatch>>(CLAUDE_QUESTION_BATCHES_KEY)
+        .get::<Vec<SavedQuestionBatch>>(AI_QUESTION_BATCHES_KEY)
         .unwrap_or_default();
     batches.push(SavedQuestionBatch {
         level,
         questions: questions.to_vec(),
     });
-    save.set(CLAUDE_QUESTION_BATCHES_KEY, &batches)
+    save.set(AI_QUESTION_BATCHES_KEY, &batches)
 }
 
 fn gather_quiz_data(path: &std::path::Path) -> Result<QuizData, String> {
@@ -565,7 +647,7 @@ fn text_excerpt(path: &std::path::Path, max_lines: usize) -> String {
         .unwrap_or_default()
 }
 
-fn claude_question_prompt(
+fn ai_question_prompt(
     project_name: &str,
     level: u32,
     count: usize,
@@ -577,17 +659,82 @@ fn claude_question_prompt(
     )
 }
 
+const AI_PROBE_PROMPT: &str =
+    "Reply with exactly CODEQUEST_READY and nothing else. Do not inspect files or use tools.";
+
+fn ai_prompt_command(provider: AiProvider, prompt: &str) -> Command {
+    match provider {
+        AiProvider::Claude => {
+            let mut command = external_tools::claude_command();
+            command.args([
+                "-p",
+                prompt,
+                "--output-format",
+                "json",
+                "--no-session-persistence",
+                "--tools",
+                "",
+            ]);
+            if let Ok(model) = std::env::var("CQA_CLAUDE_MODEL") {
+                if !model.is_empty() {
+                    command.args(["--model", &model]);
+                }
+            }
+            command
+        }
+        AiProvider::Codex => {
+            let mut command = external_tools::codex_command();
+            command.args([
+                "exec",
+                "--ephemeral",
+                "--sandbox",
+                "read-only",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+            ]);
+            if let Ok(model) = std::env::var("CQA_CODEX_MODEL") {
+                if !model.is_empty() {
+                    command.args(["--model", &model]);
+                }
+            }
+            command.arg(prompt);
+            command
+        }
+    }
+}
+
+fn ai_response_text(provider: AiProvider, stdout: &[u8]) -> Result<String, String> {
+    match provider {
+        AiProvider::Claude => {
+            let envelope: serde_json::Value =
+                serde_json::from_slice(stdout).map_err(|_| "BAD CLAUDE CLI OUTPUT".to_string())?;
+            envelope
+                .get("result")
+                .and_then(|result| result.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| "BAD CLAUDE CLI OUTPUT".to_string())
+        }
+        AiProvider::Codex => {
+            String::from_utf8(stdout.to_vec()).map_err(|_| "BAD CODEX CLI OUTPUT".to_string())
+        }
+    }
+}
+
 fn command_output_with_timeout(
     mut command: Command,
     timeout: Duration,
-) -> Result<Output, &'static str> {
+    provider_name: &str,
+) -> Result<Output, String> {
+    let unavailable = || format!("{provider_name} CLI UNAVAILABLE");
+    let failed = || format!("{provider_name} CALL FAILED");
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| "CLAUDE CLI UNAVAILABLE")?;
-    let stdout = child.stdout.take().ok_or("CLAUDE CALL FAILED")?;
-    let stderr = child.stderr.take().ok_or("CLAUDE CALL FAILED")?;
+        .map_err(|_| unavailable())?;
+    let stdout = child.stdout.take().ok_or_else(&failed)?;
+    let stderr = child.stderr.take().ok_or_else(&failed)?;
     let stdout_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         let mut reader = stdout;
@@ -599,27 +746,24 @@ fn command_output_with_timeout(
         reader.read_to_end(&mut bytes).map(|_| bytes)
     });
 
-    let status = match child
-        .wait_timeout(timeout)
-        .map_err(|_| "CLAUDE CALL FAILED")?
-    {
+    let status = match child.wait_timeout(timeout).map_err(|_| failed())? {
         Some(status) => status,
         None => {
             let _ = child.kill();
             let _ = child.wait();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err("CLAUDE CALL TIMED OUT");
+            return Err(format!("{provider_name} CALL TIMED OUT"));
         }
     };
     let stdout = stdout_reader
         .join()
-        .map_err(|_| "CLAUDE CALL FAILED")?
-        .map_err(|_| "CLAUDE CALL FAILED")?;
+        .map_err(|_| failed())?
+        .map_err(|_| failed())?;
     let stderr = stderr_reader
         .join()
-        .map_err(|_| "CLAUDE CALL FAILED")?
-        .map_err(|_| "CLAUDE CALL FAILED")?;
+        .map_err(|_| failed())?
+        .map_err(|_| failed())?;
     Ok(Output {
         status,
         stdout,
@@ -631,6 +775,7 @@ fn ai_questions(
     path: &std::path::Path,
     level: u32,
     count: usize,
+    active_provider: Option<AiProvider>,
 ) -> Result<Vec<QQuestion>, String> {
     let d = gather_quiz_data(path)?;
     let name = path
@@ -638,7 +783,7 @@ fn ai_questions(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     // The file inventory is used only to select representative source excerpts.
-    // Paths and repository metadata are deliberately withheld from Claude so the
+    // Paths and repository metadata are deliberately withheld from the provider so the
     // resulting questions focus on enduring concepts rather than file trivia.
     let mut files: Vec<&QuizFile> = d.files.iter().collect();
     files.sort_by_key(|file| std::cmp::Reverse(file.size));
@@ -659,24 +804,14 @@ fn ai_questions(
             used += 1;
         }
     }
-    let prompt = claude_question_prompt(&name, level, count, &readme, &excerpts);
-    let mut cmd = external_tools::claude_command();
-    cmd.args(["-p", &prompt, "--output-format", "json"]);
-    if let Ok(model) = std::env::var("CQA_CLAUDE_MODEL") {
-        if !model.is_empty() {
-            cmd.args(["--model", &model]);
-        }
-    }
-    let out = command_output_with_timeout(cmd, Duration::from_secs(120)).map_err(str::to_string)?;
+    let prompt = ai_question_prompt(&name, level, count, &readme, &excerpts);
+    let provider = active_provider.ok_or_else(|| "AI BATTERIES NOT VERIFIED".to_string())?;
+    let cmd = ai_prompt_command(provider, &prompt);
+    let out = command_output_with_timeout(cmd, Duration::from_secs(120), provider.name())?;
     if !out.status.success() {
-        return Err("CLAUDE CALL FAILED".to_string());
+        return Err(format!("{} CALL FAILED", provider.name()));
     }
-    let envelope: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|_| "BAD CLI OUTPUT".to_string())?;
-    let result = envelope
-        .get("result")
-        .and_then(|r| r.as_str())
-        .unwrap_or("");
+    let result = ai_response_text(provider, &out.stdout)?;
     let start = result.find('[').ok_or("NO JSON IN RESPONSE")?;
     let end = result.rfind(']').ok_or("NO JSON IN RESPONSE")?;
     let parsed: Vec<QQuestion> = serde_json::from_str(&result[start..=end])
@@ -689,9 +824,10 @@ fn generate_and_save_questions(
     path: &std::path::Path,
     level: u32,
     count: usize,
+    provider: AiProvider,
 ) -> Result<Vec<QQuestion>, String> {
-    let questions = ai_questions(path, level, count)?;
-    persist_claude_question_batch(path, level, &questions)?;
+    let questions = ai_questions(path, level, count, Some(provider))?;
+    persist_ai_question_batch(path, level, &questions)?;
     Ok(questions)
 }
 
@@ -755,6 +891,49 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
     })
 }
 
+fn prove_ai_provider(provider: AiProvider) -> Result<(), String> {
+    let command = ai_prompt_command(provider, AI_PROBE_PROMPT);
+    let output = command_output_with_timeout(command, Duration::from_secs(60), provider.name())?;
+    if !output.status.success() {
+        return Err(format!("{} CALL FAILED", provider.name()));
+    }
+    let response = ai_response_text(provider, &output.stdout)?;
+    if response.trim() != "CODEQUEST_READY" {
+        return Err(format!("{} READINESS CHECK FAILED", provider.name()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn engine_set_ai_provider(
+    engine_state: State<EngineState>,
+    provider_state: State<AiProviderState>,
+    provider: Option<String>,
+) -> Result<(), String> {
+    let provider = provider.as_deref().map(AiProvider::parse).transpose()?;
+    provider_state.select(provider)?;
+    engine_state
+        .0
+        .set_ai_provider(provider.map(|value| value.name().to_string()))
+}
+
+#[tauri::command]
+fn verify_ai_provider(
+    provider_state: State<AiProviderState>,
+    provider: String,
+) -> Result<AiProviderVerification, String> {
+    let provider = AiProvider::parse(&provider)?;
+    if provider_state.selected() != Some(provider) {
+        return Err("INSTALL THE SELECTED AI BATTERIES FIRST".to_string());
+    }
+    prove_ai_provider(provider)?;
+    provider_state.mark_verified(provider)?;
+    Ok(AiProviderVerification {
+        provider,
+        ready: true,
+    })
+}
+
 #[tauri::command]
 fn engine_set_cartridge(
     state: State<EngineState>,
@@ -770,7 +949,14 @@ fn engine_set_cartridge(
 }
 
 #[tauri::command]
-fn engine_power(state: State<EngineState>, powered: bool) -> Result<(), String> {
+fn engine_power(
+    state: State<EngineState>,
+    provider_state: State<AiProviderState>,
+    powered: bool,
+) -> Result<(), String> {
+    if powered && provider_state.ready_provider().is_none() {
+        return Err("AI BATTERIES NOT VERIFIED".to_string());
+    }
     state.0.set_power(powered)
 }
 
@@ -806,12 +992,18 @@ fn environment_flag_enabled(value: Option<&str>) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let question_loader: engine::QuestionLoader = Arc::new(|path, level, count| {
+    let provider_state = AiProviderState::default();
+    let question_provider_state = provider_state.clone();
+    let question_loader: engine::QuestionLoader = Arc::new(move |path, level, count| {
         if environment_flag_enabled(std::env::var("CQA_NO_AI").ok().as_deref()) {
             return Vec::new();
         }
-        let questions = generate_and_save_questions(std::path::Path::new(&path), level, count)
-            .unwrap_or_default();
+        let Some(provider) = question_provider_state.ready_provider() else {
+            return Vec::new();
+        };
+        let questions =
+            generate_and_save_questions(std::path::Path::new(&path), level, count, provider)
+                .unwrap_or_default();
         let answered_questions =
             load_answered_questions(std::path::Path::new(&path)).unwrap_or_default();
         questions
@@ -831,6 +1023,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(provider_state)
         .manage(EngineState(engine::EngineRuntime::spawn(
             question_loader,
             answered_question_recorder,
@@ -839,6 +1032,8 @@ pub fn run() {
             app_revision,
             pick_cartridge,
             cartridge_branch,
+            engine_set_ai_provider,
+            verify_ai_provider,
             engine_set_cartridge,
             engine_power,
             engine_finish_boot,
@@ -871,6 +1066,62 @@ mod question_policy_tests {
         assert!(revision
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn changing_battery_provider_invalidates_the_previous_readiness_proof() {
+        let providers = AiProviderState::default();
+        providers.select(Some(AiProvider::Claude)).unwrap();
+        assert_eq!(providers.ready_provider(), None);
+        providers.mark_verified(AiProvider::Claude).unwrap();
+        assert_eq!(providers.ready_provider(), Some(AiProvider::Claude));
+
+        providers.select(Some(AiProvider::Codex)).unwrap();
+        assert_eq!(providers.selected(), Some(AiProvider::Codex));
+        assert_eq!(providers.ready_provider(), None);
+
+        providers.select(None).unwrap();
+        assert_eq!(providers.selected(), None);
+        assert_eq!(providers.ready_provider(), None);
+    }
+
+    #[test]
+    fn each_provider_uses_a_noninteractive_ephemeral_prompt_command() {
+        let claude = ai_prompt_command(AiProvider::Claude, "TEST PROMPT");
+        let claude_args = claude
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(claude_args
+            .windows(2)
+            .any(|args| args == ["-p", "TEST PROMPT"]));
+        assert!(claude_args.contains(&"--no-session-persistence".to_string()));
+        assert!(claude_args.windows(2).any(|args| args == ["--tools", ""]));
+
+        let codex = ai_prompt_command(AiProvider::Codex, "TEST PROMPT");
+        let codex_args = codex
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(codex_args.first().map(String::as_str), Some("exec"));
+        assert!(codex_args.contains(&"--ephemeral".to_string()));
+        assert!(codex_args
+            .windows(2)
+            .any(|args| args == ["--sandbox", "read-only"]));
+        assert_eq!(codex_args.last().map(String::as_str), Some("TEST PROMPT"));
+    }
+
+    #[test]
+    fn provider_output_adapters_return_only_the_assistant_response() {
+        let claude = br#"{"result":"CODEQUEST_READY"}"#;
+        assert_eq!(
+            ai_response_text(AiProvider::Claude, claude).unwrap(),
+            "CODEQUEST_READY"
+        );
+        assert_eq!(
+            ai_response_text(AiProvider::Codex, b"CODEQUEST_READY\n").unwrap(),
+            "CODEQUEST_READY\n"
+        );
     }
 
     fn temporary_git_repo() -> std::path::PathBuf {
@@ -953,7 +1204,8 @@ mod question_policy_tests {
         ]);
         let started = std::time::Instant::now();
 
-        let error = command_output_with_timeout(command, Duration::from_millis(50)).unwrap_err();
+        let error =
+            command_output_with_timeout(command, Duration::from_millis(50), "CLAUDE").unwrap_err();
 
         assert_eq!(error, "CLAUDE CALL TIMED OUT");
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -1266,7 +1518,47 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn cartridge_reload_restores_saved_claude_batches() {
+    fn cartridge_reload_combines_current_and_legacy_ai_batches() {
+        let repo = temporary_git_repo();
+        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
+        let current = SavedQuestionBatch {
+            level: 2,
+            questions: vec![question(
+                "WHY KEEP THE DEVICE SHELL THIN?",
+                &[
+                    "TO CENTRALIZE GAME RULES",
+                    "TO DUPLICATE GAME STATE",
+                    "TO HIDE ENGINE OUTPUT",
+                    "TO BYPASS THE ENGINE",
+                ],
+            )],
+        };
+        let legacy = SavedQuestionBatch {
+            level: 1,
+            questions: vec![question(
+                "WHAT SHOULD OWN GAMEPLAY STATE?",
+                &[
+                    "THE GAME ENGINE",
+                    "THE DEVICE SHELL",
+                    "THE STYLES",
+                    "THE VIEW",
+                ],
+            )],
+        };
+        save.set(AI_QUESTION_BATCHES_KEY, &[current]).unwrap();
+        save.set(LEGACY_CLAUDE_QUESTION_BATCHES_KEY, &[legacy])
+            .unwrap();
+
+        let batches = load_saved_question_batches(&repo).unwrap();
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].level, 2);
+        assert_eq!(batches[1].level, 1);
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn cartridge_reload_restores_legacy_claude_batches() {
         let repo = temporary_git_repo();
         let save_path = save::path_for(&repo);
         let mut save = save::SaveFile::open_or_create(&repo).unwrap();
@@ -1381,7 +1673,7 @@ mod question_policy_tests {
         let repo = temporary_git_repo();
         let mut save = save::SaveFile::open_or_create(&repo).unwrap();
         save.set(
-            CLAUDE_QUESTION_BATCHES_KEY,
+            AI_QUESTION_BATCHES_KEY,
             &serde_json::json!([{ "level": 1, "questions": [] }]),
         )
         .unwrap();
@@ -1395,7 +1687,7 @@ mod question_policy_tests {
             .unwrap();
         assert_eq!(progress.answered_questions, ["WHAT OWNS GAMEPLAY STATE?"]);
         assert!(reloaded
-            .get::<serde_json::Value>(CLAUDE_QUESTION_BATCHES_KEY)
+            .get::<serde_json::Value>(AI_QUESTION_BATCHES_KEY)
             .is_some());
 
         remove_temporary_repo(repo);
@@ -1417,7 +1709,7 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn claude_results_are_rejected_instead_of_truncated() {
+    fn invalid_ai_results_are_rejected_instead_of_truncated() {
         let valid = question(
             "WHAT SHOULD OWN GAMEPLAY STATE?",
             &[
@@ -1448,7 +1740,7 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn valid_questions_survive_a_mixed_claude_batch() {
+    fn valid_questions_survive_a_mixed_ai_batch() {
         let valid = question(
             "WHAT SHOULD OWN GAMEPLAY STATE?",
             &[
@@ -1471,7 +1763,7 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn generated_claude_batch_is_saved_without_replacing_other_game_data() {
+    fn generated_ai_batch_is_saved_without_replacing_other_game_data() {
         let repo = temporary_git_repo();
         let save_path = save::path_for(&repo);
         let mut save = save::SaveFile::open_or_create(&repo).unwrap();
@@ -1487,7 +1779,7 @@ mod question_policy_tests {
             ],
         )];
 
-        persist_claude_question_batch(&repo, 3, &generated).unwrap();
+        persist_ai_question_batch(&repo, 3, &generated).unwrap();
 
         let reloaded = save::SaveFile::open_or_create(&repo).unwrap();
         assert_eq!(
@@ -1495,7 +1787,7 @@ mod question_policy_tests {
             Some(serde_json::json!({ "bosses": 2 }))
         );
         let batches = reloaded
-            .get::<Vec<SavedQuestionBatch>>(CLAUDE_QUESTION_BATCHES_KEY)
+            .get::<Vec<SavedQuestionBatch>>(AI_QUESTION_BATCHES_KEY)
             .unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].level, 3);
@@ -1506,8 +1798,8 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn claude_prompt_requests_only_concepts_that_fit_the_display() {
-        let prompt = claude_question_prompt(
+    fn ai_prompt_requests_only_concepts_that_fit_the_display() {
+        let prompt = ai_question_prompt(
             "DEMO PROJECT",
             3,
             12,

@@ -2,8 +2,8 @@
 
 Turn a local Git repository into a cartridge and learn it through a retro
 handheld game. CODE QUEST ADVANCE inspects the repository on your machine,
-generates conceptual questions with the local Claude CLI, and runs the game in
-a native Tauri app backed by a headless Bevy engine.
+generates conceptual questions with your selected local Codex or Claude CLI,
+and runs the game in a native Tauri app backed by a headless Bevy engine.
 
 ![CODE QUEST ADVANCE running the Oracle cartridge](docs/screenshots/oracle-title-shell.png)
 
@@ -37,7 +37,7 @@ The current progression model is visible as well as numeric:
 - Oracle bond presentation advances from Initiate at level 1, to Adept at
   levels 2–3, to Oracle-bound at level 4 and above.
 
-The game has no filler question deck. If Claude is unavailable or returns an
+The game has no filler question deck. If the installed AI provider returns an
 invalid batch, the Oracle keeps Datafall playable and retries; press B to leave
 the wait safely. Runtime audio is not implemented yet. Audio entries in the
 manifest are production requirements, not playable sound.
@@ -70,16 +70,33 @@ The desktop package is only the game runtime. Its cartridges use local command
 line tools:
 
 - `git` is required for every cartridge.
-- `claude` is required for quiz question generation and must already be
-  authenticated.
+- Either `codex` or `claude` is required for quiz question generation and must
+  already be authenticated. The installed battery pack selects which one runs.
 - `bash` is required for quest-battle commands. Git for Windows supplies the
   supported Windows shell; WSL Bash is deliberately ignored because it cannot
   consume the Windows repository paths used by the quest runner.
 
-On Windows, standard Git for Windows and Claude installation locations are
-discovered automatically. Custom or portable installs can set `CQA_GIT`,
-`CQA_CLAUDE`, and `CQA_SHELL` to an executable name on `PATH` or an absolute
-path. macOS GUI launches repair their restricted `PATH` before tool discovery.
+On Windows, standard Git for Windows, Codex, and Claude installation locations
+are discovered automatically. Custom or portable installs can set `CQA_GIT`,
+`CQA_CODEX`, `CQA_CLAUDE`, and `CQA_SHELL` to an executable name on `PATH` or
+an absolute path. macOS GUI launches repair their restricted `PATH` before tool
+discovery.
+
+## Load AI batteries
+
+The console starts with no AI provider selected. Turn the device over with the
+FRONT/BACK switch, press the battery door, and load one of the two-AA packs:
+
+- **Codex:** blue cells using the Codex terminal mark.
+- **Claude:** cream, coral, and charcoal cells.
+
+Press the installed pair to remove it and expose the provider choices again.
+Battery selection persists between launches, but readiness is proved again for
+each application session. On the first power-on, CODE QUEST makes one minimal
+non-interactive request to the selected CLI. The engine and boot animation do
+not start until that request succeeds. If the pack is missing or the CLI is
+unavailable, unauthenticated, or unhealthy, the switch and power LED flash red
+and return to the off position. Battery changes are locked while power is on.
 
 ## Load a cartridge
 
@@ -98,8 +115,9 @@ recycle action to remove only the rack entry; repository files and saves remain
 on disk. A loaded cartridge must be ejected before another can be inserted.
 
 Loading a repository creates a versioned, namespaced save beside it, never
-inside it: `/games/demo` uses `/games/demo.sav`. Quiz saves retain validated
-Claude batches and answered-question history. Committing an answer records it
+inside it: `/games/demo` uses `/games/demo.sav`. Quiz saves retain validated AI
+question batches and answered-question history. Legacy Claude batch saves load
+without conversion. Committing an answer records it
 immediately, and later runs and launches filter every recorded question so the
 cartridge continues with unseen material. Ejecting or recycling a cartridge
 does not delete its save.
@@ -120,17 +138,17 @@ Cartridge selection follows this order:
 
 ### Quiz
 
-Quiz cartridges request six questions from Claude as soon as they are accepted,
-even while the device remains off. Generated questions must have four distinct
+Quiz cartridges request six questions from the verified battery provider.
+Generated questions must have four distinct
 choices, exactly one correct answer, no repository trivia, no more than four
 31-character lines for the prompt, and no more than 31 characters per choice.
 Valid questions survive a mixed batch, so an accepted batch can contain fewer
 than six. Accepted batches are cached in the sibling save and prefetched while
 the player continues.
 
-Set `CQA_CLAUDE_MODEL` to choose the model used by the Claude CLI. Set
-`CQA_NO_AI=1` to disable generation for diagnostics; `0`, `false`, `no`, and
-`off` leave it enabled.
+Set `CQA_CODEX_MODEL` or `CQA_CLAUDE_MODEL` to choose the model used by the
+corresponding CLI. Set `CQA_NO_AI=1` to disable generation for diagnostics;
+`0`, `false`, `no`, and `off` leave it enabled.
 
 ### Quest battle
 
@@ -167,8 +185,9 @@ instead of silently falling back.
 ## Controls
 
 All physical controls are clickable. The floating FRONT/BACK switch turns the
-whole unit over; the rear label lists gameplay bindings and the serial plate
-shows the short commit hash of the running CODE QUEST ADVANCE build.
+whole unit over; the rear battery door selects the AI provider, the rear label
+lists gameplay bindings, and the serial plate shows the short commit hash of
+the running CODE QUEST ADVANCE build.
 
 | Keyboard | Handheld input | Current use |
 |---|---|---|
@@ -196,8 +215,8 @@ Gameplay and device presentation have a hard boundary:
 | `src-tauri/src/engine.rs` | Headless Bevy game state, fixed-step timing, input edges, Oracle/quiz/quest behavior, command effects, and CPU rendering |
 | `src-tauri/src/scene_machine.rs` | Executable finite-state machine and built-in quiz/quest templates |
 | `src-tauri/src/codequest.rs` | `CODEQUEST.toml` parser, validation, and runtime compilation |
-| `src-tauri/src/lib.rs` | Tauri boundary, Git cartridge inspection, provenance, quest construction, Claude prompting, and question persistence |
-| `src-tauri/src/external_tools.rs` | Cross-platform Git, Claude, and shell discovery |
+| `src-tauri/src/lib.rs` | Tauri boundary, verified provider state, Git cartridge inspection, provenance, quest construction, AI prompting, and question persistence |
+| `src-tauri/src/external_tools.rs` | Cross-platform Git, Codex, Claude, and shell discovery |
 | `src-tauri/src/save.rs` | Versioned namespaced saves with atomic file replacement |
 | `src-tauri/assets/oracle/` | Authored 240×160 Oracle plates, hero sprites, portraits, and Datafall sprites embedded into the engine |
 

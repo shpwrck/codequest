@@ -20,6 +20,12 @@ import {
   const BOOT_DURATION_MS = 2600;
   const BOOT_SKIP_DELAY_MS = 650;
   const TURN_DURATION_MS = 520;
+  const POWER_REJECTION_MS = 760;
+  const PROVIDER_STORAGE_KEY = "cqa-ai-provider";
+  const PROVIDERS = Object.freeze({
+    codex: { label: "CODEX" },
+    claude: { label: "CLAUDE" },
+  });
   const $ = (id) => document.getElementById(id);
   const tauri = window.__TAURI__;
   const invoke = tauri?.core?.invoke
@@ -35,6 +41,13 @@ import {
   const powerGuide = $("power-guide");
   const viewToggle = $("device-view-toggle");
   const rearSerial = $("rear-serial");
+  const batteryCompartment = $("battery-compartment");
+  const batteryDoor = $("battery-door");
+  const batteryPack = $("battery-pack");
+  const batteryChooser = $("battery-chooser");
+  const batteryStatus = $("battery-status");
+  const powerSwitch = $("power-switch");
+  const powerLed = document.querySelector(".power-led");
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
   const image = context.createImageData(WIDTH, HEIGHT);
@@ -53,6 +66,12 @@ import {
   let trayMessageTimer = null;
   let shellBackVisible = false;
   let shellTurning = false;
+  let batteryDoorOpen = false;
+  let batteryChanging = false;
+  let installedProvider = null;
+  let verifiedProvider = null;
+  let powerTransitioning = false;
+  let lastPowerFailure = "";
   const held = Object.create(null);
   const swallowedByBoot = Object.create(null);
 
@@ -126,22 +145,186 @@ import {
     }
   }
 
+  function wait(milliseconds) {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  }
+
+  function normalizeProvider(value) {
+    const provider = String(value || "").trim().toLowerCase();
+    return Object.hasOwn(PROVIDERS, provider) ? provider : null;
+  }
+
+  function providerLabel(provider = installedProvider) {
+    return PROVIDERS[provider]?.label || "AI";
+  }
+
+  function setBatteryStatus(message, tone = "idle") {
+    batteryStatus.textContent = message;
+    batteryStatus.classList.remove("ready", "checking", "failed");
+    if (tone !== "idle") batteryStatus.classList.add(tone);
+  }
+
+  function renderProviderBatteries() {
+    const hasProvider = Boolean(installedProvider);
+    batteryCompartment.dataset.provider = installedProvider || "";
+    batteryPack.classList.toggle("hidden", !hasProvider);
+    batteryChooser.classList.toggle("hidden", hasProvider);
+    batteryPack.classList.remove("codex", "claude");
+    if (installedProvider) batteryPack.classList.add(installedProvider);
+    batteryPack.querySelectorAll(".battery-word").forEach((word) => {
+      word.textContent = providerLabel();
+    });
+    batteryPack.setAttribute(
+      "aria-label",
+      hasProvider
+        ? `${providerLabel()} batteries installed. Press to remove both AA batteries.`
+        : "No AI provider batteries installed",
+    );
+    if (!hasProvider) setBatteryStatus("NO BATTERIES · SELECT A PACK");
+    else if (verifiedProvider === installedProvider) setBatteryStatus(`${providerLabel()} · READY`, "ready");
+    else setBatteryStatus(`${providerLabel()} · UNTESTED`);
+    updateControlGuides();
+  }
+
+  function setBatteryDoorOpen(open, { force = false } = {}) {
+    const nextOpen = Boolean(open);
+    if (nextOpen && powered && !force) {
+      setBatteryStatus("TURN POWER OFF TO CHANGE BATTERIES", "failed");
+      batteryCompartment.classList.add("locked");
+      return false;
+    }
+    batteryDoorOpen = nextOpen;
+    batteryCompartment.classList.toggle("open", batteryDoorOpen);
+    batteryCompartment.classList.toggle("locked", powered);
+    batteryDoor.setAttribute("aria-expanded", String(batteryDoorOpen));
+    batteryDoor.setAttribute(
+      "aria-label",
+      batteryDoorOpen
+        ? "Close AI provider battery compartment"
+        : "Open AI provider battery compartment",
+    );
+    batteryPack.inert = !batteryDoorOpen;
+    batteryChooser.inert = !batteryDoorOpen;
+    return true;
+  }
+
+  function persistInstalledProvider() {
+    if (installedProvider) localStorage.setItem(PROVIDER_STORAGE_KEY, installedProvider);
+    else localStorage.removeItem(PROVIDER_STORAGE_KEY);
+  }
+
+  async function setInstalledProvider(provider) {
+    if (powered || powerTransitioning || batteryChanging) {
+      setBatteryStatus("TURN POWER OFF TO CHANGE BATTERIES", "failed");
+      return false;
+    }
+    const nextProvider = normalizeProvider(provider);
+    const previousProvider = installedProvider;
+    const previousVerified = verifiedProvider;
+    batteryChanging = true;
+    installedProvider = nextProvider;
+    verifiedProvider = null;
+    lastPowerFailure = "";
+    renderProviderBatteries();
+    try {
+      await invoke("engine_set_ai_provider", { provider: installedProvider });
+      persistInstalledProvider();
+      return true;
+    } catch (error) {
+      installedProvider = previousProvider;
+      verifiedProvider = previousVerified;
+      renderProviderBatteries();
+      setBatteryStatus("BATTERY CONTACT FAILED", "failed");
+      showTrayError(error);
+      return false;
+    } finally {
+      batteryChanging = false;
+    }
+  }
+
+  async function verifyInstalledProvider() {
+    if (!installedProvider) throw new Error("INSTALL AI BATTERIES");
+    if (verifiedProvider === installedProvider) return;
+    batteryCompartment.classList.add("checking");
+    setBatteryStatus(`${providerLabel()} · CHECKING`, "checking");
+    try {
+      const result = await invoke("verify_ai_provider", { provider: installedProvider });
+      if (!result?.ready || normalizeProvider(result.provider) !== installedProvider) {
+        throw new Error(`${providerLabel()} READINESS CHECK FAILED`);
+      }
+      verifiedProvider = installedProvider;
+      lastPowerFailure = "";
+      setBatteryStatus(`${providerLabel()} · READY`, "ready");
+    } catch (error) {
+      verifiedProvider = null;
+      setBatteryStatus(`${providerLabel()} · NOT READY`, "failed");
+      throw error;
+    } finally {
+      batteryCompartment.classList.remove("checking");
+    }
+  }
+
+  async function rejectPowerOn(message) {
+    powered = false;
+    hideDeviceBoot();
+    lastPowerFailure = installedProvider ? `${providerLabel()} NOT READY` : "NO BATTERIES";
+    powerSwitch.classList.remove("checking");
+    powerSwitch.classList.add("on", "power-rejected");
+    powerLed.classList.remove("off", "checking");
+    powerLed.classList.add("rejected");
+    powerSwitch.setAttribute("aria-label", `Power rejected: ${lastPowerFailure}`);
+    await invoke("engine_power", { powered: false }).catch(() => {});
+    await wait(POWER_REJECTION_MS);
+    powerSwitch.classList.remove("on", "power-rejected");
+    powerLed.classList.remove("rejected");
+    powerLed.classList.add("off");
+    updateControlGuides();
+    if (message) console.warn("CQA: power rejected", message);
+  }
+
   function updateControlGuides() {
-    const needsCart = ready && !shellBackVisible && !trayOpen && !cartridge && !powered;
-    const needsPower = ready && !shellBackVisible && !trayOpen && (Boolean(cartridge) !== powered);
+    const needsCart =
+      ready &&
+      !shellBackVisible &&
+      !trayOpen &&
+      !cartridge &&
+      !powered &&
+      Boolean(installedProvider);
+    const needsPower = ready && !shellBackVisible && !trayOpen && !powerTransitioning
+      && (Boolean(cartridge) !== powered || (!powered && !installedProvider));
     cartGuide.classList.toggle("hidden", !needsCart);
     powerGuide.classList.toggle("hidden", !needsPower);
     $("cart-back").classList.toggle("guided", needsCart);
     $("power-switch").classList.toggle("guided", needsPower);
     const switchingOff = powered && !cartridge;
+    const missingBatteries = !powered && !installedProvider;
+    const failedProvider = !powered && Boolean(lastPowerFailure);
     powerGuide.classList.toggle("switching-off", switchingOff);
-    powerGuide.querySelector(".guide-action").textContent = switchingOff ? "TURN POWER OFF" : "TURN POWER ON";
-    powerGuide.querySelector(".guide-detail").textContent = switchingOff ? "TO LOAD A GAME" : "TO START";
-    powerGuide.setAttribute("aria-label", switchingOff ? "Turn the power off to load a game" : "Turn the power on to start");
+    powerGuide.querySelector(".guide-action").textContent = switchingOff
+      ? "TURN POWER OFF"
+      : missingBatteries || failedProvider
+        ? "CHECK BATTERIES"
+        : "TURN POWER ON";
+    powerGuide.querySelector(".guide-detail").textContent = switchingOff
+      ? "TO LOAD A GAME"
+      : missingBatteries
+        ? "TURN UNIT OVER"
+        : failedProvider
+          ? lastPowerFailure
+          : "TO START";
+    powerGuide.setAttribute(
+      "aria-label",
+      switchingOff
+        ? "Turn the power off to load a game"
+        : missingBatteries || failedProvider
+          ? "Check the AI provider batteries on the back of the device"
+          : "Turn the power on to start",
+    );
   }
 
   function setShellBackVisible(visible) {
     shellBackVisible = Boolean(visible);
+    if (!shellBackVisible && batteryDoorOpen) setBatteryDoorOpen(false, { force: true });
     scaleEl.classList.toggle("showing-back", shellBackVisible);
     frontFace.setAttribute("aria-hidden", String(shellBackVisible));
     backFace.setAttribute("aria-hidden", String(!shellBackVisible));
@@ -176,23 +359,55 @@ import {
   }
 
   async function setPower(on) {
-    if (powered === on) return;
-    powered = on;
-    $("power-switch").classList.toggle("on", on);
-    document.querySelector(".power-led").classList.toggle("off", !on);
-    if (on && trayOpen) closeTray();
-    if (on) showDeviceBoot();
-    else hideDeviceBoot();
+    const target = Boolean(on);
+    if (powerTransitioning || powered === target) return;
+    powerTransitioning = true;
+
+    if (target) {
+      if (trayOpen) closeTray();
+      setBatteryDoorOpen(false, { force: true });
+      powerSwitch.classList.add("on", "checking");
+      powerLed.classList.remove("off", "rejected");
+      powerLed.classList.add("checking");
+      powerSwitch.setAttribute("aria-label", "Power switch, checking AI batteries");
+      updateControlGuides();
+      try {
+        await verifyInstalledProvider();
+        await invoke("engine_power", { powered: true });
+        powered = true;
+        powerSwitch.classList.remove("checking");
+        powerLed.classList.remove("checking");
+        powerSwitch.setAttribute("aria-label", `Power on, ${providerLabel()} batteries ready`);
+        batteryCompartment.classList.add("locked");
+        showDeviceBoot();
+      } catch (error) {
+        await rejectPowerOn(error);
+      } finally {
+        powerTransitioning = false;
+        updateControlGuides();
+      }
+      return;
+    }
+
+    powered = false;
+    powerSwitch.classList.remove("on", "checking", "power-rejected");
+    powerLed.classList.remove("checking", "rejected");
+    powerLed.classList.add("off");
+    batteryCompartment.classList.remove("locked");
+    powerSwitch.setAttribute("aria-label", "Power switch, off");
+    hideDeviceBoot();
     updateControlGuides();
     try {
-      await invoke("engine_power", { powered: on });
+      await invoke("engine_power", { powered: false });
     } catch (error) {
-      powered = !on;
-      $("power-switch").classList.toggle("on", powered);
-      document.querySelector(".power-led").classList.toggle("off", !powered);
-      if (on) hideDeviceBoot();
-      updateControlGuides();
+      powered = true;
+      powerSwitch.classList.add("on");
+      powerLed.classList.remove("off");
+      batteryCompartment.classList.add("locked");
       showTrayError(error);
+    } finally {
+      powerTransitioning = false;
+      updateControlGuides();
     }
   }
 
@@ -599,6 +814,24 @@ import {
     turnShell();
   });
 
+  batteryDoor.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setBatteryDoorOpen(!batteryDoorOpen);
+  });
+  batteryPack.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setInstalledProvider(null);
+  });
+  batteryChooser.querySelectorAll("[data-provider]").forEach((choice) => {
+    choice.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setInstalledProvider(choice.dataset.provider);
+    });
+  });
+
   $("power-switch").addEventListener("pointerdown", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -630,6 +863,19 @@ import {
     fit();
     setShellBackVisible(false);
     rearSerial.textContent = await invoke("app_revision");
+    installedProvider = normalizeProvider(localStorage.getItem(PROVIDER_STORAGE_KEY));
+    if (!installedProvider) localStorage.removeItem(PROVIDER_STORAGE_KEY);
+    verifiedProvider = null;
+    renderProviderBatteries();
+    setBatteryDoorOpen(false, { force: true });
+    try {
+      await invoke("engine_set_ai_provider", { provider: installedProvider });
+    } catch (error) {
+      installedProvider = null;
+      localStorage.removeItem(PROVIDER_STORAGE_KEY);
+      renderProviderBatteries();
+      showTrayError(error);
+    }
     const savedPath = localStorage.getItem("cqa-cart-id");
     try {
       const stored = JSON.parse(localStorage.getItem("cqa-repo-carts")) || [];
@@ -671,7 +917,8 @@ import {
     return async (command, args) => {
       if (command === "engine_frame") return frame.buffer;
       if (command === "app_revision") return "0000000";
-      if (["engine_power", "engine_finish_boot", "engine_input"].includes(command)) return null;
+      if (["engine_power", "engine_finish_boot", "engine_input", "engine_set_ai_provider"].includes(command)) return null;
+      if (command === "verify_ai_provider") return { provider: args?.provider, ready: true };
       if (command === "engine_set_cartridge" && args?.path == null) return null;
       if (command === "engine_set_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");
       if (command === "pick_cartridge") return null;

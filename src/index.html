@@ -119,10 +119,38 @@
                 </table>
               </section>
 
-              <div class="rear-battery-door">
-                <div class="rear-latch" aria-hidden="true"></div>
-                <div class="rear-brand" aria-hidden="true">CODEQUEST</div>
-              </div>
+              <section id="battery-compartment" class="battery-compartment" aria-label="AI provider battery compartment">
+                <div id="battery-bay" class="battery-bay">
+                  <button id="battery-pack" class="battery-pack hidden" type="button" aria-label="Remove installed AI provider batteries">
+                    <span class="aa-battery top" aria-hidden="true">
+                      <span class="aa-battery-label">
+                        <span class="battery-polarity positive">+</span>
+                        <span class="battery-logo"><span class="codex-terminal">&gt;_</span></span>
+                        <span class="battery-word">AI</span>
+                        <span class="battery-polarity negative">−</span>
+                      </span>
+                    </span>
+                    <span class="aa-battery bottom" aria-hidden="true">
+                      <span class="aa-battery-label">
+                        <span class="battery-polarity positive">+</span>
+                        <span class="battery-logo"><span class="codex-terminal">&gt;_</span></span>
+                        <span class="battery-word">AI</span>
+                        <span class="battery-polarity negative">−</span>
+                      </span>
+                    </span>
+                  </button>
+                  <div id="battery-chooser" class="battery-chooser" role="group" aria-label="Choose two AA provider batteries">
+                    <span class="battery-chooser-title">LOAD 2×AA</span>
+                    <button class="battery-choice codex" type="button" data-provider="codex">CODEX</button>
+                    <button class="battery-choice claude" type="button" data-provider="claude">CLAUDE</button>
+                  </div>
+                  <div id="battery-status" class="battery-status" role="status" aria-live="polite">NO BATTERIES</div>
+                </div>
+                <button id="battery-door" class="rear-battery-door" type="button" aria-expanded="false" aria-controls="battery-bay" aria-label="Open AI provider battery compartment">
+                  <span class="rear-latch" aria-hidden="true"></span>
+                  <span class="rear-brand" aria-hidden="true">CODEQUEST</span>
+                </button>
+              </section>
               <div class="rear-port" aria-hidden="true"></div>
             </section>
           </div>
