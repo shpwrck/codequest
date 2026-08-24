@@ -10,7 +10,9 @@
   <body>
     <div id="stage">
       <div id="shell-scale">
-        <svg id="shoulders" viewBox="-20 -20 618 368" aria-hidden="true">
+        <div id="device-rotator">
+          <div id="device-front" class="device-face" aria-hidden="false">
+            <svg id="shoulders" viewBox="-20 -20 618 368" aria-hidden="true">
           <defs>
             <linearGradient id="shldGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stop-color="#dfe0ec"/>
@@ -21,55 +23,115 @@
                 fill="url(#shldGrad)" stroke="#101124" stroke-width="3"/>
           <path id="shoulder-r" data-btn="r" class="shoulder-btn" d="M 443 2 C 478 0, 522 8, 552 22 C 566 30, 576 40, 580 52 C 581 58, 577 64, 571 64 C 538 56, 488 30, 443 2 Z"
                 fill="url(#shldGrad)" stroke="#101124" stroke-width="3"/>
-        </svg>
+            </svg>
 
-        <div id="cart-back" class="empty" title="CARTRIDGE SLOT"></div>
+            <div id="cart-back" class="empty" title="CARTRIDGE SLOT"></div>
 
-        <button id="cart-guide" class="control-guide hidden" type="button" aria-label="Open the cartridge tray">
-          <span class="guide-action">CLICK SLOT</span>
-          <span class="guide-detail">TO LOAD A GAME</span>
-        </button>
+            <button id="cart-guide" class="control-guide hidden" type="button" aria-label="Open the cartridge tray">
+              <span class="guide-action">CLICK SLOT</span>
+              <span class="guide-detail">TO LOAD A GAME</span>
+            </button>
 
-        <button id="power-guide" class="control-guide hidden" type="button" aria-label="Turn the power on">
-          <span class="guide-action">TURN POWER ON</span>
-          <span class="guide-detail">TO START</span>
-        </button>
+            <button id="power-guide" class="control-guide hidden" type="button" aria-label="Turn the power on">
+              <span class="guide-action">TURN POWER ON</span>
+              <span class="guide-detail">TO START</span>
+            </button>
 
-        <div id="shell">
-          <div id="bezel">
-            <div id="screen">
-              <div id="screen-inner">
-                <canvas id="engine-canvas" width="240" height="160" aria-label="Bevy game display"></canvas>
-                <div id="device-boot" aria-hidden="true">
-                  <div class="boot-logo">
-                    <div class="boot-word">CODEQUEST<div class="boot-shine"></div></div>
-                    <div class="boot-maker"><span>CQA SYSTEM</span></div>
+            <div id="shell">
+              <div id="bezel">
+                <div id="screen">
+                  <div id="screen-inner">
+                    <canvas id="engine-canvas" width="240" height="160" aria-label="Bevy game display"></canvas>
+                    <div id="device-boot" aria-hidden="true">
+                      <div class="boot-logo">
+                        <div class="boot-word">CODEQUEST<div class="boot-shine"></div></div>
+                        <div class="boot-maker"><span>CQA SYSTEM</span></div>
+                      </div>
+                    </div>
                   </div>
+                  <div id="scanlines"></div>
+                  <div id="screen-shade"></div>
                 </div>
               </div>
-              <div id="scanlines"></div>
-              <div id="screen-shade"></div>
+              <div class="bezel-caption"><span class="cap-solid">CODEQUEST</span><span class="cap-outline">ADVANCE</span></div>
+              <div class="power-led off"></div>
+
+              <div id="dpad">
+                <div class="dpad-btn dpad-up" data-btn="up"></div>
+                <div class="dpad-btn dpad-down" data-btn="down"></div>
+                <div class="dpad-btn dpad-left" data-btn="left"></div>
+                <div class="dpad-btn dpad-right" data-btn="right"></div>
+                <div class="dpad-core"></div>
+              </div>
+              <div class="ab" id="btn-a" data-btn="a"><span>A</span></div>
+              <div class="ab" id="btn-b" data-btn="b"><span>B</span></div>
+              <div class="ab-label" id="lab-a">X KEY</div>
+              <div class="ab-label" id="lab-b">Z KEY</div>
+              <div class="pill" id="btn-select" data-btn="select"><span>SELECT</span></div>
+              <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
+              <div class="speaker"></div>
+              <div id="power-switch" title="POWER" role="button" aria-label="Power switch" tabindex="0"><span class="ps-nub"></span></div>
+              <button class="shell-tag" type="button" data-device-turn aria-label="Turn device over to see keyboard controls" title="TURN UNIT OVER · F1">CQA-001</button>
             </div>
           </div>
-          <div class="bezel-caption"><span class="cap-solid">CODEQUEST</span><span class="cap-outline">ADVANCE</span></div>
-          <div class="power-led off"></div>
 
-          <div id="dpad">
-            <div class="dpad-btn dpad-up" data-btn="up"></div>
-            <div class="dpad-btn dpad-down" data-btn="down"></div>
-            <div class="dpad-btn dpad-left" data-btn="left"></div>
-            <div class="dpad-btn dpad-right" data-btn="right"></div>
-            <div class="dpad-core"></div>
+          <div id="device-back" class="device-face" aria-hidden="true">
+            <svg id="rear-shoulders" viewBox="-20 -20 618 368" aria-hidden="true">
+              <defs>
+                <linearGradient id="rearShldGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#dfe0ec"/>
+                  <stop offset="1" stop-color="#b4b5ca"/>
+                </linearGradient>
+              </defs>
+              <path d="M 135 2 C 100 0, 56 8, 26 22 C 12 30, 2 40, -2 52 C -3 58, 1 64, 7 64 C 40 56, 90 30, 135 2 Z"
+                    fill="url(#rearShldGrad)" stroke="#101124" stroke-width="3"/>
+              <path d="M 443 2 C 478 0, 522 8, 552 22 C 566 30, 576 40, 580 52 C 581 58, 577 64, 571 64 C 538 56, 488 30, 443 2 Z"
+                    fill="url(#rearShldGrad)" stroke="#101124" stroke-width="3"/>
+            </svg>
+            <div id="rear-cart-back" class="empty" aria-hidden="true">
+              <span class="rear-cart-label">CODEQUEST ADVANCE</span>
+              <span class="rear-cart-title"></span>
+            </div>
+
+            <section id="rear-shell" aria-label="Back of CODEQUEST ADVANCE">
+              <div class="rear-cartridge-well" aria-hidden="true"></div>
+
+              <span class="rear-screw rear-screw-nw" aria-hidden="true"></span>
+              <span class="rear-screw rear-screw-ne" aria-hidden="true"></span>
+              <span class="rear-screw rear-screw-sw" aria-hidden="true"></span>
+              <span class="rear-screw rear-screw-se" aria-hidden="true"></span>
+
+              <section id="rear-hotkeys" aria-label="Keyboard adapter controls">
+                <div class="rear-label-identity">
+                  <div class="rear-label-title"><strong>CODEQUEST</strong> ADVANCE</div>
+                  <div class="rear-label-model">MODEL CQA-001</div>
+                  <div class="rear-label-rule"></div>
+                  <div class="rear-label-adapter">KEYBOARD ADAPTER</div>
+                  <div class="rear-serial">CQA 0005957</div>
+                </div>
+                <table>
+                  <caption class="sr-only">CODEQUEST ADVANCE keyboard controls</caption>
+                  <tbody>
+                    <tr><th>D-PAD</th><td>ARROW KEYS</td></tr>
+                    <tr><th>A</th><td>D</td></tr>
+                    <tr><th>B</th><td>S</td></tr>
+                    <tr><th>START</th><td>ENTER</td></tr>
+                    <tr><th>SELECT</th><td>SHIFT</td></tr>
+                    <tr><th>L / R</th><td>A / F</td></tr>
+                    <tr><th>POWER</th><td>P</td></tr>
+                    <tr><th>SLOT</th><td>C</td></tr>
+                    <tr><th>TURN UNIT</th><td>F1</td></tr>
+                  </tbody>
+                </table>
+              </section>
+
+              <div class="rear-battery-door">
+                <div class="rear-latch" aria-hidden="true"></div>
+                <button class="rear-brand" type="button" data-device-turn aria-label="Turn device back to the front" title="TURN UNIT TO FRONT · F1">CODEQUEST</button>
+              </div>
+              <div class="rear-port" aria-hidden="true"></div>
+            </section>
           </div>
-          <div class="ab" id="btn-a" data-btn="a"><span>A</span></div>
-          <div class="ab" id="btn-b" data-btn="b"><span>B</span></div>
-          <div class="ab-label" id="lab-a">X KEY</div>
-          <div class="ab-label" id="lab-b">Z KEY</div>
-          <div class="pill" id="btn-select" data-btn="select"><span>SELECT</span></div>
-          <div class="pill" id="btn-start" data-btn="start"><span>START</span></div>
-          <div class="speaker"></div>
-          <div id="power-switch" title="POWER" role="button" aria-label="Power switch" tabindex="0"><span class="ps-nub"></span></div>
-          <div class="shell-tag">CQA-001</div>
         </div>
       </div>
       <div id="cart-tray" class="hidden">

@@ -26,6 +26,8 @@ import {
     : createBrowserDemo();
 
   const scaleEl = $("shell-scale");
+  const frontFace = $("device-front");
+  const backFace = $("device-back");
   const canvas = $("engine-canvas");
   const bootOverlay = $("device-boot");
   const cartGuide = $("cart-guide");
@@ -46,6 +48,7 @@ import {
   let bootFinishing = false;
   let bootGeneration = 0;
   let trayMessageTimer = null;
+  let shellBackVisible = false;
   const held = Object.create(null);
   const swallowedByBoot = Object.create(null);
 
@@ -120,8 +123,8 @@ import {
   }
 
   function updateControlGuides() {
-    const needsCart = ready && !trayOpen && !cartridge && !powered;
-    const needsPower = ready && !trayOpen && (Boolean(cartridge) !== powered);
+    const needsCart = ready && !shellBackVisible && !trayOpen && !cartridge && !powered;
+    const needsPower = ready && !shellBackVisible && !trayOpen && (Boolean(cartridge) !== powered);
     cartGuide.classList.toggle("hidden", !needsCart);
     powerGuide.classList.toggle("hidden", !needsPower);
     $("cart-back").classList.toggle("guided", needsCart);
@@ -131,6 +134,16 @@ import {
     powerGuide.querySelector(".guide-action").textContent = switchingOff ? "TURN POWER OFF" : "TURN POWER ON";
     powerGuide.querySelector(".guide-detail").textContent = switchingOff ? "TO LOAD A GAME" : "TO START";
     powerGuide.setAttribute("aria-label", switchingOff ? "Turn the power off to load a game" : "Turn the power on to start");
+  }
+
+  function setShellBackVisible(visible) {
+    shellBackVisible = Boolean(visible);
+    scaleEl.classList.toggle("showing-back", shellBackVisible);
+    frontFace.setAttribute("aria-hidden", String(shellBackVisible));
+    backFace.setAttribute("aria-hidden", String(!shellBackVisible));
+    frontFace.inert = shellBackVisible;
+    backFace.inert = !shellBackVisible;
+    updateControlGuides();
   }
 
   async function setPower(on) {
@@ -156,14 +169,23 @@ import {
 
   function renderCartridge() {
     const slot = $("cart-back");
+    const rearSlot = $("rear-cart-back");
     if (cartridge) {
       slot.className = "loaded";
       slot.style.setProperty("--cart-color", cartridge.color || "#6a6fd1");
       slot.title = `CARTRIDGE: ${cartridge.title}`;
+      rearSlot.className = "loaded";
+      rearSlot.style.setProperty("--cart-color", cartridge.color || "#6a6fd1");
+      rearSlot.querySelector(".rear-cart-title").textContent = cartridge.title;
+      rearSlot.title = `CARTRIDGE: ${cartridge.title}`;
     } else {
       slot.className = "empty";
       slot.style.removeProperty("--cart-color");
       slot.title = "CARTRIDGE SLOT (EMPTY)";
+      rearSlot.className = "empty";
+      rearSlot.style.removeProperty("--cart-color");
+      rearSlot.querySelector(".rear-cart-title").textContent = "";
+      rearSlot.title = "CARTRIDGE SLOT (EMPTY)";
     }
     updateControlGuides();
   }
@@ -483,6 +505,11 @@ import {
   };
 
   window.addEventListener("keydown", (event) => {
+    if (event.code === "F1") {
+      event.preventDefault();
+      if (!event.repeat) setShellBackVisible(!shellBackVisible);
+      return;
+    }
     if (event.code === "KeyP") {
       if (!event.repeat) setPower(!powered);
       return;
@@ -538,6 +565,19 @@ import {
     element.addEventListener("pointercancel", release);
   });
 
+  document.querySelectorAll("[data-device-turn]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const shouldMoveFocus = document.activeElement === element;
+      setShellBackVisible(!shellBackVisible);
+      if (shouldMoveFocus) {
+        const visibleFace = shellBackVisible ? backFace : frontFace;
+        visibleFace.querySelector("[data-device-turn]")?.focus({ preventScroll: true });
+      }
+    });
+  });
+
   $("power-switch").addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     setPower(!powered);
@@ -566,6 +606,7 @@ import {
 
   async function initialize() {
     fit();
+    setShellBackVisible(false);
     const savedPath = localStorage.getItem("cqa-cart-id");
     try {
       const stored = JSON.parse(localStorage.getItem("cqa-repo-carts")) || [];

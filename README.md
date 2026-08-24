@@ -15,9 +15,13 @@
 | A / F | L / R | Page the quest menu |
 | P | POWER | Power on / off (or click the switch on the right edge) |
 | C | SLOT | Open the cartridge tray (power must be off; or click the slot) |
+| F1 | TURN UNIT | Turn the shell over to view the keyboard label |
 
 All shell buttons are also clickable, including the L/R shoulders and the
-power switch. The console starts powered off — flip the switch to boot.
+power switch. Click the `CQA-001` model badge or press `F1` to turn the unit
+over; the reverse label lists every cartridge and shell binding. An inserted
+cartridge remains fully visible in the rear recess. The console starts powered
+off — flip the switch to boot.
 
 ## Cartridges
 

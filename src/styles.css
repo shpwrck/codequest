@@ -78,10 +78,60 @@ html, body {
   width: 618px;
   height: 368px;
   flex: none;
+  perspective: 1200px;
+}
+#device-rotator {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transition: transform .58s cubic-bezier(.2,.72,.2,1);
+  will-change: transform;
+}
+.device-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transition: visibility 0s .29s;
+}
+#device-front {
+  transform: rotateY(0deg);
+  visibility: visible;
+  pointer-events: auto;
+}
+#device-back {
+  transform: rotateY(180deg);
+  visibility: hidden;
+  pointer-events: none;
+}
+#shell-scale.showing-back #device-rotator {
+  transform: rotateY(180deg);
+}
+#shell-scale.showing-back #device-front {
+  visibility: hidden;
+  pointer-events: none;
+}
+#shell-scale.showing-back #device-back {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #device-rotator { transition: none; }
+  .device-face { transition: none; }
 }
 #shoulders {
   /* traced bezier caps: arc over each corner, tapering down the side.
      Sibling BEFORE #shell so it paints behind the body by DOM order. */
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 618px;
+  height: 368px;
+  pointer-events: none;
+  overflow: visible;
+}
+#rear-shoulders {
   position: absolute;
   left: 0;
   top: 0;
@@ -455,6 +505,282 @@ html, body {
   color: #494b90;
   text-shadow: 0 1px 0 rgba(255,255,255,.18);
   box-shadow: inset 0 1px 2px rgba(0,0,0,.25);
+  appearance: none;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.shell-tag:hover, .shell-tag:focus-visible {
+  color: #d7d8e8;
+  border-color: rgba(244,244,244,.55);
+  outline: none;
+}
+
+/* ============================ REVERSE SHELL ============================ */
+
+#rear-shell {
+  position: absolute;
+  left: 17px;
+  top: 17px;
+  width: 578px;
+  height: 328px;
+  overflow: hidden;
+  background: linear-gradient(150deg, #666bc2 0%, #575cb4 38%, #4a4ea3 72%, #3d4192 100%);
+  border: 3px solid #101124;
+  border-radius: 240px 240px 130px 130px / 70px 70px 96px 96px;
+  box-shadow:
+    inset 0 4px 0 rgba(255,255,255,.16),
+    inset 6px 0 0 rgba(255,255,255,.05),
+    inset 0 -10px 0 rgba(0,0,0,.28),
+    0 16px 0 rgba(0,0,0,.35),
+    0 26px 40px rgba(0,0,0,.5);
+}
+
+#rear-cart-back {
+  position: absolute;
+  left: 50%;
+  top: 27px;
+  z-index: 4;
+  width: 232px;
+  transform: translateX(-50%);
+  overflow: hidden;
+  border: 3px solid #101124;
+  border-radius: 7px 7px 5px 5px;
+  box-shadow: inset 0 3px 0 rgba(255,255,255,.16), 0 3px 5px rgba(10,11,24,.45);
+}
+#rear-cart-back.empty {
+  height: 48px;
+  background: linear-gradient(#17182d, #252744);
+  box-shadow: inset 0 6px 12px rgba(0,0,0,.65), 0 1px 0 rgba(255,255,255,.08);
+}
+#rear-cart-back.loaded {
+  height: 52px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.24), transparent 24%, rgba(0,0,0,.2) 100%),
+    var(--cart-color, #6a6fd1);
+  animation: rearCartIn .22s ease-out;
+}
+#rear-cart-back.loaded::before,
+#rear-cart-back.loaded::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  width: 9px;
+  height: 30px;
+  border: 2px solid rgba(16,17,36,.5);
+}
+#rear-cart-back.loaded::before { left: 5px; border-right: 0; }
+#rear-cart-back.loaded::after { right: 5px; border-left: 0; }
+.rear-cart-label {
+  position: absolute;
+  left: 17px;
+  right: 17px;
+  top: 10px;
+  height: 29px;
+  padding: 5px 7px;
+  overflow: hidden;
+  color: #f0f1f8;
+  background: rgba(16,17,36,.58);
+  border: 1px solid rgba(16,17,36,.75);
+  border-radius: 3px;
+  font-size: 6px;
+  line-height: 1;
+  letter-spacing: .5px;
+  text-shadow: 1px 1px 0 rgba(0,0,0,.45);
+}
+.rear-cart-title {
+  position: absolute;
+  left: 25px;
+  right: 25px;
+  top: 25px;
+  overflow: hidden;
+  color: #dfe0ec;
+  font-size: 5px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#rear-cart-back.empty .rear-cart-label,
+#rear-cart-back.empty .rear-cart-title { display: none; }
+@keyframes rearCartIn {
+  from { transform: translate(-50%, -18px); opacity: .4; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+.rear-cartridge-well {
+  position: absolute;
+  left: 162px;
+  top: 7px;
+  width: 250px;
+  height: 62px;
+  background: #252744;
+  border: 3px solid #34366f;
+  border-radius: 8px 8px 11px 11px;
+  box-shadow: inset 0 8px 13px rgba(0,0,0,.42), 0 2px 0 rgba(255,255,255,.08);
+}
+
+.rear-screw {
+  position: absolute;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, #4b4c68, #111221 62%);
+  border: 2px solid #353765;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.16), 0 1px 2px rgba(0,0,0,.45);
+}
+.rear-screw::before,
+.rear-screw::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 8px;
+  height: 2px;
+  background: #080916;
+}
+.rear-screw::after { transform: rotate(90deg); }
+.rear-screw-nw { left: 31px; top: 55px; }
+.rear-screw-ne { right: 31px; top: 55px; }
+.rear-screw-sw { left: 31px; bottom: 25px; }
+.rear-screw-se { right: 31px; bottom: 25px; }
+
+#rear-hotkeys {
+  position: absolute;
+  left: 116px;
+  top: 76px;
+  z-index: 3;
+  width: 346px;
+  height: 105px;
+  display: grid;
+  grid-template-columns: 154px 1fr;
+  color: #f4f4f4;
+  background: linear-gradient(155deg, #20212f, #11121d);
+  border: 3px solid #292b52;
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 2px 2px rgba(0,0,0,.3);
+}
+.rear-label-identity {
+  position: relative;
+  padding: 11px 9px 8px 12px;
+  border-right: 1px solid #d5d6df;
+}
+.rear-label-title {
+  color: #f4f4f4;
+  font-size: 7px;
+  letter-spacing: -.5px;
+  white-space: nowrap;
+}
+.rear-label-title strong { font-size: 8px; }
+.rear-label-model { margin-top: 11px; font-size: 5px; letter-spacing: .5px; }
+.rear-label-rule { height: 1px; margin: 6px 0; background: #d5d6df; }
+.rear-label-adapter { font-size: 5px; line-height: 1.3; }
+.rear-serial {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  padding: 4px 7px 3px;
+  color: #242536;
+  background: linear-gradient(#f1f1f4, #c7c8d0);
+  border: 1px solid #737589;
+  border-radius: 2px;
+  font-size: 5px;
+  letter-spacing: 1px;
+}
+#rear-hotkeys table {
+  width: 100%;
+  padding: 7px 8px 5px 11px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 5px;
+  line-height: 9px;
+}
+#rear-hotkeys th,
+#rear-hotkeys td {
+  height: 9px;
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+#rear-hotkeys th { width: 67px; color: #f4f4f4; }
+#rear-hotkeys td { color: #d5d6df; }
+
+.rear-battery-door {
+  position: absolute;
+  left: 131px;
+  top: 190px;
+  width: 316px;
+  height: 138px;
+  background: linear-gradient(150deg, #595eb2, #474b9c);
+  border: 3px solid #34366f;
+  border-radius: 10px 10px 38px 38px / 10px 10px 18px 18px;
+  box-shadow: inset 0 2px 0 rgba(255,255,255,.10), inset 0 -5px 0 rgba(0,0,0,.15);
+}
+.rear-latch {
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  width: 72px;
+  height: 30px;
+  transform: translateX(-50%);
+  background: #42468f;
+  border: 3px solid #292b5b;
+  border-radius: 6px;
+  box-shadow: inset 0 -7px 0 rgba(0,0,0,.22);
+}
+.rear-latch::after {
+  content: '';
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 3px;
+  height: 6px;
+  background: #7175c7;
+  border-radius: 2px;
+}
+.rear-brand {
+  appearance: none;
+  position: absolute;
+  left: 50%;
+  top: 58px;
+  transform: translateX(-50%);
+  padding: 13px 21px 10px;
+  color: #41458f;
+  background: transparent;
+  border: 2px solid rgba(43,45,94,.6);
+  border-radius: 6px;
+  box-shadow: inset 0 2px 3px rgba(0,0,0,.18), 0 1px 0 rgba(255,255,255,.11);
+  font: 12px 'Press Start 2P', monospace;
+  text-shadow: 0 1px 0 rgba(255,255,255,.13);
+  cursor: pointer;
+}
+.rear-brand:hover, .rear-brand:focus-visible {
+  color: #d7d8e8;
+  border-color: rgba(244,244,244,.55);
+  outline: none;
+}
+.rear-port {
+  position: absolute;
+  right: -2px;
+  top: 196px;
+  width: 14px;
+  height: 35px;
+  background: #111221;
+  border: 3px solid #30325f;
+  border-radius: 7px 0 0 7px;
+  box-shadow: inset 4px 0 4px rgba(0,0,0,.45);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ============================ DIALOG CHROME ============================ */
