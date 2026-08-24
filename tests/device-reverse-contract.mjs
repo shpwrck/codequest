@@ -28,15 +28,49 @@ assert.doesNotMatch(adapter, /rearSlot\.querySelector/, "The rear cartridge shou
 
 const frontCartridge = block("#cart-back.loaded");
 const rearCartridge = block("#rear-cart-back.loaded");
-for (const [property, label] of [["top", "top"], ["width", "width"], ["height", "height"]]) {
+for (const [property, label] of [["top", "top"], ["width", "width"]]) {
   assert.equal(
     pixels(rearCartridge, property, `rear cartridge ${label}`),
     pixels(frontCartridge, property, `front cartridge ${label}`),
     `Rear cartridge ${label} must match the front cartridge`,
   );
 }
+assert.ok(
+  pixels(rearCartridge, "height", "rear cartridge height")
+    > pixels(frontCartridge, "height", "front cartridge height"),
+  "The rear view must reveal the cartridge body descending into the recess",
+);
 assert.match(rearCartridge, /linear-gradient\(#cdcedd,\s*#aaabbf\)/, "Rear cartridge is missing the front cartridge's gray surround");
-assert.match(block("#rear-cart-back.loaded::after"), /var\(--cart-color/, "Rear cartridge does not use the inserted cartridge color");
+assert.match(
+  html,
+  /id="rear-cart-back"[^>]*>[\s\S]*?class="rear-cart-thumb"[\s\S]*?class="rear-cart-sticker"/,
+  "The selected cartridge treatment needs separate molded-tab and lower-sticker layers",
+);
+assert.doesNotMatch(css, /#rear-cart-back\.loaded::after\s*\{/, "Option C removes the upper color sticker");
+
+const rearThumb = block("#rear-cart-back.loaded .rear-cart-thumb");
+const rearSticker = block("#rear-cart-back.loaded .rear-cart-sticker");
+const thumbTop = pixels(rearThumb, "top", "rear thumb tab top");
+const thumbHeight = pixels(rearThumb, "height", "rear thumb tab height");
+const stickerTop = pixels(rearSticker, "top", "rear lower sticker top");
+assert.ok(thumbTop <= 5, "The molded thumb tab does not fill the removed top-sticker space");
+assert.ok(thumbHeight >= 30, "The molded thumb tab is still the old narrow rib");
+assert.ok(
+  stickerTop - (thumbTop + thumbHeight) >= 5,
+  "The lower sticker needs a deliberate gray gap beneath the thumb tab shadow",
+);
+assert.match(rearThumb, /linear-gradient\(#cdcedd,\s*#aaabbf\)/, "The thumb tab must use the cartridge's gray plastic");
+assert.match(rearSticker, /var\(--cart-color/, "The lower sticker does not use the inserted cartridge color");
+assert.ok(
+  pixels(rearSticker, "left", "rear lower sticker left")
+    > pixels(rearThumb, "left", "rear thumb tab left"),
+  "The lower sticker must be narrower than the molded thumb tab",
+);
+assert.ok(
+  pixels(rearSticker, "right", "rear lower sticker right")
+    > pixels(rearThumb, "right", "rear thumb tab right"),
+  "The lower sticker must be narrower than the molded thumb tab on both sides",
+);
 assert.ok(
   Number(block("#rear-cart-back").match(/z-index:\s*(\d+)/)?.[1]) >
     Number(block(".rear-cartridge-well").match(/z-index:\s*(\d+)/)?.[1]),
@@ -47,6 +81,17 @@ assert.ok(
   Number(block(".rear-cartridge-lip").match(/z-index:\s*(\d+)/)?.[1]) >
     Number(block("#rear-cart-back").match(/z-index:\s*(\d+)/)?.[1]),
   "The recess lip must overlap the cartridge's lower edge",
+);
+const rearShellTop = pixels(block("#rear-shell"), "top", "rear shell top");
+const lipTop = rearShellTop + pixels(block(".rear-cartridge-lip"), "top", "rear cartridge lip top");
+const rearCartridgeTop = pixels(rearCartridge, "top", "rear cartridge top");
+assert.ok(
+  lipTop > rearCartridgeTop + stickerTop,
+  "Part of the lower sticker must remain visible above the foreground lip",
+);
+assert.ok(
+  lipTop < rearCartridgeTop + pixels(rearCartridge, "height", "rear cartridge height"),
+  "The foreground lip must hide the cartridge's bottom edge",
 );
 
 const rearLabel = block("#rear-hotkeys");
