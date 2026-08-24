@@ -45,6 +45,8 @@ assert.match(workflow, /needs: \[test-linux, test-windows, test-macos\]/);
 
 assert.match(linuxArtifactTest, /--appimage-extract-and-run/);
 assert.match(linuxArtifactTest, /SELECT CARTRIDGE \(GIT REPO\)/);
+assert.match(linuxArtifactTest, /xdotool mousemove 512 112 click 1/);
+assert.doesNotMatch(linuxArtifactTest, /xdotool key c/);
 assert.match(windowsArtifactTest, /msiexec\.exe/);
 assert.match(windowsArtifactTest, /\/a .*\/qn TARGETDIR=/);
 assert.match(windowsArtifactTest, /\/S \/D=/);
