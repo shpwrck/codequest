@@ -19,6 +19,7 @@ import {
   const DEVICE_HEIGHT = 368;
   const BOOT_DURATION_MS = 2600;
   const BOOT_SKIP_DELAY_MS = 650;
+  const TURN_DURATION_MS = 520;
   const $ = (id) => document.getElementById(id);
   const tauri = window.__TAURI__;
   const invoke = tauri?.core?.invoke
@@ -49,6 +50,7 @@ import {
   let bootGeneration = 0;
   let trayMessageTimer = null;
   let shellBackVisible = false;
+  let shellTurning = false;
   const held = Object.create(null);
   const swallowedByBoot = Object.create(null);
 
@@ -146,6 +148,32 @@ import {
     updateControlGuides();
   }
 
+  function turnShell({ moveFocus = false } = {}) {
+    if (shellTurning) return;
+    const nextBackVisible = !shellBackVisible;
+    const swapFaces = () => {
+      setShellBackVisible(nextBackVisible);
+      if (moveFocus) {
+        const visibleFace = nextBackVisible ? backFace : frontFace;
+        visibleFace.querySelector("[data-device-turn]")?.focus({ preventScroll: true });
+      }
+    };
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      swapFaces();
+      return;
+    }
+
+    shellTurning = true;
+    const directionClass = nextBackVisible ? "turning-to-back" : "turning-to-front";
+    scaleEl.classList.add("turning", directionClass);
+    window.setTimeout(swapFaces, TURN_DURATION_MS / 2);
+    window.setTimeout(() => {
+      scaleEl.classList.remove("turning", directionClass);
+      shellTurning = false;
+    }, TURN_DURATION_MS);
+  }
+
   async function setPower(on) {
     if (powered === on) return;
     powered = on;
@@ -176,7 +204,6 @@ import {
       slot.title = `CARTRIDGE: ${cartridge.title}`;
       rearSlot.className = "loaded";
       rearSlot.style.setProperty("--cart-color", cartridge.color || "#6a6fd1");
-      rearSlot.querySelector(".rear-cart-title").textContent = cartridge.title;
       rearSlot.title = `CARTRIDGE: ${cartridge.title}`;
     } else {
       slot.className = "empty";
@@ -184,7 +211,6 @@ import {
       slot.title = "CARTRIDGE SLOT (EMPTY)";
       rearSlot.className = "empty";
       rearSlot.style.removeProperty("--cart-color");
-      rearSlot.querySelector(".rear-cart-title").textContent = "";
       rearSlot.title = "CARTRIDGE SLOT (EMPTY)";
     }
     updateControlGuides();
@@ -507,7 +533,7 @@ import {
   window.addEventListener("keydown", (event) => {
     if (event.code === "F1") {
       event.preventDefault();
-      if (!event.repeat) setShellBackVisible(!shellBackVisible);
+      if (!event.repeat) turnShell();
       return;
     }
     if (event.code === "KeyP") {
@@ -570,11 +596,7 @@ import {
       event.preventDefault();
       event.stopPropagation();
       const shouldMoveFocus = document.activeElement === element;
-      setShellBackVisible(!shellBackVisible);
-      if (shouldMoveFocus) {
-        const visibleFace = shellBackVisible ? backFace : frontFace;
-        visibleFace.querySelector("[data-device-turn]")?.focus({ preventScroll: true });
-      }
+      turnShell({ moveFocus: shouldMoveFocus });
     });
   });
 
