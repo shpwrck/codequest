@@ -600,6 +600,7 @@ import {
   });
 
   $("power-switch").addEventListener("pointerdown", (event) => {
+    event.preventDefault();
     event.stopPropagation();
     setPower(!powered);
   });

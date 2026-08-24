@@ -37,6 +37,11 @@ assert.match(adapter, /function updateControlGuides\(\)/, "Guide visibility is n
 assert.match(adapter, /cartGuide\.classList\.toggle\("hidden", !needsCart\)/, "Cartridge guide never becomes visible");
 assert.match(adapter, /powerGuide\.classList\.toggle\("hidden", !needsPower\)/, "Power guide never becomes visible");
 assert.match(adapter, /powerGuide\.classList\.toggle\("switching-off", switchingOff\)/, "Power guide does not follow the switch position");
+assert.match(
+  adapter,
+  /\$\("power-switch"\)\.addEventListener\("pointerdown", \(event\) => \{\s*event\.preventDefault\(\);/,
+  "Mouse activation must not leave the power switch focused for the next keystroke",
+);
 
 const switchOffTop = pixels(block("#power-switch"), "top", "off switch top");
 const switchOnTop = pixels(block("#power-switch.on"), "top", "on switch top");
