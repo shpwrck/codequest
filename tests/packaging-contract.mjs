@@ -38,6 +38,7 @@ assert.match(workflow, /^\s*push:\n\s+tags:\n\s+- "v\*"/m);
 assert.equal([...workflow.matchAll(/if-no-files-found: error/g)].length, 3);
 assert.equal([...workflow.matchAll(/actions\/download-artifact@v4/g)].length, 4);
 assert.match(workflow, /name: Test uploaded Linux AppImage/);
+assert.match(workflow, /x11-apps/);
 assert.match(workflow, /name: Test uploaded Windows installers/);
 assert.match(workflow, /name: Test uploaded macOS packages/);
 assert.match(workflow, /needs: \[test-linux, test-windows, test-macos\]/);

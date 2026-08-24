@@ -137,7 +137,7 @@ jobs:
             libegl1 \
             libgl1 \
             libgles2 \
-            x11-utils \
+            x11-apps \
             xdotool \
             xvfb
 
