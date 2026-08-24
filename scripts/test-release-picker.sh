@@ -66,7 +66,9 @@ fi
 
 sleep 3
 DISPLAY="$task_display" xdotool windowfocus --sync "$task_window"
-DISPLAY="$task_display" xdotool key c
+# Cartridge selection is intentionally a physical-shell mouse action. Click the
+# centered slot guide instead of relying on the removed C-key shortcut.
+DISPLAY="$task_display" xdotool mousemove 512 112 click 1
 sleep .3
 DISPLAY="$task_display" xdotool mousemove 512 343 click 1
 sleep 1

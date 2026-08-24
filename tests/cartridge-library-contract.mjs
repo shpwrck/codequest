@@ -12,6 +12,7 @@ const cartridge = (path, title = path.toUpperCase()) => ({
   path,
   title,
   branch: "story/cartridge-label",
+  revision: "abc1234",
   color: "#6a6fd1",
 });
 
@@ -65,6 +66,21 @@ assert.equal(
   normalizeCartridges([{ path: "/legacy", title: "LEGACY" }])[0].branch,
   "BRANCH UNKNOWN",
   "Older saved cartridges should get a clear branch fallback",
+);
+assert.equal(
+  normalizeCartridges([{ path: "/legacy", title: "LEGACY" }])[0].revision,
+  "-------",
+  "Older saved cartridges should get a neutral revision fallback",
+);
+assert.equal(
+  normalizeCartridges([{ path: "/revision", revision: "ABC1234" }])[0].revision,
+  "abc1234",
+  "Persisted short revisions should be normalized for the serial plate",
+);
+assert.equal(
+  normalizeCartridges([{ path: "/revision", revision: "not-a-hash" }])[0].revision,
+  "-------",
+  "Invalid persisted revisions must not reach the serial plate",
 );
 assert.equal(
   normalizeCartridges([{ path: "/branch", branch: "story/intro\u0000hidden" }])[0].branch,

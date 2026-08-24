@@ -19,6 +19,7 @@ import {
   const DEVICE_HEIGHT = 368;
   const BOOT_DURATION_MS = 2600;
   const BOOT_SKIP_DELAY_MS = 650;
+  const TURN_DURATION_MS = 520;
   const $ = (id) => document.getElementById(id);
   const tauri = window.__TAURI__;
   const invoke = tauri?.core?.invoke
@@ -26,10 +27,14 @@ import {
     : createBrowserDemo();
 
   const scaleEl = $("shell-scale");
+  const frontFace = $("device-front");
+  const backFace = $("device-back");
   const canvas = $("engine-canvas");
   const bootOverlay = $("device-boot");
   const cartGuide = $("cart-guide");
   const powerGuide = $("power-guide");
+  const viewToggle = $("device-view-toggle");
+  const rearSerial = $("rear-serial");
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
   const image = context.createImageData(WIDTH, HEIGHT);
@@ -46,6 +51,8 @@ import {
   let bootFinishing = false;
   let bootGeneration = 0;
   let trayMessageTimer = null;
+  let shellBackVisible = false;
+  let shellTurning = false;
   const held = Object.create(null);
   const swallowedByBoot = Object.create(null);
 
@@ -120,8 +127,8 @@ import {
   }
 
   function updateControlGuides() {
-    const needsCart = ready && !trayOpen && !cartridge && !powered;
-    const needsPower = ready && !trayOpen && (Boolean(cartridge) !== powered);
+    const needsCart = ready && !shellBackVisible && !trayOpen && !cartridge && !powered;
+    const needsPower = ready && !shellBackVisible && !trayOpen && (Boolean(cartridge) !== powered);
     cartGuide.classList.toggle("hidden", !needsCart);
     powerGuide.classList.toggle("hidden", !needsPower);
     $("cart-back").classList.toggle("guided", needsCart);
@@ -131,6 +138,41 @@ import {
     powerGuide.querySelector(".guide-action").textContent = switchingOff ? "TURN POWER OFF" : "TURN POWER ON";
     powerGuide.querySelector(".guide-detail").textContent = switchingOff ? "TO LOAD A GAME" : "TO START";
     powerGuide.setAttribute("aria-label", switchingOff ? "Turn the power off to load a game" : "Turn the power on to start");
+  }
+
+  function setShellBackVisible(visible) {
+    shellBackVisible = Boolean(visible);
+    scaleEl.classList.toggle("showing-back", shellBackVisible);
+    frontFace.setAttribute("aria-hidden", String(shellBackVisible));
+    backFace.setAttribute("aria-hidden", String(!shellBackVisible));
+    frontFace.inert = shellBackVisible;
+    backFace.inert = !shellBackVisible;
+    viewToggle.classList.toggle("back-active", shellBackVisible);
+    viewToggle.setAttribute("aria-checked", String(shellBackVisible));
+    viewToggle.setAttribute("aria-label", shellBackVisible ? "Show front of device" : "Show back of device");
+    updateControlGuides();
+  }
+
+  function turnShell() {
+    if (shellTurning) return;
+    const nextBackVisible = !shellBackVisible;
+    const swapFaces = () => {
+      setShellBackVisible(nextBackVisible);
+    };
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      swapFaces();
+      return;
+    }
+
+    shellTurning = true;
+    const directionClass = nextBackVisible ? "turning-to-back" : "turning-to-front";
+    scaleEl.classList.add("turning", directionClass);
+    window.setTimeout(swapFaces, TURN_DURATION_MS / 2);
+    window.setTimeout(() => {
+      scaleEl.classList.remove("turning", directionClass);
+      shellTurning = false;
+    }, TURN_DURATION_MS);
   }
 
   async function setPower(on) {
@@ -156,24 +198,34 @@ import {
 
   function renderCartridge() {
     const slot = $("cart-back");
+    const rearSlot = $("rear-cart-back");
     if (cartridge) {
       slot.className = "loaded";
       slot.style.setProperty("--cart-color", cartridge.color || "#6a6fd1");
       slot.title = `CARTRIDGE: ${cartridge.title}`;
+      rearSlot.className = "loaded";
+      rearSlot.style.setProperty("--cart-color", cartridge.color || "#6a6fd1");
+      rearSlot.title = `CARTRIDGE: ${cartridge.title}`;
+      rearSerial.textContent = cartridge?.revision || "-------";
     } else {
       slot.className = "empty";
       slot.style.removeProperty("--cart-color");
       slot.title = "CARTRIDGE SLOT (EMPTY)";
+      rearSlot.className = "empty";
+      rearSlot.style.removeProperty("--cart-color");
+      rearSlot.title = "CARTRIDGE SLOT (EMPTY)";
+      rearSerial.textContent = "-------";
     }
     updateControlGuides();
   }
 
   function persistCartridges() {
     cartridges = normalizeCartridges(cartridges);
-    const metadata = cartridges.map(({ path, title, branch, color }) => ({
+    const metadata = cartridges.map(({ path, title, branch, revision, color }) => ({
       path,
       title,
       branch,
+      revision,
       color,
     }));
     localStorage.setItem("cqa-repo-carts", JSON.stringify(metadata));
@@ -483,6 +535,11 @@ import {
   };
 
   window.addEventListener("keydown", (event) => {
+    if (event.code === "F1") {
+      event.preventDefault();
+      if (!event.repeat) turnShell();
+      return;
+    }
     if (event.code === "KeyP") {
       if (!event.repeat) setPower(!powered);
       return;
@@ -538,6 +595,12 @@ import {
     element.addEventListener("pointercancel", release);
   });
 
+  viewToggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    turnShell();
+  });
+
   $("power-switch").addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     setPower(!powered);
@@ -566,6 +629,7 @@ import {
 
   async function initialize() {
     fit();
+    setShellBackVisible(false);
     const savedPath = localStorage.getItem("cqa-cart-id");
     try {
       const stored = JSON.parse(localStorage.getItem("cqa-repo-carts")) || [];
