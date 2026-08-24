@@ -27,7 +27,9 @@ assert.doesNotMatch(html, /rear-cart-(?:label|title)/, "The cartridge should not
 assert.doesNotMatch(adapter, /rearSlot\.querySelector/, "The rear cartridge should not render game text");
 
 const frontCartridge = block("#cart-back.loaded");
+const emptyRearCartridge = block("#rear-cart-back.empty");
 const rearCartridge = block("#rear-cart-back.loaded");
+assert.match(emptyRearCartridge, /display:\s*none/, "The empty rear cartridge must not paint a placeholder artifact");
 for (const [property, label] of [["top", "top"], ["width", "width"]]) {
   assert.equal(
     pixels(rearCartridge, property, `rear cartridge ${label}`),
@@ -41,6 +43,7 @@ assert.ok(
   "The rear view must reveal the cartridge body descending into the recess",
 );
 assert.match(rearCartridge, /linear-gradient\(#cdcedd,\s*#aaabbf\)/, "Rear cartridge is missing the front cartridge's gray surround");
+assert.match(rearCartridge, /border-bottom:\s*0/, "The loaded cartridge must not add a straight lower seam");
 assert.match(
   html,
   /id="rear-cart-back"[^>]*>[\s\S]*?class="rear-cart-thumb"[\s\S]*?class="rear-cart-sticker"/,
@@ -77,21 +80,29 @@ assert.ok(
   "The loaded cartridge must sit inside and above the rear recess",
 );
 assert.match(html, /class="rear-cartridge-lip"/, "The rear recess needs a foreground lip to hold the cartridge");
+const rearLip = block(".rear-cartridge-lip");
+assert.match(rearLip, /background:\s*transparent/, "The recess depth contour must not paint a horizontal band");
+assert.match(rearLip, /border:\s*3px solid #34366f/, "The recess depth contour must keep its curved border");
+assert.match(rearLip, /border-top:\s*0/, "The recess depth contour must not draw a straight top edge");
+assert.match(rearLip, /border-radius:\s*0 0 11px 11px/, "The recess depth contour must keep its U-shaped lower corners");
+assert.match(rearLip, /box-shadow:\s*none/, "The recess depth contour shadow must not recreate the removed seam");
 assert.ok(
-  Number(block(".rear-cartridge-lip").match(/z-index:\s*(\d+)/)?.[1]) >
+  Number(rearLip.match(/z-index:\s*(\d+)/)?.[1]) >
     Number(block("#rear-cart-back").match(/z-index:\s*(\d+)/)?.[1]),
-  "The recess lip must overlap the cartridge's lower edge",
+  "The curved recess contour must remain in front of the cartridge",
 );
 const rearShellTop = pixels(block("#rear-shell"), "top", "rear shell top");
-const lipTop = rearShellTop + pixels(block(".rear-cartridge-lip"), "top", "rear cartridge lip top");
+const lipTop = rearShellTop + pixels(rearLip, "top", "rear cartridge lip top");
+const lipBottom = lipTop + pixels(rearLip, "height", "rear cartridge lip height");
 const rearCartridgeTop = pixels(rearCartridge, "top", "rear cartridge top");
 assert.ok(
   lipTop > rearCartridgeTop + stickerTop,
   "Part of the lower sticker must remain visible above the foreground lip",
 );
-assert.ok(
-  lipTop < rearCartridgeTop + pixels(rearCartridge, "height", "rear cartridge height"),
-  "The foreground lip must hide the cartridge's bottom edge",
+assert.equal(
+  rearCartridgeTop + pixels(rearCartridge, "height", "rear cartridge height"),
+  lipBottom,
+  "The loaded cartridge must extend to the first curved recess contour",
 );
 
 const rearLabel = block("#rear-hotkeys");
