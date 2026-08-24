@@ -53,6 +53,21 @@ assert.equal(
   "The two AA bays must expose all four electrical contacts",
 );
 assert.equal(
+  [...html.matchAll(/<svg class="battery-contact spring/g)].length,
+  2,
+  "Each negative AA terminal must use a drawn spring",
+);
+assert.equal(
+  [...html.matchAll(/class="spring-coil"/g)].length,
+  2,
+  "Each negative lead must contain a conical coil",
+);
+assert.equal(
+  [...html.matchAll(/class="codex-logo-mark"/g)].length,
+  2,
+  "Both provider cells must carry the smooth Codex terminal-cloud mark",
+);
+assert.equal(
   [...html.matchAll(/class="battery-cradle /g)].length,
   2,
   "Each AA cell must sit in a visible molded cradle",
@@ -95,12 +110,9 @@ assert.doesNotMatch(
 );
 const batteryBody = block(".aa-battery");
 assert.match(batteryBody, /linear-gradient\(to bottom/, "AA cells need cylindrical cross-body shading");
-assert.match(batteryBody, /border-radius:\s*50%/, "AA cells need rounded cylindrical ends");
-assert.match(
-  block(".battery-contact.spring"),
-  /repeating-linear-gradient/,
-  "The spring leads must be visibly modeled",
-);
+assert.match(batteryBody, /border-radius:\s*12px/, "AA cells need straight cylindrical barrels with shallow shoulders");
+assert.match(block(".battery-contact.spring"), /overflow:\s*visible/, "The conical springs must remain fully visible");
+assert.match(css, /\.spring-coil\s*\{[^}]*stroke:/s, "The conical spring wire must be visibly drawn");
 assert.match(block(".battery-contact.leaf"), /background:/, "The flat electrical leads must be visible");
 assert.ok(pixels(".battery-pack", "left") <= 30, "Reference AA cells must reach the compact end contacts");
 assert.ok(pixels(".battery-pack", "width") >= 260, "Reference AA cells must span the molded compartment");
@@ -109,13 +121,18 @@ const batteryLabel = block(".aa-battery-label");
 assert.match(batteryLabel, /font-family:\s*[^;]*sans-serif/, "Battery labels must use smooth product typography");
 assert.match(batteryLabel, /-webkit-font-smoothing:\s*antialiased/, "Battery labels must be anti-aliased");
 assert.match(batteryLabel, /image-rendering:\s*auto/, "Battery labels must opt out of the pixel-art rendering rule");
+assert.match(batteryLabel, /border-radius:\s*11px/, "The printed wrapper must follow the cylindrical barrel");
+assert.match(css, /\.aa-battery-label::after\s*\{[^}]*linear-gradient\(to bottom/s, "The wrapper needs a curved barrel highlight");
 assert.match(
   block(".aa-battery.bottom .aa-battery-label"),
   /rotate\(180deg\)/,
   "One battery label must be upside down",
 );
 assert.match(css, /\.battery-pack\.codex[\s\S]*?#2459e0/, "Codex batteries must use the blue brand treatment");
-assert.match(css, /\.battery-pack\.claude[\s\S]*?#d95f3f/, "Claude batteries must use the coral brand treatment");
+assert.match(css, /\.battery-pack\.claude[\s\S]*?#d97757/i, "Claude batteries must use the coral brand treatment");
+const rearLatch = block(".rear-latch");
+assert.match(rearLatch, /top:\s*-13px/, "The removable cover lever must straddle its top edge");
+assert.doesNotMatch(rearLatch, /bottom:/, "The cover lever must not drift back to the bottom edge");
 assert.match(css, /@keyframes powerIndicatorRejected/, "Rejected power-on attempts need an LED flash sequence");
 assert.doesNotMatch(css, /#power-switch\.power-rejected/, "The physical power toggle must never flash red");
 assert.match(css, /prefers-reduced-motion:[\s\S]*?\.power-led\.rejected/s, "The rejection LED needs a reduced-motion state");
