@@ -1,7 +1,7 @@
 {
   "name": "code-quest-advance",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "scripts": {
     "test": "node tests/display-contract.mjs && node tests/device-boot-contract.mjs && node tests/device-bounds-contract.mjs && node tests/device-pointer-contract.mjs && node tests/device-animation-contract.mjs && node tests/device-reverse-contract.mjs && node tests/provider-battery-contract.mjs && node tests/cartridge-library-contract.mjs && node tests/packaging-contract.mjs",
