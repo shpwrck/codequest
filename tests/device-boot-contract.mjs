@@ -18,5 +18,17 @@ assert.match(css, /@keyframes bootShine/, "The original shine animation is missi
 assert.match(css, /@keyframes bootSub/, "The original maker animation is missing");
 
 assert.match(adapter, /invoke\("engine_finish_boot"\)/, "Device boot must explicitly release Bevy");
+assert.match(adapter, /let bootHeld = false/, "Provider checks need an explicit held-boot state");
+assert.match(
+  adapter,
+  /function showDeviceBoot\(\{ hold = false \} = \{\}\)/,
+  "Power-on must be able to hold the boot screen during provider verification",
+);
+assert.match(
+  adapter,
+  /function finishDeviceBoot[\s\S]*?bootHeld[\s\S]*?return/,
+  "Input and timers must not dismiss a boot screen held for provider verification",
+);
+assert.match(adapter, /function releaseDeviceBoot\(/, "Successful verification must release the held boot");
 
-console.log("Device boot contract OK: fixed overlay with drop, shine, and engine handoff");
+console.log("Device boot contract OK: fixed, holdable overlay with drop, shine, and engine handoff");

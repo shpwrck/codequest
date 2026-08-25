@@ -1104,6 +1104,14 @@ html, body {
 .battery-pack.claude .battery-polarity.positive { color: #fff; }
 .battery-pack.claude .battery-polarity.negative { color: #141413; }
 .battery-pack.claude .battery-word { font-size: 22px; letter-spacing: 1.3px; }
+.battery-pack.failed { --battery-accent: #c92f45; }
+.battery-pack.failed .aa-battery-label {
+  color: #fff;
+  background:
+    radial-gradient(ellipse 4px 50% at calc(28% - 4px) 50%, #c92f45 0 98%, transparent 100%),
+    linear-gradient(90deg, #c92f45 0 calc(28% - 4px), #35131b calc(28% - 4px) 100%);
+}
+.battery-pack.failed .battery-polarity { color: #fff; }
 .battery-chooser {
   appearance: none;
   position: absolute;

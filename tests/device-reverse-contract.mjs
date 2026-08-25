@@ -167,6 +167,19 @@ for (const shortcut of ["F1", "KeyP", "KeyC"]) {
 assert.match(adapter, /ShiftLeft:\s*"select",\s*ShiftRight:\s*"select"/, "SELECT must remain mapped to Shift");
 assert.match(adapter, /viewToggle\.addEventListener\("click"/, "The floating front/back switch is not wired");
 assert.match(adapter, /viewToggle\.setAttribute\("aria-checked",\s*String\(shellBackVisible\)\)/, "The slider's accessible state does not follow the visible face");
+const setShellBackVisible = adapter.match(
+  /function setShellBackVisible\(visible\) \{[\s\S]*?\n  \}(?=\n\n  function turnShell)/,
+)?.[0] || "";
+assert.match(
+  setShellBackVisible,
+  /shellBackVisible = Boolean\(visible\)/,
+  "The face swap must update only the visible shell side",
+);
+assert.doesNotMatch(
+  setShellBackVisible,
+  /setBatteryDoorOpen|batteryDoorOpen\s*=/,
+  "Flipping the device must preserve whether the battery cover is removed",
+);
 
 assert.match(html, /id="rear-serial">-------<\/div>/, "The serial plate needs a neutral bootstrap placeholder");
 assert.match(

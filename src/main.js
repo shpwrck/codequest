@@ -70,6 +70,7 @@ import {
   let bootStartedAt = 0;
   let bootFinishing = false;
   let bootGeneration = 0;
+  let bootHeld = false;
   let trayMessageTimer = null;
   let shellBackVisible = false;
   let shellTurning = false;
@@ -78,6 +79,7 @@ import {
   let installedProvider = null;
   let verifiedProvider = null;
   let powerTransitioning = false;
+  let powerGeneration = 0;
   let lastPowerFailure = "";
   const held = Object.create(null);
   const swallowedByBoot = Object.create(null);
@@ -123,11 +125,12 @@ import {
     clearBootTimer();
     bootGeneration += 1;
     bootFinishing = false;
+    bootHeld = false;
     bootOverlay.classList.remove("active");
   }
 
   async function finishDeviceBoot(generation = bootGeneration) {
-    if (!powered || !cartridge || bootFinishing || generation !== bootGeneration) return;
+    if (bootHeld || !powered || !cartridge || bootFinishing || generation !== bootGeneration) return;
     bootFinishing = true;
     clearBootTimer();
     try {
@@ -139,21 +142,40 @@ import {
     }
   }
 
-  function showDeviceBoot() {
+  function showDeviceBoot({ hold = false } = {}) {
     clearBootTimer();
     const generation = ++bootGeneration;
     bootStartedAt = performance.now();
     bootFinishing = false;
+    bootHeld = hold;
     bootOverlay.classList.remove("active");
     void bootOverlay.offsetWidth;
     bootOverlay.classList.add("active");
-    if (cartridge) {
+    if (cartridge && !bootHeld) {
       bootTimer = window.setTimeout(() => finishDeviceBoot(generation), BOOT_DURATION_MS);
     }
+    return generation;
+  }
+
+  function releaseDeviceBoot(generation = bootGeneration) {
+    if (!powered || generation !== bootGeneration) return;
+    bootHeld = false;
+    if (!cartridge) return;
+    const elapsed = performance.now() - bootStartedAt;
+    const remaining = Math.max(0, BOOT_DURATION_MS - elapsed);
+    clearBootTimer();
+    if (remaining === 0) void finishDeviceBoot(generation);
+    else bootTimer = window.setTimeout(() => finishDeviceBoot(generation), remaining);
   }
 
   function wait(milliseconds) {
     return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  }
+
+  function waitForPaint() {
+    return new Promise((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+    });
   }
 
   function normalizeProvider(value) {
@@ -178,6 +200,7 @@ import {
     batteryChooser.classList.toggle("hidden", hasProvider);
     batteryPack.classList.remove("codex", "claude");
     if (installedProvider) batteryPack.classList.add(installedProvider);
+    batteryPack.classList.toggle("failed", hasProvider && Boolean(lastPowerFailure));
     batteryPack.querySelectorAll(".battery-word").forEach((word) => {
       word.textContent = providerLabel();
     });
@@ -188,6 +211,7 @@ import {
         : "No AI provider batteries installed",
     );
     if (!hasProvider) setBatteryStatus("NO BATTERIES");
+    else if (lastPowerFailure) setBatteryStatus(`${providerLabel()} · NOT READY`, "failed");
     else if (verifiedProvider === installedProvider) setBatteryStatus(`${providerLabel()} · READY`, "ready");
     else setBatteryStatus(`${providerLabel()} · UNTESTED`);
     if (batteryTrayOpen) renderBatteryTray();
@@ -280,9 +304,9 @@ import {
   }
 
   async function rejectPowerOn(message) {
-    powered = false;
     hideDeviceBoot();
     lastPowerFailure = installedProvider ? `${providerLabel()} NOT READY` : "NO BATTERIES";
+    renderProviderBatteries();
     powerSwitch.classList.remove("checking");
     powerSwitch.classList.add("on");
     powerLed.classList.remove("off", "checking");
@@ -290,9 +314,9 @@ import {
     powerSwitch.setAttribute("aria-label", `Power rejected: ${lastPowerFailure}`);
     await invoke("engine_power", { powered: false }).catch(() => {});
     await wait(POWER_REJECTION_MS);
-    powerSwitch.classList.remove("on");
     powerLed.classList.remove("rejected");
     powerLed.classList.add("off");
+    if (powered) powerSwitch.setAttribute("aria-label", `Power on, ${lastPowerFailure}`);
     updateControlGuides();
     if (message) console.warn("CQA: power rejected", message);
   }
@@ -357,7 +381,6 @@ import {
 
   function setShellBackVisible(visible) {
     shellBackVisible = Boolean(visible);
-    if (!shellBackVisible && batteryDoorOpen) setBatteryDoorOpen(false, { force: true });
     scaleEl.classList.toggle("showing-back", shellBackVisible);
     frontFace.setAttribute("aria-hidden", String(shellBackVisible));
     backFace.setAttribute("aria-hidden", String(!shellBackVisible));
@@ -393,32 +416,43 @@ import {
 
   async function setPower(on) {
     const target = Boolean(on);
-    if (powerTransitioning || powered === target) return;
+    if (powered === target || (target && powerTransitioning)) return;
+    const generation = ++powerGeneration;
     powerTransitioning = true;
 
     if (target) {
       if (trayOpen) closeTray();
       if (batteryTrayOpen) closeBatteryTray({ restoreFocus: false });
-      setBatteryDoorOpen(false, { force: true });
+      powered = true;
+      lastPowerFailure = "";
+      renderProviderBatteries();
       powerSwitch.classList.add("on", "checking");
       powerLed.classList.remove("off", "rejected");
       powerLed.classList.add("checking");
       powerSwitch.setAttribute("aria-label", "Power switch, checking AI batteries");
+      batteryCompartment.classList.add("locked");
+      const providerBootGeneration = showDeviceBoot({ hold: true });
       updateControlGuides();
       try {
+        await waitForPaint();
         await verifyInstalledProvider();
+        if (generation !== powerGeneration || !powered) return;
         await invoke("engine_power", { powered: true });
-        powered = true;
+        if (generation !== powerGeneration || !powered) {
+          await invoke("engine_power", { powered: false }).catch(() => {});
+          return;
+        }
         powerSwitch.classList.remove("checking");
         powerLed.classList.remove("checking");
         powerSwitch.setAttribute("aria-label", `Power on, ${providerLabel()} batteries ready`);
-        batteryCompartment.classList.add("locked");
-        showDeviceBoot();
+        releaseDeviceBoot(providerBootGeneration);
       } catch (error) {
-        await rejectPowerOn(error);
+        if (generation === powerGeneration && powered) await rejectPowerOn(error);
       } finally {
-        powerTransitioning = false;
-        updateControlGuides();
+        if (generation === powerGeneration) {
+          powerTransitioning = false;
+          updateControlGuides();
+        }
       }
       return;
     }
@@ -434,14 +468,18 @@ import {
     try {
       await invoke("engine_power", { powered: false });
     } catch (error) {
-      powered = true;
-      powerSwitch.classList.add("on");
-      powerLed.classList.remove("off");
-      batteryCompartment.classList.add("locked");
-      showTrayError(error);
+      if (generation === powerGeneration) {
+        powered = true;
+        powerSwitch.classList.add("on");
+        powerLed.classList.remove("off");
+        batteryCompartment.classList.add("locked");
+        showTrayError(error);
+      }
     } finally {
-      powerTransitioning = false;
-      updateControlGuides();
+      if (generation === powerGeneration) {
+        powerTransitioning = false;
+        updateControlGuides();
+      }
     }
   }
 

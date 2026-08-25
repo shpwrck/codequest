@@ -277,6 +277,50 @@ assert.match(
   "The engine must not power on until provider verification succeeds",
 );
 assert.match(adapter, /function rejectPowerOn\(/, "Missing the failed power-on recovery path");
+const setPower = adapter.match(
+  /async function setPower\(on\) \{[\s\S]*?\n  \}(?=\n\n  function renderCartridge)/,
+)?.[0] || "";
+const powerOnVerification = setPower.indexOf("await verifyInstalledProvider()");
+assert.ok(powerOnVerification > 0, "Power-on must verify the installed provider");
+for (const immediatePowerEffect of [
+  "powered = true",
+  "showDeviceBoot({ hold: true })",
+  "await waitForPaint()",
+]) {
+  const effectIndex = setPower.indexOf(immediatePowerEffect);
+  assert.ok(
+    effectIndex > 0 && effectIndex < powerOnVerification,
+    `${immediatePowerEffect} must happen before provider verification`,
+  );
+}
+assert.doesNotMatch(
+  setPower,
+  /setBatteryDoorOpen\(false/,
+  "Power-on must not physically replace a cover the player removed",
+);
+const rejectedPowerOn = adapter.match(
+  /async function rejectPowerOn\(message\) \{[\s\S]*?\n  \}(?=\n\n  function updateControlGuides)/,
+)?.[0] || "";
+assert.doesNotMatch(
+  rejectedPowerOn,
+  /powered = false|powerSwitch\.classList\.remove\([^)]*"on"/,
+  "A failed provider check must leave the physical power switch up",
+);
+assert.match(
+  rejectedPowerOn,
+  /hideDeviceBoot\(\)[\s\S]*?invoke\("engine_power", \{ powered: false \}\)/,
+  "A failed provider check must blank the boot screen while keeping the engine off",
+);
+assert.match(
+  adapter,
+  /batteryPack\.classList\.toggle\("failed", hasProvider && Boolean\(lastPowerFailure\)\)/,
+  "Failed provider batteries must gain their visible red failure state",
+);
+assert.match(
+  css,
+  /\.battery-pack\.failed \.aa-battery-label\s*\{[^}]*#c92f45[^}]*#35131b/s,
+  "Unavailable installed batteries must turn red while retaining a two-tone wrapper",
+);
 assert.doesNotMatch(adapter, /OPEN_DEVICE_HEIGHT|battery-door-open/, "The open cover must not affect native fitting");
 assert.match(adapter, /window\.innerHeight \/ DEVICE_HEIGHT/, "Device fitting must use one stable height");
 assert.match(adapter, /powerLed\.classList\.add\("rejected"\)/, "The power indicator never receives its red failure state");
@@ -351,7 +395,12 @@ assert.match(
 
 assert.match(externalTools, /CQA_CODEX/, "Codex executable discovery must be configurable");
 assert.match(rust, /fn engine_set_ai_provider\(/, "The Tauri boundary cannot accept installed batteries");
-assert.match(rust, /fn verify_ai_provider\(/, "The Tauri boundary cannot verify a battery provider");
+assert.match(rust, /async fn verify_ai_provider\(/, "Provider verification must not block the native UI thread");
+assert.match(
+  rust,
+  /verify_ai_provider[\s\S]*?tauri::async_runtime::spawn_blocking/,
+  "The blocking provider CLI probe must run off the native UI thread",
+);
 assert.match(rust, /AiProviderState/, "Verified provider state must be shared with question generation");
 assert.match(
   rust,

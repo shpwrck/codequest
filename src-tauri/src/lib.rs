@@ -934,15 +934,18 @@ fn engine_set_ai_provider(
 }
 
 #[tauri::command]
-fn verify_ai_provider(
-    provider_state: State<AiProviderState>,
+async fn verify_ai_provider(
+    provider_state: State<'_, AiProviderState>,
     provider: String,
 ) -> Result<AiProviderVerification, String> {
+    let provider_state = provider_state.inner().clone();
     let provider = AiProvider::parse(&provider)?;
     if provider_state.selected() != Some(provider) {
         return Err("INSTALL THE SELECTED AI BATTERIES FIRST".to_string());
     }
-    prove_ai_provider(provider)?;
+    tauri::async_runtime::spawn_blocking(move || prove_ai_provider(provider))
+        .await
+        .map_err(|_| format!("{} READINESS CHECK FAILED", provider.name()))??;
     provider_state.mark_verified(provider)?;
     Ok(AiProviderVerification {
         provider,
