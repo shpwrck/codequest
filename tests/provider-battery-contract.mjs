@@ -130,6 +130,9 @@ assert.match(
 );
 assert.match(css, /\.battery-pack\.codex[\s\S]*?#2459e0/, "Codex batteries must use the blue brand treatment");
 assert.match(css, /\.battery-pack\.claude[\s\S]*?#d97757/i, "Claude batteries must use the coral brand treatment");
+const claudeLabel = block(".battery-pack.claude .aa-battery-label");
+assert.match(claudeLabel, /background:\s*#d97757/i, "Claude battery wrappers must be uniformly orange");
+assert.doesNotMatch(claudeLabel, /linear-gradient\(90deg/, "Claude battery wrappers must not use color bands");
 const rearLatch = block(".rear-latch");
 assert.match(rearLatch, /top:\s*-13px/, "The removable cover lever must straddle its top edge");
 assert.doesNotMatch(rearLatch, /bottom:/, "The cover lever must not drift back to the bottom edge");

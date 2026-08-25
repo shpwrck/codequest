@@ -1107,7 +1107,7 @@ html, body {
 .battery-pack.claude .aa-battery-label {
   grid-template-columns: 34px 0 1fr 34px;
   color: #141413;
-  background: linear-gradient(90deg, #d97757 0 19%, #f0eee6 19% 82%, #292826 82% 100%);
+  background: #d97757;
 }
 .battery-pack.claude .battery-logo { display: none; }
 .battery-pack.claude .battery-polarity { color: #fff; }
