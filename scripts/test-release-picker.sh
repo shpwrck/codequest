@@ -66,6 +66,19 @@ fi
 
 sleep 3
 DISPLAY="$task_display" xdotool windowfocus --sync "$task_window"
+# A fresh physical device has no AI batteries, so the cartridge slot remains
+# unavailable until a pack is installed. Follow the normal first-run path:
+# turn the unit over, open the battery cover, choose Codex, and return front.
+DISPLAY="$task_display" xdotool key F1
+sleep .8
+DISPLAY="$task_display" xdotool mousemove 512 484 click 1
+sleep .6
+DISPLAY="$task_display" xdotool mousemove 512 535 click 1
+sleep .4
+DISPLAY="$task_display" xdotool mousemove 345 360 click 1
+sleep .5
+DISPLAY="$task_display" xdotool key F1
+sleep .8
 # Cartridge selection is intentionally a physical-shell mouse action. Click the
 # centered slot guide instead of relying on the removed C-key shortcut.
 DISPLAY="$task_display" xdotool mousemove 512 112 click 1

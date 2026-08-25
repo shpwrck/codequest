@@ -44,6 +44,17 @@ pub(crate) fn claude_command() -> Command {
     background_command(program)
 }
 
+pub(crate) fn codex_command() -> Command {
+    let program = configured_program("CQA_CODEX").unwrap_or_else(|| {
+        #[cfg(target_os = "windows")]
+        if let Some(path) = windows_codex_executable() {
+            return path.into_os_string();
+        }
+        OsString::from("codex")
+    });
+    background_command(program)
+}
+
 pub(crate) fn quest_shell_command() -> Option<Command> {
     if let Some(shell) = configured_program("CQA_SHELL") {
         return Some(background_command(shell));
@@ -131,6 +142,17 @@ fn windows_claude_executable() -> Option<std::path::PathBuf> {
         first_installed(
             home.into_iter()
                 .map(|directory| directory.join(".local").join("bin").join("claude.exe")),
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_codex_executable() -> Option<std::path::PathBuf> {
+    executable_on_path("codex.exe").or_else(|| {
+        let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+        first_installed(
+            home.into_iter()
+                .map(|directory| directory.join(".local").join("bin").join("codex.exe")),
         )
     })
 }

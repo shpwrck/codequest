@@ -543,6 +543,7 @@ impl From<SceneHandler> for Screen {
 #[derive(Clone, Debug)]
 enum EngineCommand {
     Power(bool),
+    AiProvider(Option<String>),
     BootComplete,
     Cartridge(Option<CartridgeSpec>),
     Questions {
@@ -930,6 +931,7 @@ struct OracleDrop {
 #[derive(Resource)]
 struct GameState {
     powered: bool,
+    ai_provider: Option<String>,
     cartridge: Option<CartridgeSpec>,
     machine: Option<SceneMachine>,
     screen: Screen,
@@ -959,6 +961,7 @@ impl Default for GameState {
     fn default() -> Self {
         Self {
             powered: false,
+            ai_provider: None,
             cartridge: None,
             machine: None,
             screen: Screen::Off,
@@ -987,6 +990,14 @@ impl Default for GameState {
 }
 
 impl GameState {
+    fn ai_provider_name(&self) -> &str {
+        self.ai_provider.as_deref().unwrap_or("AI")
+    }
+
+    fn ai_provider_status(&self, status: &str) -> String {
+        format!("{}:{status}", self.ai_provider_name())
+    }
+
     fn transition(&mut self, screen: Screen) {
         if screen == Screen::Oracle && self.screen != Screen::Oracle {
             self.oracle_hero_x = 104;
@@ -1306,6 +1317,10 @@ impl EngineRuntime {
         self.send(EngineCommand::Power(powered))
     }
 
+    pub fn set_ai_provider(&self, provider: Option<String>) -> Result<(), String> {
+        self.send(EngineCommand::AiProvider(provider))
+    }
+
     pub fn finish_boot(&self) -> Result<(), String> {
         self.send(EngineCommand::BootComplete)
     }
@@ -1346,6 +1361,9 @@ fn apply_commands(
                 state.logs.clear();
                 effects.0.push_back(EngineEffect::AbortQuest);
                 state.transition(if powered { Screen::Boot } else { Screen::Off });
+            }
+            EngineCommand::AiProvider(provider) => {
+                state.ai_provider = provider.map(|name| name.to_ascii_uppercase());
             }
             EngineCommand::BootComplete => {
                 if state.screen == Screen::Boot && state.has_game() {
@@ -2240,16 +2258,16 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.rect(0, 11, WIDTH as i32, 1, PLUM);
     frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
     let status = if state.has_unanswered_question() {
-        "QUESTION READY"
+        "QUESTION READY".to_string()
     } else if state.questions_loading {
-        "CLAUDE THINKING"
+        format!("{} THINKING", state.ai_provider_name())
     } else if state.question_retry_ticks > 0 {
-        "CLAUDE RETRYING"
+        format!("{} RETRYING", state.ai_provider_name())
     } else {
-        "CONTACTING CLAUDE"
+        format!("CONTACTING {}", state.ai_provider_name())
     };
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
-    frame.text(211 - status_width, 2, status, SKY, 1);
+    frame.text(211 - status_width, 2, &status, SKY, 1);
     let phase = (state.screen_ticks % 45) / 15;
     frame.text(216, 2, &".".repeat(phase as usize + 1), GOLD, 1);
     for drop in &state.oracle_drops {
@@ -2322,16 +2340,16 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         1,
     );
     let status = if state.has_unanswered_question() {
-        "CLAUDE:READY"
+        state.ai_provider_status("READY")
     } else if state.questions_loading {
-        "CLAUDE:SCRYING"
+        state.ai_provider_status("SCRYING")
     } else if state.question_retry_ticks > 0 {
-        "CLAUDE:CLOUDY"
+        state.ai_provider_status("CLOUDY")
     } else {
-        "CLAUDE:CHANNEL"
+        state.ai_provider_status("CHANNEL")
     };
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
-    frame.text(235 - status_width, 5, status, CYAN, 1);
+    frame.text(235 - status_width, 5, &status, CYAN, 1);
 
     if tier == PresentationTier::OracleBound {
         for (x, y) in [
@@ -3306,6 +3324,18 @@ mod tests {
         );
         std::fs::write(directory.join(format!("{name}.ppm")), ppm)
             .expect("preview should be writable");
+    }
+
+    #[test]
+    fn oracle_status_uses_the_installed_battery_provider() {
+        let mut state = GameState::default();
+        assert_eq!(state.ai_provider_status("SCRYING"), "AI:SCRYING");
+
+        state.ai_provider = Some("CODEX".into());
+        assert_eq!(state.ai_provider_status("READY"), "CODEX:READY");
+
+        state.ai_provider = Some("CLAUDE".into());
+        assert_eq!(state.ai_provider_status("CLOUDY"), "CLAUDE:CLOUDY");
     }
 
     #[test]
@@ -4600,7 +4630,7 @@ mod tests {
     fn oracle_hud_separates_oracle_info_at_top_from_game_info_at_bottom() {
         let engine = waiting_oracle_engine();
         let frame = engine.frame();
-        for (label, color) in [("Oracle title/progress", GOLD), ("Claude status", SKY)] {
+        for (label, color) in [("Oracle title/progress", GOLD), ("AI provider status", SKY)] {
             assert!(
                 color_pixels_in_region(frame, color, 0..WIDTH, 0..12) > 0,
                 "{label} is missing from the top quiz HUD"
@@ -4754,7 +4784,7 @@ mod tests {
     }
 
     #[test]
-    fn quiz_waits_for_claude_before_entering_play() {
+    fn quiz_waits_for_ai_questions_before_entering_play() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
         cartridge.questions.clear();
@@ -5053,7 +5083,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_quiz_cartridge_requests_the_first_claude_batch() {
+    fn empty_quiz_cartridge_requests_the_first_ai_batch() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
         cartridge.questions.clear();
@@ -5071,7 +5101,7 @@ mod tests {
     }
 
     #[test]
-    fn oracle_retries_a_failed_claude_batch_while_waiting() {
+    fn oracle_retries_a_failed_ai_batch_while_waiting() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
         cartridge.questions.clear();
@@ -5120,7 +5150,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_prefetch_waits_before_requesting_claude_again() {
+    fn failed_prefetch_waits_before_requesting_ai_again() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
         cartridge.questions = vec![cartridge.questions[0].clone(); 4];
@@ -5212,7 +5242,7 @@ mod tests {
     }
 
     #[test]
-    fn surviving_a_complete_claude_batch_levels_up() {
+    fn surviving_a_complete_ai_batch_levels_up() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
         let question = cartridge.questions[0].clone();

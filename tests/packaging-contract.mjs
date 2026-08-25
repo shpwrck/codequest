@@ -84,6 +84,7 @@ assert.doesNotMatch(rust, /Command::new\("zenity"\)/);
 assert.doesNotMatch(rust, /Command::new\("timeout"\)/);
 assert.match(externalTools, /CQA_GIT/);
 assert.match(externalTools, /CQA_CLAUDE/);
+assert.match(externalTools, /CQA_CODEX/);
 assert.match(externalTools, /CQA_SHELL/);
 assert.match(externalTools, /windows_git_bash/);
 assert.match(externalTools, /is_windows_subsystem_launcher/);

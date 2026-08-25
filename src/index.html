@@ -119,15 +119,74 @@
                 </table>
               </section>
 
-              <div class="rear-battery-door">
-                <div class="rear-latch" aria-hidden="true"></div>
-                <div class="rear-brand" aria-hidden="true">CODEQUEST</div>
-              </div>
+              <button id="battery-guide" class="control-guide hidden" type="button" aria-label="Open the battery cover to load batteries">
+                <span class="guide-action">OPEN BATTERY TAB</span>
+                <span class="guide-detail">TO LOAD 2×AA</span>
+              </button>
+
+              <section id="battery-compartment" class="battery-compartment" aria-label="AI provider battery compartment">
+                <button id="battery-lid-slot" class="battery-lid-slot" type="button" aria-label="Replace battery cover"></button>
+                <div id="battery-bay" class="battery-bay">
+                  <div class="battery-hardware" aria-hidden="true">
+                    <span class="battery-cradle top"></span>
+                    <span class="battery-cradle bottom"></span>
+                    <span class="battery-contact leaf top-right"></span>
+                    <svg class="battery-contact spring top-left" viewBox="0 0 32 30" aria-hidden="true" focusable="false">
+                      <g class="spring-coil">
+                        <path d="M1 15h2"></path>
+                        <ellipse cx="5" cy="15" rx="2.5" ry="3.5"></ellipse>
+                        <ellipse cx="10" cy="15" rx="3.5" ry="5.5"></ellipse>
+                        <ellipse cx="16" cy="15" rx="4.5" ry="8"></ellipse>
+                        <ellipse cx="23" cy="15" rx="5.5" ry="11.5"></ellipse>
+                      </g>
+                      <path class="spring-base" d="M29 3v24"></path>
+                    </svg>
+                    <svg class="battery-contact spring bottom-right" viewBox="0 0 32 30" aria-hidden="true" focusable="false">
+                      <g class="spring-coil">
+                        <path d="M1 15h2"></path>
+                        <ellipse cx="5" cy="15" rx="2.5" ry="3.5"></ellipse>
+                        <ellipse cx="10" cy="15" rx="3.5" ry="5.5"></ellipse>
+                        <ellipse cx="16" cy="15" rx="4.5" ry="8"></ellipse>
+                        <ellipse cx="23" cy="15" rx="5.5" ry="11.5"></ellipse>
+                      </g>
+                      <path class="spring-base" d="M29 3v24"></path>
+                    </svg>
+                    <span class="battery-contact leaf bottom-left"></span>
+                  </div>
+                  <button id="battery-pack" class="battery-pack hidden" type="button" aria-label="Remove installed AI provider batteries">
+                    <span class="aa-battery top" aria-hidden="true">
+                      <span class="aa-battery-label">
+                        <span class="battery-polarity positive">+</span>
+                        <span class="battery-word">AI</span>
+                        <span class="battery-polarity negative">−</span>
+                      </span>
+                    </span>
+                    <span class="aa-battery bottom" aria-hidden="true">
+                      <span class="aa-battery-label">
+                        <span class="battery-polarity positive">+</span>
+                        <span class="battery-word">AI</span>
+                        <span class="battery-polarity negative">−</span>
+                      </span>
+                    </span>
+                  </button>
+                  <button id="battery-chooser" class="battery-chooser" type="button" aria-label="Empty battery bay. Open AI battery selection"></button>
+                  <div id="battery-status" class="battery-status" role="status" aria-live="polite">NO BATTERIES</div>
+                </div>
+                <button id="battery-door" class="rear-battery-door" type="button" aria-expanded="false" aria-controls="battery-bay" aria-label="Open AI provider battery compartment">
+                  <span class="rear-latch" aria-hidden="true"></span>
+                  <span class="rear-brand" aria-hidden="true">CODEQUEST</span>
+                </button>
+              </section>
+              <div id="rear-power-switch" title="POWER" role="button" aria-label="Power switch" tabindex="0"><span class="ps-nub"></span></div>
               <div class="rear-port" aria-hidden="true"></div>
             </section>
           </div>
         </div>
       </div>
+      <button id="view-guide" class="control-guide hidden" type="button" aria-label="Turn the device over to check the batteries">
+        <span class="guide-action">CHECK BATTERIES</span>
+        <span class="guide-detail">TURN UNIT OVER</span>
+      </button>
       <button id="device-view-toggle" type="button" role="switch" aria-checked="false" aria-label="Show back of device">
         <span class="view-toggle-label view-front">FRONT</span>
         <span class="view-toggle-track" aria-hidden="true"><span class="view-toggle-knob"></span></span>
@@ -140,6 +199,28 @@
           <div id="tray-error" class="hidden"></div>
           <div class="tray-hint">DRAG UP TO LOAD &middot; DRAG DOWN TO RECYCLE</div>
           <div class="tray-safety">RECYCLE CLEARS THE RACK ONLY &middot; REPOSITORY FILES STAY ON DISK</div>
+        </div>
+      </div>
+      <div id="battery-tray" class="hidden" role="dialog" aria-modal="true" aria-labelledby="battery-tray-head" aria-hidden="true">
+        <div class="tray-panel battery-tray-panel">
+          <div id="battery-tray-head" class="tray-head">SELECT AI BATTERIES</div>
+          <div id="battery-options">
+            <button class="battery-option codex" type="button" data-provider="codex" aria-pressed="false">
+              <span class="battery-option-cell top" aria-hidden="true"><span>CODEX</span></span>
+              <span class="battery-option-cell bottom" aria-hidden="true"><span>CODEX</span></span>
+              <span class="battery-option-caption">CODEX</span>
+            </button>
+            <button class="battery-option claude" type="button" data-provider="claude" aria-pressed="false">
+              <span class="battery-option-cell top" aria-hidden="true"><span>CLAUDE</span></span>
+              <span class="battery-option-cell bottom" aria-hidden="true"><span>CLAUDE</span></span>
+              <span class="battery-option-caption">CLAUDE</span>
+            </button>
+            <button id="battery-eject" class="battery-option eject" type="button">
+              <span class="battery-eject-icon" aria-hidden="true">↑</span>
+              <span class="battery-option-caption">EJECT BATTERY</span>
+            </button>
+          </div>
+          <div class="tray-hint battery-tray-hint">SELECT A PACK &middot; ESC TO CLOSE</div>
         </div>
       </div>
     </div>

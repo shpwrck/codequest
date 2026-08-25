@@ -13,12 +13,16 @@ function block(selector) {
 const guide = block(".control-guide");
 const cartridgeGlow = block("#cart-back.guided");
 const powerGlow = block("#power-switch.guided");
+const batteryTabGlow = block(".rear-battery-door.guided .rear-latch");
+const batteryBayGlow = block(".battery-bay.guided");
 const canvas = block("#engine-canvas");
 
 for (const [name, animation] of [
   ["guide movement", guide],
   ["cartridge glow", cartridgeGlow],
   ["power glow", powerGlow],
+  ["battery-tab glow", batteryTabGlow],
+  ["battery-bay glow", batteryBayGlow],
 ]) {
   assert.doesNotMatch(animation, /steps\(/, `${name} uses visibly stepped timing`);
   assert.match(animation, /ease-in-out/, `${name} does not use continuous ease-in-out timing`);

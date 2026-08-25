@@ -139,6 +139,26 @@ assert.doesNotMatch(html, /data-device-turn/, "Molded shell badges must not act 
 assert.doesNotMatch(html, /<button class="shell-tag"/, "The front model badge must remain molded decoration");
 assert.doesNotMatch(html, /<button class="rear-brand"/, "The rear brand mark must remain molded decoration");
 assert.match(html, /id="device-back"[^>]*aria-hidden="true"/, "The rear face must start hidden from assistive technology");
+assert.match(
+  html,
+  /id="rear-power-switch"[^>]*title="POWER"[^>]*role="button"[^>]*tabindex="0"/,
+  "The turned device must expose the same physical power switch on its rear-left edge",
+);
+const frontPowerSwitch = block("#power-switch");
+const rearPowerSwitch = block("#rear-power-switch");
+assert.match(rearPowerSwitch, /left:\s*-12px/, "The rear power switch must mirror onto the left edge");
+assert.doesNotMatch(rearPowerSwitch, /right:/, "The rear power switch must not remain on the front face's right edge");
+assert.equal(
+  pixels(rearPowerSwitch, "top", "rear power switch off position"),
+  pixels(frontPowerSwitch, "top", "front power switch off position"),
+  "Both views must show the same physical off position",
+);
+assert.equal(
+  pixels(block("#rear-power-switch.on"), "top", "rear power switch on position"),
+  pixels(block("#power-switch.on"), "top", "front power switch on position"),
+  "Both views must show the same physical on position",
+);
+assert.match(rearPowerSwitch, /border-radius:\s*8px 0 0 8px/, "The rear switch must round its mirrored outer edge");
 assert.match(block("#device-view-toggle"), /position:\s*fixed/, "The front/back switch should float independently of the shell");
 assert.match(block("#device-view-toggle"), /font:\s*10px\s+'Press Start 2P'/, "The front/back labels must remain legible");
 assert.match(css, /#device-view-toggle\.back-active[\s\S]*?\.view-toggle-knob/, "The slider does not expose its rear position");
@@ -167,6 +187,25 @@ for (const shortcut of ["F1", "KeyP", "KeyC"]) {
 assert.match(adapter, /ShiftLeft:\s*"select",\s*ShiftRight:\s*"select"/, "SELECT must remain mapped to Shift");
 assert.match(adapter, /viewToggle\.addEventListener\("click"/, "The floating front/back switch is not wired");
 assert.match(adapter, /viewToggle\.setAttribute\("aria-checked",\s*String\(shellBackVisible\)\)/, "The slider's accessible state does not follow the visible face");
+assert.match(
+  adapter,
+  /const powerSwitches = \[powerSwitch, rearPowerSwitch\]/,
+  "Front and rear switches must share one physical state",
+);
+assert.match(adapter, /function setPhysicalPowerSwitch\(/, "Power transitions must synchronize both visible switch controls");
+const setShellBackVisible = adapter.match(
+  /function setShellBackVisible\(visible\) \{[\s\S]*?\n  \}(?=\n\n  function turnShell)/,
+)?.[0] || "";
+assert.match(
+  setShellBackVisible,
+  /shellBackVisible = Boolean\(visible\)/,
+  "The face swap must update only the visible shell side",
+);
+assert.doesNotMatch(
+  setShellBackVisible,
+  /setBatteryDoorOpen|batteryDoorOpen\s*=/,
+  "Flipping the device must preserve whether the battery cover is removed",
+);
 
 assert.match(html, /id="rear-serial">-------<\/div>/, "The serial plate needs a neutral bootstrap placeholder");
 assert.match(

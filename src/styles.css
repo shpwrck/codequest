@@ -219,6 +219,25 @@ html, body {
   color: #c3c4da;
   text-shadow: 0 1px 0 rgba(0,0,0,.4);
 }
+.power-led.checking {
+  background: var(--gold);
+  box-shadow: 0 0 8px var(--gold), 0 0 2px var(--gold);
+  animation: providerChecking .65s ease-in-out infinite;
+}
+.power-led.rejected {
+  background: #f02f4f;
+  box-shadow: 0 0 9px #f02f4f, 0 0 3px #fff;
+  animation: powerIndicatorRejected .72s ease-in-out 1;
+}
+@keyframes providerChecking {
+  0%, 100% { background: var(--gold); box-shadow: 0 0 8px var(--gold), 0 0 2px var(--gold); }
+  50% { background: #796723; box-shadow: 0 0 2px #796723; }
+}
+@keyframes powerIndicatorRejected {
+  0%, 100% { background: #f02f4f; box-shadow: 0 0 9px #f02f4f, 0 0 3px #fff; }
+  18%, 58% { background: #ff526c; box-shadow: 0 0 13px #f02f4f, 0 0 5px #fff; }
+  38%, 78% { background: #6f1728; box-shadow: 0 0 2px #6f1728; }
+}
 
 /* ============================ THE SCREEN ============================ */
 
@@ -582,7 +601,7 @@ html, body {
   top: 17px;
   width: 578px;
   height: 328px;
-  overflow: hidden;
+  overflow: visible;
   background: linear-gradient(150deg, #666bc2 0%, #575cb4 38%, #4a4ea3 72%, #3d4192 100%);
   border: 3px solid #101124;
   border-radius: 240px 240px 130px 130px / 70px 70px 96px 96px;
@@ -801,40 +820,389 @@ html, body {
   font-weight: 600;
 }
 
-.rear-battery-door {
+.battery-compartment {
   position: absolute;
   left: 131px;
-  top: 190px;
+  top: 176px;
+  z-index: 3;
+  width: 316px;
+  height: 152px;
+  overflow: hidden;
+  image-rendering: auto;
+  -webkit-font-smoothing: antialiased;
+}
+.battery-compartment.open { overflow: visible; }
+.battery-bay {
+  position: absolute;
+  inset: 14px 0 14px;
+  z-index: 1;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(113,117,199,.1), transparent 18% 82%, rgba(113,117,199,.1)),
+    linear-gradient(155deg, #24264a, #0d0e1d 72%);
+  border: 4px solid #30336d;
+  border-radius: 14px;
+  box-shadow:
+    inset 0 8px 14px rgba(0,0,0,.7),
+    inset 0 -3px 0 rgba(112,117,199,.22),
+    0 0 0 3px rgba(39,42,91,.72),
+    0 2px 0 rgba(255,255,255,.08);
+}
+.battery-lid-slot {
+  appearance: none;
+  position: absolute;
+  left: 50%;
+  top: 1px;
+  z-index: 2;
+  width: 72px;
+  height: 27px;
+  transform: translateX(-50%);
+  background: linear-gradient(to bottom, #080914, #17182c);
+  border: 2px solid #292b5b;
+  border-radius: 7px;
+  box-shadow: inset 0 5px 8px rgba(0,0,0,.9), 0 1px 0 rgba(111,116,197,.2);
+  cursor: pointer;
+}
+.battery-lid-slot::after {
+  content: '';
+  position: absolute;
+  left: 15px;
+  right: 15px;
+  top: 6px;
+  height: 8px;
+  background: #05060d;
+  border-radius: 2px;
+  box-shadow: 0 1px 0 rgba(255,255,255,.08);
+}
+.battery-lid-slot:hover,
+.battery-lid-slot:focus-visible {
+  background: linear-gradient(to bottom, #13152b, #24274a);
+  outline: 1px solid rgba(167,171,234,.75);
+  outline-offset: -2px;
+}
+.battery-hardware {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.battery-cradle {
+  position: absolute;
+  left: 38px;
+  right: 38px;
+  height: 48px;
+  background: linear-gradient(to bottom, #070812, #171931 48%, #070813 100%);
+  border: 2px solid #282b58;
+  border-radius: 9px;
+  box-shadow:
+    inset 0 5px 8px rgba(0,0,0,.72),
+    inset 0 -2px 2px rgba(107,111,185,.15);
+}
+.battery-cradle.top { top: 10px; }
+.battery-cradle.bottom { top: 64px; }
+.battery-cradle::before,
+.battery-cradle::after {
+  position: absolute;
+  top: 50%;
+  z-index: 0;
+  transform: translateY(-52%);
+  color: #3b3e75;
+  font: 800 19px/1 Inter, Aptos, "Segoe UI", Arial, sans-serif;
+  text-shadow: 0 1px 0 rgba(0,0,0,.65);
+}
+.battery-cradle::before { left: 42px; }
+.battery-cradle::after { right: 42px; }
+.battery-cradle.top::after,
+.battery-cradle.bottom::before { content: '+'; }
+.battery-cradle.top::before,
+.battery-cradle.bottom::after { content: '−'; }
+.battery-contact {
+  position: absolute;
+  z-index: 2;
+  filter: drop-shadow(0 2px 1px rgba(0,0,0,.75));
+}
+.battery-contact.spring {
+  width: 31px;
+  height: 30px;
+  overflow: visible;
+}
+.spring-coil {
+  fill: none;
+  stroke: #d9dbe0;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  filter: drop-shadow(1px 0 #555862);
+}
+.spring-base {
+  fill: none;
+  stroke: #f0f1f3;
+  stroke-width: 3;
+  stroke-linecap: round;
+  filter: drop-shadow(1px 0 #555862);
+}
+.battery-contact.leaf {
+  width: 18px;
+  height: 24px;
+  background: linear-gradient(90deg, #555861, #e5e6e8 38%, #898b94 62%, #4c4e57);
+  border: 1px solid #2e3038;
+  border-radius: 5px 2px 2px 5px;
+  box-shadow: inset 0 2px 1px rgba(255,255,255,.38);
+}
+.battery-contact.top-left {
+  left: 35px;
+  top: 20px;
+  transform: scaleX(-1);
+}
+.battery-contact.top-right {
+  right: 38px;
+  top: 23px;
+  transform: scaleX(-1);
+}
+.battery-contact.bottom-left {
+  left: 38px;
+  top: 77px;
+}
+.battery-contact.bottom-right {
+  right: 35px;
+  top: 74px;
+}
+.battery-pack {
+  appearance: none;
+  position: absolute;
+  left: 58px;
+  top: 10px;
+  z-index: 3;
+  width: 200px;
+  height: 104px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  image-rendering: auto;
+}
+.battery-pack.hidden { display: none; }
+.battery-pack:focus-visible {
+  outline: 2px solid rgba(255,255,255,.92);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.aa-battery {
+  position: relative;
+  display: block;
+  flex: 0 0 50px;
+  overflow: visible;
+  border: 1px solid #080914;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #777a84 0%, #292b32 13%, #0b0c11 50%, #05060a 78%, #545761 100%);
+  box-shadow:
+    inset 0 3px 2px rgba(255,255,255,.24),
+    inset 0 -4px 4px rgba(0,0,0,.72),
+    0 3px 5px rgba(0,0,0,.72);
+}
+.battery-pack:hover .aa-battery,
+.battery-pack:focus-visible .aa-battery {
+  filter: brightness(1.13);
+}
+.aa-battery::before,
+.aa-battery::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  background: linear-gradient(90deg, #777982, #f1f1ef 48%, #777982);
+  border: 1px solid #363740;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.55), 0 1px 2px rgba(0,0,0,.65);
+}
+.aa-battery.top::after,
+.aa-battery.bottom::before {
+  top: 14px;
+  width: 10px;
+  height: 22px;
+  border-radius: 3px;
+}
+.aa-battery.top::after {
+  left: calc(100% + 1px);
+}
+.aa-battery.bottom::before {
+  right: calc(100% + 1px);
+}
+.aa-battery.top::before,
+.aa-battery.bottom::after {
+  display: none;
+}
+.aa-battery-label {
+  position: absolute;
+  inset: 1px 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 34px 1fr 34px;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 3px;
+  font-family: Inter, Aptos, "Segoe UI", Arial, sans-serif;
+  font-size: 21px;
+  font-weight: 850;
+  letter-spacing: 1.2px;
+  line-height: 1;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  image-rendering: auto;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3), inset 0 -2px 1px rgba(0,0,0,.45);
+}
+.aa-battery-label::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: linear-gradient(to bottom, rgba(255,255,255,.34) 0%, rgba(255,255,255,.12) 20%, transparent 46%, rgba(0,0,0,.12) 64%, rgba(0,0,0,.52) 100%);
+  pointer-events: none;
+}
+.aa-battery-label::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(0,0,0,.3), transparent 5%, transparent 95%, rgba(0,0,0,.34));
+  pointer-events: none;
+}
+.aa-battery.top .aa-battery-label { transform: rotate(180deg); }
+.battery-polarity {
+  position: relative;
+  z-index: 1;
+  font-size: 22px;
+  font-weight: 500;
+  text-align: center;
+}
+.battery-polarity.positive { grid-column: 1; }
+.battery-polarity.negative { grid-column: 3; }
+.battery-word {
+  position: relative;
+  z-index: 1;
+  grid-column: 2;
+  justify-self: center;
+  white-space: nowrap;
+}
+.battery-pack.codex { --battery-accent: #2459e0; }
+.battery-pack.codex .aa-battery-label {
+  color: #fff;
+  background:
+    radial-gradient(ellipse 4px 50% at calc(28% - 4px) 50%, #2459e0 0 98%, transparent 100%),
+    linear-gradient(90deg, #2459e0 0 calc(28% - 4px), #111217 calc(28% - 4px) 100%);
+}
+.battery-pack.codex .battery-polarity.positive { color: #fff; }
+.battery-pack.codex .battery-polarity.negative { color: #fff; }
+.battery-pack.codex .battery-word { font-size: 23px; letter-spacing: 1.6px; }
+.battery-pack.claude { --battery-accent: #d97757; }
+.battery-pack.claude .aa-battery-label {
+  color: #141413;
+  background:
+    radial-gradient(ellipse 4px 50% at calc(28% - 4px) 50%, #d97757 0 98%, transparent 100%),
+    linear-gradient(90deg, #d97757 0 calc(28% - 4px), #f0eee6 calc(28% - 4px) 100%);
+}
+.battery-pack.claude .battery-polarity.positive { color: #fff; }
+.battery-pack.claude .battery-polarity.negative { color: #141413; }
+.battery-pack.claude .battery-word { font-size: 22px; letter-spacing: 1.3px; }
+.battery-chooser {
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  color: transparent;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.battery-chooser.hidden { display: none; }
+.battery-chooser:focus-visible { outline: 2px solid var(--gold); outline-offset: -5px; }
+.battery-status {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  color: #aeb2d4;
+  font: 700 7px/10px Inter, Aptos, "Segoe UI", Arial, sans-serif;
+  letter-spacing: .9px;
+  text-align: center;
+  white-space: nowrap;
+  -webkit-font-smoothing: antialiased;
+}
+.battery-status.ready { color: #69d490; }
+.battery-status.checking { color: #ffcd75; }
+.battery-status.failed { color: #ff7187; }
+.rear-battery-door {
+  appearance: none;
+  position: absolute;
+  left: 0;
+  top: 14px;
+  z-index: 3;
   width: 316px;
   height: 138px;
+  padding: 0;
   background: linear-gradient(150deg, #595eb2, #474b9c);
   border: 3px solid #34366f;
-  border-radius: 10px 10px 38px 38px / 10px 10px 18px 18px;
+  border-radius: 10px;
   box-shadow: inset 0 2px 0 rgba(255,255,255,.10), inset 0 -5px 0 rgba(0,0,0,.15);
+  cursor: pointer;
+  transition: transform .38s cubic-bezier(.2,.75,.25,1), filter .18s ease;
+}
+.rear-battery-door:hover,
+.rear-battery-door:focus-visible { filter: brightness(1.08); outline: none; }
+.battery-compartment.open .rear-battery-door { transform: translateY(174px); }
+.battery-compartment.locked .rear-battery-door { cursor: not-allowed; }
+.battery-compartment.checking .battery-pack { animation: batteryChecking .8s ease-in-out infinite; }
+@keyframes batteryChecking { 50% { filter: brightness(1.3); } }
+.battery-compartment.opening .rear-battery-door { pointer-events: none; }
+.battery-compartment.open .rear-brand { opacity: .55; }
+.battery-compartment.open .battery-pack,
+.battery-compartment.open .battery-chooser { pointer-events: auto; }
+.battery-compartment:not(.open) .battery-pack,
+.battery-compartment:not(.open) .battery-chooser { pointer-events: none; }
+.battery-compartment.open .battery-status { opacity: 1; }
+.battery-compartment:not(.open) .battery-status { opacity: 0; }
+.battery-compartment .rear-brand { transition: opacity .18s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .rear-battery-door,
+  .battery-compartment .rear-brand { transition: none; }
+  .battery-compartment.checking .battery-pack { animation: none; filter: brightness(1.22); }
 }
 .rear-latch {
   position: absolute;
   left: 50%;
-  top: -18px;
+  top: -13px;
   width: 72px;
-  height: 30px;
+  height: 27px;
   transform: translateX(-50%);
-  background: #42468f;
-  border: 3px solid #292b5b;
-  border-radius: 6px;
-  box-shadow: inset 0 -7px 0 rgba(0,0,0,.22);
+  background: linear-gradient(to bottom, #4d519d, #3f4387);
+  border: 2px solid #292b5b;
+  border-radius: 7px;
+  box-shadow: inset 0 -7px 0 rgba(0,0,0,.13), 0 1px 2px rgba(0,0,0,.26);
+  pointer-events: none;
 }
 .rear-latch::after {
   content: '';
   position: absolute;
-  left: 22px;
-  right: 22px;
-  bottom: 3px;
-  height: 6px;
-  background: #7175c7;
-  border-radius: 2px;
+  left: 15px;
+  right: 15px;
+  top: 4px;
+  height: 8px;
+  background: linear-gradient(to bottom, #8d91df, #7175c7);
+  border-radius: 4px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.2);
 }
 .rear-brand {
+  display: none;
   position: absolute;
   left: 50%;
   top: 58px;
@@ -1637,7 +2005,26 @@ html, body {
   transition: top .12s;
 }
 #power-switch.on { top: 70px; }
+#rear-power-switch {
+  position: absolute;
+  left: -12px;
+  top: 96px;
+  width: 9px;
+  height: 26px;
+  background: linear-gradient(#d6d7e5, #a9aabf);
+  border: 3px solid #101124;
+  border-radius: 8px 0 0 8px;
+  cursor: pointer;
+  z-index: 5;
+  transition: top .12s;
+}
+#rear-power-switch.on { top: 70px; }
 .ps-nub { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .power-led.rejected { animation: none; background: #f02f4f; filter: none; }
+  .power-led.checking { animation: none; }
+}
 
 /* Contextual first-run guidance: point at the physical control that can
    advance the console's current state, then get out of the way. */
@@ -1685,9 +2072,11 @@ html, body {
 }
 #power-guide {
   right: 37px;
-  top: 105px;
+  top: 129px;
+  transform: translate(var(--guide-x), -50%);
+  animation: powerGuideBob 1.4s ease-in-out infinite;
 }
-#power-guide.switching-off { top: 79px; }
+#power-guide.switching-off { top: 103px; }
 #power-guide::after {
   content: '';
   position: absolute;
@@ -1698,14 +2087,67 @@ html, body {
   border-left-color: var(--gold);
   border-right: 0;
 }
+#view-guide {
+  position: fixed;
+  right: 158px;
+  top: 20px;
+  z-index: 46;
+  animation: viewGuideBob 1.4s ease-in-out infinite;
+}
+#view-guide::after {
+  content: '';
+  position: absolute;
+  right: -11px;
+  top: 50%;
+  margin-top: -6px;
+  border: 6px solid transparent;
+  border-left-color: var(--gold);
+  border-right: 0;
+}
+#battery-guide {
+  --guide-x: -50%;
+  left: calc(50% + 3px);
+  top: 210px;
+}
+#battery-guide::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  margin-left: -6px;
+  border: 6px solid transparent;
+  border-bottom-color: var(--gold);
+  border-top: 0;
+}
 #cart-back.guided { animation: targetGlow 1.4s ease-in-out infinite; }
 #power-switch.guided { animation: targetGlow 1.4s ease-in-out infinite; }
+.rear-battery-door.guided .rear-latch { animation: targetGlow 1.4s ease-in-out infinite; }
+.battery-bay.guided {
+  outline: 2px solid var(--gold);
+  outline-offset: -5px;
+  animation: targetGlow 1.4s ease-in-out infinite;
+}
 @keyframes guideBob {
   0%, 100% { transform: translate(var(--guide-x), 0); }
   50% { transform: translate(var(--guide-x), -3px); }
 }
+@keyframes powerGuideBob {
+  0%, 100% { transform: translate(var(--guide-x), calc(-50% + 3px)); }
+  50% { transform: translate(var(--guide-x), calc(-50% - 3px)); }
+}
+@keyframes viewGuideBob {
+  0%, 100% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
+}
 @keyframes targetGlow {
   50% { filter: brightness(1.5) drop-shadow(0 0 5px var(--gold)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .control-guide,
+  #cart-back.guided,
+  #power-switch.guided,
+  .rear-battery-door.guided .rear-latch,
+  .battery-bay.guided { animation: none; }
 }
 
 /* ============================ CARTRIDGE ============================ */
@@ -1749,7 +2191,8 @@ html, body {
   to   { transform: translate(-50%, 0); }
 }
 
-#cart-tray {
+#cart-tray,
+#battery-tray {
   position: absolute;
   inset: 0;
   z-index: 50;
@@ -1758,7 +2201,8 @@ html, body {
   justify-content: center;
   background: rgba(7,8,18,.82);
 }
-#cart-tray.hidden { display: none; }
+#cart-tray.hidden,
+#battery-tray.hidden { display: none; }
 .tray-panel {
   background: #14152b;
   border: 3px solid #3f4066;
@@ -1768,6 +2212,127 @@ html, body {
   max-width: calc(100vw - 56px);
 }
 .tray-head { font-size: 12px; color: #e8e9f4; letter-spacing: 2px; margin-bottom: 16px; }
+#battery-options {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 16px;
+  justify-content: center;
+}
+.battery-tray-panel { width: min-content; min-width: 548px; }
+.battery-option {
+  appearance: none;
+  position: relative;
+  width: 150px;
+  height: 108px;
+  padding: 0;
+  overflow: visible;
+  color: #181929;
+  background: linear-gradient(#cdcedd, #a5a6bc);
+  border: 3px solid #101124;
+  border-radius: 10px 10px 6px 6px;
+  font-family: Inter, Aptos, "Segoe UI", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  cursor: pointer;
+  transition: transform .1s ease, box-shadow .1s ease;
+}
+.battery-option:hover:not(:disabled) { transform: translateY(-4px); }
+.battery-option:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+.battery-option.current { outline: 3px solid var(--gold); }
+.battery-option:disabled {
+  cursor: not-allowed;
+  filter: saturate(.28) brightness(.68);
+}
+.battery-option.current:disabled { filter: saturate(.62) brightness(.82); }
+.battery-option.current::after {
+  content: 'INSTALLED';
+  position: absolute;
+  right: 5px;
+  top: 4px;
+  z-index: 3;
+  padding: 3px 5px;
+  color: #101124;
+  background: var(--gold);
+  border: 1px solid #101124;
+  border-radius: 3px;
+  font: 900 6px/1 Inter, Aptos, "Segoe UI", Arial, sans-serif;
+  letter-spacing: .7px;
+}
+.battery-option-cell {
+  position: absolute;
+  left: 14px;
+  width: 120px;
+  height: 30px;
+  border: 1px solid #080914;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 3px 2px rgba(255,255,255,.28),
+    inset 0 -4px 4px rgba(0,0,0,.48),
+    0 2px 3px rgba(0,0,0,.55);
+}
+.battery-option-cell.top { top: 12px; }
+.battery-option-cell.bottom { top: 46px; }
+.battery-option-cell::before,
+.battery-option-cell::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  width: 6px;
+  height: 14px;
+  background: linear-gradient(90deg, #777982, #f1f1ef 48%, #777982);
+  border: 1px solid #363740;
+  border-radius: 2px;
+}
+.battery-option-cell.top::after { left: calc(100% + 1px); }
+.battery-option-cell.top::before { display: none; }
+.battery-option-cell.bottom::before { right: calc(100% + 1px); }
+.battery-option-cell.bottom::after { display: none; }
+.battery-option-cell > span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-shadow: 0 1px rgba(0,0,0,.25);
+}
+.battery-option-cell.top > span { transform: rotate(180deg); }
+.battery-option.codex .battery-option-cell {
+  color: #fff;
+  background:
+    radial-gradient(ellipse 3px 50% at calc(28% - 3px) 50%, #2459e0 0 98%, transparent 100%),
+    linear-gradient(90deg, #2459e0 0 28%, #111217 28% 100%);
+}
+.battery-option.claude .battery-option-cell {
+  color: #141413;
+  background:
+    radial-gradient(ellipse 3px 50% at calc(28% - 3px) 50%, #d97757 0 98%, transparent 100%),
+    linear-gradient(90deg, #d97757 0 28%, #f0eee6 28% 100%);
+}
+.battery-option-caption {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 7px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1.2px;
+}
+.battery-option.eject {
+  color: #f0d9de;
+  background: linear-gradient(#3b2833, #241c2a);
+  border-color: #844758;
+}
+.battery-eject-icon {
+  position: absolute;
+  left: 50%;
+  top: 17px;
+  transform: translateX(-50%);
+  color: #ff7187;
+  font: 900 42px/1 Inter, Aptos, "Segoe UI", Arial, sans-serif;
+}
+.battery-tray-hint { margin-top: 16px; }
 #tray-carts { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
 .cart-card {
   position: relative;
