@@ -90,11 +90,17 @@ assert.match(
 );
 assert.match(
   html,
-  /id="battery-bay"[\s\S]*?<button id="battery-lid-slot"[^>]*aria-label="Replace battery cover"/,
-  "The open bay must retain the centered receptacle used to replace the cover",
+  /id="battery-compartment"[\s\S]*?<button id="battery-lid-slot"[^>]*aria-label="Replace battery cover"[\s\S]*?<div id="battery-bay"/,
+  "The cover receptacle must remain a stationary sibling in front of the battery bay",
 );
 
 assert.match(block(".battery-compartment"), /position:\s*absolute/, "The battery bay must belong to the rear shell");
+assert.match(block(".battery-bay"), /inset:\s*14px 0 22px/, "The bay must sit fully behind the closed cover");
+assert.doesNotMatch(
+  css,
+  /\.battery-compartment:not\(\.open\)\s+\.battery-bay\s*\{[^}]*visibility:\s*hidden/s,
+  "The physical bay must never disappear while the cover is moving",
+);
 assert.match(
   block(".battery-compartment.open"),
   /overflow:\s*visible/,
@@ -153,15 +159,24 @@ assert.match(css, /\.spring-coil\s*\{[^}]*stroke:/s, "The conical spring wire mu
 assert.match(block(".battery-contact.leaf"), /background:/, "The flat electrical leads must be visible");
 assert.ok(pixels(".battery-pack", "left") <= 30, "Reference AA cells must reach the compact end contacts");
 assert.ok(pixels(".battery-pack", "width") >= 260, "Reference AA cells must span the molded compartment");
-assert.equal(pixels(".battery-pack", "top"), 14, "The cells must leave room for the cover's centered tab opening");
-assert.equal(pixels(".battery-contact.top-left", "top"), 21, "The upper spring must align with the AA barrel");
-assert.equal(pixels(".battery-contact.top-right", "top"), 23, "The upper positive lead must align with its nub");
-assert.equal(pixels(".battery-contact.bottom-left", "top"), 73, "The lower positive lead must align with its nub");
-assert.equal(pixels(".battery-contact.bottom-right", "top"), 71, "The lower spring must align with the AA barrel");
+assert.equal(pixels(".battery-pack", "top"), 10, "The cells must begin below the fixed cover receptacle");
+assert.equal(pixels(".battery-contact.top-left", "top"), 17, "The upper spring must align with the AA barrel");
+assert.equal(pixels(".battery-contact.top-right", "top"), 19, "The upper positive lead must align with its nub");
+assert.equal(pixels(".battery-contact.bottom-left", "top"), 69, "The lower positive lead must align with its nub");
+assert.equal(pixels(".battery-contact.bottom-right", "top"), 67, "The lower spring must align with the AA barrel");
 const lidSlot = block(".battery-lid-slot");
 assert.match(lidSlot, /position:\s*absolute/, "The cover tab opening must stay attached to the battery bay");
 assert.match(lidSlot, /left:\s*50%/, "The cover tab opening must stay centered");
+assert.match(lidSlot, /top:\s*1px/, "The cover receptacle must occupy the exact resting position of the tab box");
+assert.match(lidSlot, /z-index:\s*2/, "The receptacle must stay behind the moving cover and above the bay");
+assert.match(lidSlot, /width:\s*72px/, "The cover receptacle must match the tab box width");
+assert.match(lidSlot, /height:\s*27px/, "The cover receptacle must match the tab box height");
 assert.match(lidSlot, /background:/, "The cover tab receptacle must remain visibly open");
+assert.doesNotMatch(
+  css,
+  /\.battery-compartment\.(?:open|opening)\s+\.battery-lid-slot\s*\{[^}]*(?:transform|visibility|display):/s,
+  "The fixed tab receptacle must never move or disappear during the animation",
+);
 assert.match(css, /(?:^|\n)\.rear-brand\s*\{[^}]*display:\s*none/s, "The reference cover has no embossed wordmark");
 const batteryLabel = block(".aa-battery-label");
 assert.match(batteryLabel, /font-family:\s*[^;]*sans-serif/, "Battery labels must use smooth product typography");
