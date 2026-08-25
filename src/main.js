@@ -53,6 +53,8 @@ import {
   const batteryOptions = $("battery-options");
   const batteryEject = $("battery-eject");
   const powerSwitch = $("power-switch");
+  const rearPowerSwitch = $("rear-power-switch");
+  const powerSwitches = [powerSwitch, rearPowerSwitch];
   const powerLed = document.querySelector(".power-led");
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
@@ -91,6 +93,14 @@ import {
     );
     const snapped = available >= 1 ? Math.floor(available * 2) / 2 : Math.max(0.35, available);
     scaleEl.style.zoom = snapped;
+  }
+
+  function setPhysicalPowerSwitch({ on, checking, label }) {
+    for (const switchControl of powerSwitches) {
+      switchControl.classList.toggle("on", on);
+      switchControl.classList.toggle("checking", checking);
+      switchControl.setAttribute("aria-label", label);
+    }
   }
 
   async function drawFrame() {
@@ -306,11 +316,10 @@ import {
     hideDeviceBoot();
     lastPowerFailure = installedProvider ? `${providerLabel()} NOT READY` : "NO BATTERIES";
     renderProviderBatteries();
-    powerSwitch.classList.remove("on", "checking");
+    setPhysicalPowerSwitch({ on: false, checking: false, label: `Power switch, off: ${lastPowerFailure}` });
     batteryCompartment.classList.remove("locked");
     powerLed.classList.remove("off", "checking");
     powerLed.classList.add("rejected");
-    powerSwitch.setAttribute("aria-label", `Power switch, off: ${lastPowerFailure}`);
     await invoke("engine_power", { powered: false }).catch(() => {});
     await wait(POWER_REJECTION_MS);
     powerLed.classList.remove("rejected");
@@ -424,10 +433,9 @@ import {
       powered = true;
       lastPowerFailure = "";
       renderProviderBatteries();
-      powerSwitch.classList.add("on", "checking");
+      setPhysicalPowerSwitch({ on: true, checking: true, label: "Power switch, checking AI batteries" });
       powerLed.classList.remove("off", "rejected");
       powerLed.classList.add("checking");
-      powerSwitch.setAttribute("aria-label", "Power switch, checking AI batteries");
       batteryCompartment.classList.add("locked");
       const providerBootGeneration = showDeviceBoot({ hold: true });
       updateControlGuides();
@@ -440,9 +448,8 @@ import {
           await invoke("engine_power", { powered: false }).catch(() => {});
           return;
         }
-        powerSwitch.classList.remove("checking");
+        setPhysicalPowerSwitch({ on: true, checking: false, label: `Power on, ${providerLabel()} batteries ready` });
         powerLed.classList.remove("checking");
-        powerSwitch.setAttribute("aria-label", `Power on, ${providerLabel()} batteries ready`);
         releaseDeviceBoot(providerBootGeneration);
       } catch (error) {
         if (generation === powerGeneration && powered) await rejectPowerOn(error);
@@ -456,11 +463,10 @@ import {
     }
 
     powered = false;
-    powerSwitch.classList.remove("on", "checking");
+    setPhysicalPowerSwitch({ on: false, checking: false, label: "Power switch, off" });
     powerLed.classList.remove("checking", "rejected");
     powerLed.classList.add("off");
     batteryCompartment.classList.remove("locked");
-    powerSwitch.setAttribute("aria-label", "Power switch, off");
     hideDeviceBoot();
     updateControlGuides();
     try {
@@ -468,7 +474,7 @@ import {
     } catch (error) {
       if (generation === powerGeneration) {
         powered = true;
-        powerSwitch.classList.add("on");
+        setPhysicalPowerSwitch({ on: true, checking: false, label: "Power on; shutdown failed" });
         powerLed.classList.remove("off");
         batteryCompartment.classList.add("locked");
         showTrayError(error);
@@ -986,16 +992,18 @@ import {
     setBatteryDoorOpen(true);
   });
 
-  $("power-switch").addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setPower(!powered);
-  });
-  $("power-switch").addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    setPower(!powered);
-  });
+  for (const switchControl of powerSwitches) {
+    switchControl.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setPower(!powered);
+    });
+    switchControl.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      setPower(!powered);
+    });
+  }
   $("cart-back").addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     trayOpen ? closeTray() : openTray();

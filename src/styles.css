@@ -2006,6 +2006,21 @@ html, body {
 }
 #power-switch.on { top: 70px; }
 #power-switch.checking { border-color: #9c7427; }
+#rear-power-switch {
+  position: absolute;
+  left: -12px;
+  top: 96px;
+  width: 9px;
+  height: 26px;
+  background: linear-gradient(#d6d7e5, #a9aabf);
+  border: 3px solid #101124;
+  border-radius: 8px 0 0 8px;
+  cursor: pointer;
+  z-index: 5;
+  transition: top .12s;
+}
+#rear-power-switch.on { top: 70px; }
+#rear-power-switch.checking { border-color: #9c7427; }
 .ps-nub { display: none; }
 
 @media (prefers-reduced-motion: reduce) {

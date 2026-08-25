@@ -57,8 +57,8 @@ assert.match(
 assert.match(adapter, /powerGuide\.classList\.toggle\("switching-off", switchingOff\)/, "Power guide does not follow the switch position");
 assert.match(
   adapter,
-  /\$\("power-switch"\)\.addEventListener\("pointerdown", \(event\) => \{\s*event\.preventDefault\(\);/,
-  "Mouse activation must not leave the power switch focused for the next keystroke",
+  /for \(const switchControl of powerSwitches\)[\s\S]*?switchControl\.addEventListener\("pointerdown", \(event\) => \{\s*event\.preventDefault\(\);/,
+  "Mouse activation from either device face must not leave its power switch focused",
 );
 
 const switchOffTop = pixels(block("#power-switch"), "top", "off switch top");
