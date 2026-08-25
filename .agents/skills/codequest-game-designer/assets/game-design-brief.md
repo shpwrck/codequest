@@ -4,7 +4,26 @@
 
 **Pitch:** [One paragraph: player fantasy, repeated action, and payoff.]
 
-**Player outcome:** [What the player learns, practices, or accomplishes.]
+**Learner:** [Who the player is, relevant prior knowledge, and starting skill.]
+
+**Learning objective:** [Observable statement: after playing, the learner can
+explain, distinguish, predict, construct, diagnose, or apply what?]
+
+**Target mental model:** [The durable concept or relationship the player should
+carry away.]
+
+**Likely misconception:** [The plausible wrong model the game should expose.]
+
+**Evidence of learning:** [What player action demonstrates learning beyond
+score, completion, speed, or survival?]
+
+**Mastery criterion:** [How much consistent or high-quality evidence is enough
+to consider the objective achieved?]
+
+**Transfer task:** [What new situation requires applying the same concept
+without copying the original solution?]
+
+**Player goal:** [What the player accomplishes inside the fiction.]
 
 **Design pillars**
 
@@ -22,16 +41,30 @@
 - Success: [condition and feedback]
 - Failure/recovery: [condition, consequence, retry path]
 
+## Pedagogy map
+
+| Stage | Player experience | Concept or skill | Evidence/feedback | Scaffolding |
+|---|---|---|---|---|
+| Introduction | | | | |
+| Scaffolded practice | | | | |
+| Independent practice | | | | |
+| Assessment | | | | |
+| Transfer | | | | |
+
 ## Scene storyboard
 
-| ID | Purpose | Entry state | Player actions | State/feedback | Exit and next scenes | Mechanics | Art |
-|---|---|---|---|---|---|---|---|
-| `scene-id` | | | | | | `mechanic-id` | `art-id` |
+| ID | Purpose | Learning role | Entry state | Player actions | State/feedback | Exit and next scenes | Mechanics | Art |
+|---|---|---|---|---|---|---|---|---|
+| `scene-id` | | | | | | | `mechanic-id` | `art-id` |
 
 ## Mechanics
 
 ### `mechanic-id` — [Name]
 
+- Instructional role:
+- Target concept or skill:
+- Misconception diagnosed:
+- Evidence of learning:
 - Decision created:
 - Inputs:
 - Rules:

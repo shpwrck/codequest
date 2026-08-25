@@ -1,13 +1,13 @@
 ---
 name: codequest-game-designer
-description: Design, revise, and polish CODE QUEST game experiences as connected storyboards, closed finite-state machines, gameplay and progression systems, visual and sound requirements, and valid CODEQUEST.toml manifests. Use this skill whenever the user asks to storyboard a quiz or quest, invent or change a game type, plan scenes or game flow, define gameplay rules, identify art, animation, audio, or UI needs, audit whether a game feels finished, remove dead or open states, make progression perceptible, or author/revise CODEQUEST.toml—even when they call it a game concept, flow, pitch, finishing pass, or content plan instead of a design task.
+description: Design, revise, and polish pedagogy-first CODE QUEST game experiences as connected storyboards, closed finite-state machines, gameplay and progression systems, visual and sound requirements, and valid CODEQUEST.toml manifests. Use this skill whenever the user asks to storyboard a quiz or quest, invent or change a game type, plan scenes or game flow, define gameplay rules, identify what a game should teach or how it demonstrates learning, identify art, animation, audio, or UI needs, audit whether a game feels finished, remove dead or open states, make progression perceptible, or author/revise CODEQUEST.toml—even when they call it a game concept, flow, pitch, finishing pass, or content plan instead of a design task.
 ---
 
 # CODE QUEST game designer
 
 Turn a game idea into one coherent, inspectable design graph. Produce both a
 human-readable brief and the engine manifest so creative intent, asset work,
-and implementation stay linked.
+pedagogy, and implementation stay linked.
 
 ## Load the project contract first
 
@@ -31,13 +31,64 @@ meet an illustrated asset-backed reference.
 If the repository contract differs from examples in this skill, the repository
 contract wins. Never invent fields or game types that the current schema rejects.
 
+## Make pedagogy the spine
+
+Every CODE QUEST game must teach something about the selected software project.
+Establish the pedagogical spine before choosing a genre, reference game, story,
+or reward system. Theme can motivate practice, but theme alone is not teaching.
+
+Define these elements before treating a game concept as selected or
+implementation-ready:
+
+- Learner: the intended player and relevant prior knowledge
+- Learning objective: an observable statement of what the player will be able
+  to explain, distinguish, predict, construct, diagnose, or apply
+- Target mental model: the durable concept or relationship the game should
+  leave in the player's head
+- Likely misconception: a plausible wrong model the design should expose
+- Evidence of learning: the player action or explanation that demonstrates the
+  objective, beyond score, completion, speed, or survival alone
+- Mastery criterion: the amount, consistency, or quality of evidence needed to
+  consider the objective achieved
+- Transfer: a new situation in which the player must apply the same concept
+  without copying the original solution
+
+For an exploratory brainstorm, give every candidate concept at least a
+provisional learning objective and evidence of learning. If the learning target
+is absent, propose one explicitly before proposing the game loop. Ask one
+concise question only when different plausible targets would materially change
+the mechanic or content scope.
+
+Keep the lesson and play inseparable:
+
+- Make the core player verb rehearse the target skill. If the repository
+  knowledge can be removed while the game remains equally playable, the
+  mechanic is decorative rather than pedagogical.
+- Use feedback to explain the consequence of the player's mental model. A
+  mistake should reveal why a choice or construction failed and support an
+  informed retry, not merely remove health or points.
+- Sequence introduction, scaffolded practice, independent practice, and
+  transfer. Fade assistance as competence grows.
+- Increase conceptual complexity during progression. Faster timers, larger
+  numbers, and harsher penalties do not constitute educational progression by
+  themselves.
+- Distinguish game performance from learning evidence. Prevent random guessing,
+  superficial pattern matching, or unrelated dexterity from being the easiest
+  path to apparent mastery.
+- Use fiction, art, motion, sound, and rewards to direct attention toward the
+  concept and make feedback memorable without obscuring the underlying model.
+
 ## Establish the design target
 
 Extract known answers from the conversation and existing files before asking
 questions. Resolve these design inputs:
 
 - Player fantasy: who the player feels like they are
-- Player outcome: what the player should learn, practice, or accomplish
+- Learner starting point: relevant prior knowledge and likely misconceptions
+- Learning objective: the observable knowledge or skill the player develops
+- Evidence and transfer: how the game proves learning and tests application in
+  a new situation
+- Player goal: what the player accomplishes inside the fiction
 - Game loop: the repeated decision/action/reward cycle
 - Session shape: approximate duration, ending, replay motivation
 - Platform constraints: controls, resolution, text limits, accessibility
@@ -51,8 +102,11 @@ draft something concrete the user can react to.
 
 ### 1. Frame the experience
 
-Write a one-paragraph pitch, three design pillars, the learning/playing outcome,
-and explicit non-goals. Favor observable player behavior over mood words alone.
+Write a one-paragraph pitch, three design pillars, the learner and starting
+point, learning objective, target mental model, likely misconception, evidence
+of learning, mastery criterion, transfer task, player goal, and explicit
+non-goals. Favor observable player behavior over mood words or claims that the
+player will "understand" something.
 
 ### 2. Define the gameplay loop
 
@@ -63,9 +117,13 @@ Describe:
 - Success, failure, recovery, and replay conditions
 - Resources and state the player can understand
 - Inputs and feedback for each player decision
+- How the loop introduces, scaffolds, practices, assesses, and transfers the
+  learning objective
 
 Every mechanic should create a decision, enforce a rule, or communicate useful
-feedback. Remove mechanics that only rename a screen transition.
+feedback. Each core mechanic should also rehearse, reveal, or assess part of the
+learning objective. Remove mechanics that only rename a screen transition or
+produce performance unrelated to learning.
 
 ### 3. Storyboard the scenes
 
@@ -73,6 +131,7 @@ Give each scene a stable kebab-case ID. For every scene capture:
 
 - Purpose in the player's emotional or learning arc
 - Entry state and information the player already has
+- Learning objective practiced or assessed in the scene
 - Player goal and available actions
 - Mechanics active in the scene
 - State changes, feedback, and exit conditions
@@ -87,7 +146,10 @@ has a deliberate exit or replay purpose.
 Use one stable ID per reusable mechanic. Write rules in testable language. Pair
 each rule with the input that invokes it and feedback that lets the player
 understand the result. Call out timing, scoring, difficulty, failure, and edge
-cases when they matter.
+cases when they matter. For every core mechanic, state its instructional role,
+the misconception its failure feedback diagnoses, and the observable evidence
+that play produces. Do not count points, completion, or survival as evidence
+unless the mechanic makes success depend on the target knowledge or skill.
 
 ### 5. Build the art requirement ledger
 
@@ -214,6 +276,18 @@ drift.
 
 Then perform a traceability pass:
 
+- Every game names a learner, learning objective, target mental model, likely
+  misconception, evidence of learning, mastery criterion, and transfer task.
+- Every learning objective traces through introduction, scaffolded practice,
+  independent practice, feedback, assessment, and transfer; deliberately
+  omitted stages are justified.
+- Every core mechanic rehearses or assesses the learning objective, and the
+  easiest successful strategy cannot bypass the intended knowledge through
+  guessing, superficial pattern matching, or unrelated dexterity.
+- Failure feedback identifies the consequence of the player's misconception
+  and enables an informed retry.
+- Progression increases conceptual independence or complexity, not only speed,
+  punishment, health, score, or visual intensity.
 - Every start/transition target resolves and every scene is reachable.
 - Every transition signal is emitted by its scene's handler.
 - Every scene mechanic and art reference resolves.
