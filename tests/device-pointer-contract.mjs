@@ -34,6 +34,11 @@ for (const control of ["cart", "power", "battery", "view"]) {
 assert.match(css, /#cart-guide::before\s*\{[^}]*border-bottom-color:/s, "Cartridge guide has no arrow pointer");
 assert.match(css, /#power-guide::after\s*\{[^}]*border-left-color:/s, "Power guide has no arrow pointer");
 assert.match(css, /#battery-guide::before\s*\{[^}]*border-bottom-color:/s, "Battery guide has no arrow pointing to the lid tab");
+assert.match(
+  block("#battery-guide"),
+  /left:\s*calc\(50% \+ 3px\)/,
+  "The battery-tab guide must compensate for the rear shell border and center on the latch",
+);
 assert.match(css, /#view-guide::after\s*\{[^}]*border-left-color:/s, "Battery-check guide must point toward the front/back toggle");
 assert.match(adapter, /function updateControlGuides\(\)/, "Guide visibility is not synchronized with device state");
 assert.match(adapter, /cartGuide\.classList\.toggle\("hidden", !needsCart\)/, "Cartridge guide never becomes visible");

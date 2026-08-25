@@ -2106,7 +2106,7 @@ html, body {
 }
 #battery-guide {
   --guide-x: -50%;
-  left: 50%;
+  left: calc(50% + 3px);
   top: 210px;
 }
 #battery-guide::before {
