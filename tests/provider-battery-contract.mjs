@@ -68,6 +68,10 @@ assert.equal(
   2,
   "Each negative lead must contain a conical coil",
 );
+assert.match(html, /battery-contact spring top-left/, "The top AA spring must match the reference's negative end");
+assert.match(html, /battery-contact leaf top-right/, "The top AA positive lead must match the reference");
+assert.match(html, /battery-contact leaf bottom-left/, "The lower AA positive lead must match the reference");
+assert.match(html, /battery-contact spring bottom-right/, "The lower AA spring must match the reference's negative end");
 assert.equal(
   [...html.matchAll(/class="battery-logo|class="codex-logo-mark/g)].length,
   0,
@@ -118,12 +122,22 @@ const batteryBody = block(".aa-battery");
 assert.match(batteryBody, /linear-gradient\(to bottom/, "AA cells need cylindrical cross-body shading");
 assert.match(batteryBody, /border-radius:\s*4px/, "AA cells need the reference's squared side-profile barrel");
 const positiveNub = css.match(
-  /\.aa-battery\.top::before,\s*\.aa-battery\.bottom::after\s*\{([\s\S]*?)\}/,
+  /\.aa-battery\.top::after,\s*\.aa-battery\.bottom::before\s*\{([\s\S]*?)\}/,
 )?.[1] || "";
 assert.match(positiveNub, /width:\s*11px/, "Positive AA terminals need a distinct metal nub");
 assert.match(positiveNub, /height:\s*21px/, "Positive AA terminal nubs must remain compact");
 assert.match(positiveNub, /border-radius:\s*3px/, "Positive AA terminal nubs need softly rounded square edges");
-assert.doesNotMatch(css, /\.aa-battery\.(?:top::before|bottom::after)\s*\{[^}]*50%/s, "Positive AA terminal nubs must not be semicircular caps");
+assert.doesNotMatch(css, /\.aa-battery\.(?:top::after|bottom::before)\s*\{[^}]*50%/s, "Positive AA terminal nubs must not be semicircular caps");
+assert.match(
+  css,
+  /(?:^|\n)\.aa-battery\.top::after\s*\{\s*left:\s*calc\(100% \+ 1px\)/,
+  "The top battery's positive nub must begin outside the barrel edge",
+);
+assert.match(
+  css,
+  /(?:^|\n)\.aa-battery\.bottom::before\s*\{\s*right:\s*calc\(100% \+ 1px\)/,
+  "The reversed battery's positive nub must begin outside the barrel edge",
+);
 assert.match(block(".battery-contact.spring"), /overflow:\s*visible/, "The conical springs must remain fully visible");
 assert.match(css, /\.spring-coil\s*\{[^}]*stroke:/s, "The conical spring wire must be visibly drawn");
 assert.match(block(".battery-contact.leaf"), /background:/, "The flat electrical leads must be visible");
@@ -137,9 +151,9 @@ assert.match(batteryLabel, /image-rendering:\s*auto/, "Battery labels must opt o
 assert.match(batteryLabel, /border-radius:\s*3px/, "The printed wrapper must preserve the squared reference silhouette");
 assert.match(css, /\.aa-battery-label::after\s*\{[^}]*linear-gradient\(to bottom/s, "The wrapper needs a curved barrel highlight");
 assert.match(
-  block(".aa-battery.bottom .aa-battery-label"),
+  block(".aa-battery.top .aa-battery-label"),
   /rotate\(180deg\)/,
-  "One battery label must be upside down",
+  "The reference's top battery label must be upside down",
 );
 assert.match(css, /\.battery-pack\.codex[\s\S]*?#2459e0/, "Codex batteries must use the blue brand treatment");
 assert.match(css, /\.battery-pack\.claude[\s\S]*?#d97757/i, "Claude batteries must use the coral brand treatment");
@@ -163,10 +177,18 @@ assert.deepEqual(
   ["#d97757", "#f0eee6"],
   "The Claude battery choice must match the installed two-tone treatment",
 );
+for (const selector of [
+  ".battery-pack.codex .aa-battery-label",
+  ".battery-pack.claude .aa-battery-label",
+]) {
+  assert.match(
+    block(selector),
+    /radial-gradient\(ellipse 4px 50% at calc\(28% - 4px\) 50%/,
+    `${selector} must curve its colored wrapper band around the cylinder`,
+  );
+}
 for (const [selector, color, neutral] of [
-  [".battery-pack.codex .aa-battery-label", "#2459e0", "#111217"],
   [".battery-choice.codex", "#2459e0", "#111217"],
-  [".battery-pack.claude .aa-battery-label", "#d97757", "#f0eee6"],
   [".battery-choice.claude", "#d97757", "#f0eee6"],
 ]) {
   assert.match(
