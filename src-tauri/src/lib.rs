@@ -831,6 +831,22 @@ fn generate_and_save_questions(
     Ok(questions)
 }
 
+fn load_verified_question_batch_with<F>(
+    path: &std::path::Path,
+    level: u32,
+    count: usize,
+    provider_state: &AiProviderState,
+    generate: &F,
+) -> Vec<QQuestion>
+where
+    F: Fn(&std::path::Path, u32, usize, AiProvider) -> Result<Vec<QQuestion>, String>,
+{
+    let Some(provider) = provider_state.ready_provider() else {
+        return Vec::new();
+    };
+    generate(path, level, count, provider).unwrap_or_default()
+}
+
 fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, String> {
     let mode = if cartridge.mode == "custom" {
         engine::CartridgeMode::Custom
@@ -998,14 +1014,15 @@ pub fn run() {
         if environment_flag_enabled(std::env::var("CQA_NO_AI").ok().as_deref()) {
             return Vec::new();
         }
-        let Some(provider) = question_provider_state.ready_provider() else {
-            return Vec::new();
-        };
-        let questions =
-            generate_and_save_questions(std::path::Path::new(&path), level, count, provider)
-                .unwrap_or_default();
-        let answered_questions =
-            load_answered_questions(std::path::Path::new(&path)).unwrap_or_default();
+        let cartridge_path = std::path::Path::new(&path);
+        let questions = load_verified_question_batch_with(
+            cartridge_path,
+            level,
+            count,
+            &question_provider_state,
+            &generate_and_save_questions,
+        );
+        let answered_questions = load_answered_questions(cartridge_path).unwrap_or_default();
         questions
             .into_iter()
             .filter(|question| !answered_questions.contains(&question_identity(&question.q)))
@@ -1083,6 +1100,52 @@ mod question_policy_tests {
         providers.select(None).unwrap();
         assert_eq!(providers.selected(), None);
         assert_eq!(providers.ready_provider(), None);
+    }
+
+    #[test]
+    fn verified_battery_provider_generates_its_own_new_questions() {
+        let repo = temporary_git_repo();
+        let providers = AiProviderState::default();
+        let calls = std::sync::Mutex::new(Vec::new());
+        let generate = |path: &std::path::Path, level: u32, _count: usize, provider: AiProvider| {
+            calls.lock().unwrap().push(provider);
+            let generated = vec![question(
+                &format!("WHAT DOES {} GENERATE?", provider.name()),
+                &[
+                    &format!("NEW {} QUESTIONS", provider.name()),
+                    "THE OTHER MODEL'S QUESTIONS",
+                    "ONLY SAVED QUESTIONS",
+                    "NO QUESTIONS",
+                ],
+            )];
+            persist_ai_question_batch(path, level, &generated)?;
+            Ok(generated)
+        };
+
+        assert!(load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).is_empty());
+
+        providers.select(Some(AiProvider::Codex)).unwrap();
+        assert!(load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).is_empty());
+        providers.mark_verified(AiProvider::Codex).unwrap();
+        let codex = load_verified_question_batch_with(&repo, 1, 1, &providers, &generate);
+        assert_eq!(codex[0].q, "WHAT DOES CODEX GENERATE?");
+
+        providers.select(Some(AiProvider::Claude)).unwrap();
+        assert!(load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).is_empty());
+        providers.mark_verified(AiProvider::Claude).unwrap();
+        let claude = load_verified_question_batch_with(&repo, 1, 1, &providers, &generate);
+        assert_eq!(claude[0].q, "WHAT DOES CLAUDE GENERATE?");
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [AiProvider::Codex, AiProvider::Claude]
+        );
+        let batches = load_saved_question_batches(&repo).unwrap();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].questions[0].q, "WHAT DOES CODEX GENERATE?");
+        assert_eq!(batches[1].questions[0].q, "WHAT DOES CLAUDE GENERATE?");
+
+        remove_temporary_repo(repo);
     }
 
     #[test]
