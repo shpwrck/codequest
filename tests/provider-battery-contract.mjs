@@ -38,6 +38,7 @@ for (const id of [
   "battery-chooser",
   "battery-status",
   "battery-door",
+  "battery-guide",
   "battery-tray",
   "battery-options",
   "battery-eject",
@@ -64,9 +65,10 @@ assert.match(
 );
 assert.match(
   html,
-  /<button id="battery-chooser"[^>]*>[^<]*SELECT BATTERIES[^<]*<\/button>/,
-  "An empty physical bay must open the battery view instead of embedding provider buttons",
+  /<button id="battery-chooser"[^>]*><\/button>/,
+  "The empty physical bay must be the selection control without an artificial button label",
 );
+assert.doesNotMatch(html, />\s*SELECT BATTERIES\s*</, "The open bay must not display a SELECT BATTERIES label");
 assert.equal(
   [...html.matchAll(/class="aa-battery /g)].length,
   2,
@@ -290,6 +292,9 @@ assert.match(
   "The stationary tab opening must let the user replace the cover",
 );
 assert.match(adapter, /batteryLidSlot\.inert = !batteryDoorOpen/, "The cover return control must only activate while open");
+assert.match(block(".battery-chooser"), /inset:\s*0/, "The invisible empty-bay control must cover the whole physical bay");
+assert.match(block(".battery-chooser"), /background:\s*transparent/, "The empty-bay control must not cover the physical contacts");
+assert.match(block(".battery-bay.guided"), /outline:\s*2px solid var\(--gold\)/, "The empty bay needs a yellow guided outline");
 assert.match(block("#battery-tray"), /position:\s*absolute/, "The battery menu must occupy a separate view");
 assert.match(block("#battery-tray"), /inset:\s*0/, "The battery view must dim the entire device");
 assert.match(block("#battery-tray"), /z-index:\s*50/, "The battery view must sit above the physical device");
@@ -297,6 +302,18 @@ assert.match(block("#battery-tray"), /background:\s*rgba\(7,8,18,\.82\)/, "The b
 assert.match(adapter, /let batteryTrayOpen = false/, "The battery view needs explicit open state");
 assert.match(adapter, /function openBatteryTray\(/, "The battery view cannot be opened");
 assert.match(adapter, /function closeBatteryTray\(/, "The battery view cannot be closed");
+assert.match(block("#battery-options"), /flex-wrap:\s*nowrap/, "Codex, Claude, and eject must stay on one line");
+assert.match(
+  adapter,
+  /choice\.disabled = hasProvider/,
+  "Provider packs must be unavailable until the installed batteries are ejected",
+);
+assert.match(adapter, /batteryEject\.disabled = !hasProvider/, "Eject must be unavailable when the bay is already empty");
+assert.match(
+  adapter,
+  /if \(nextProvider && installedProvider\)[\s\S]*?return false/,
+  "The provider state boundary must reject replacement before ejection",
+);
 assert.match(
   adapter,
   /batteryPack\.addEventListener\("click"[\s\S]*?openBatteryTray\(\)/,
@@ -314,9 +331,13 @@ assert.match(
 );
 assert.match(
   adapter,
-  /batteryEject\.addEventListener\("click"[\s\S]*?setInstalledProvider\(null\)[\s\S]*?closeBatteryTray\(\)/,
-  "The battery view must eject the installed pack and close",
+  /batteryEject\.addEventListener\("click"[\s\S]*?setInstalledProvider\(null\)[\s\S]*?querySelector\("\[data-provider\]"\)\?\.focus\(\)/,
+  "Ejecting must keep the battery view open and focus the newly available packs",
 );
+const batteryEjectHandler = adapter.match(
+  /batteryEject\.addEventListener\("click"[\s\S]*?\n  \}\);(?=\n\n  \$\("power-switch"\))/,
+)?.[0] || "";
+assert.doesNotMatch(batteryEjectHandler, /closeBatteryTray\(/, "Ejecting batteries must not close the selection view");
 assert.match(
   adapter,
   /batteryTray\.addEventListener\("pointerdown"[\s\S]*?event\.target === batteryTray[\s\S]*?closeBatteryTray\(\)/,

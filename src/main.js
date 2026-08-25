@@ -39,9 +39,11 @@ import {
   const bootOverlay = $("device-boot");
   const cartGuide = $("cart-guide");
   const powerGuide = $("power-guide");
+  const batteryGuide = $("battery-guide");
   const viewToggle = $("device-view-toggle");
   const rearSerial = $("rear-serial");
   const batteryCompartment = $("battery-compartment");
+  const batteryBay = $("battery-bay");
   const batteryDoor = $("battery-door");
   const batteryLidSlot = $("battery-lid-slot");
   const batteryPack = $("battery-pack");
@@ -182,10 +184,10 @@ import {
     batteryPack.setAttribute(
       "aria-label",
       hasProvider
-        ? `${providerLabel()} batteries installed. Press to choose or eject batteries.`
+        ? `${providerLabel()} batteries installed. Press to open the battery tray and eject them.`
         : "No AI provider batteries installed",
     );
-    if (!hasProvider) setBatteryStatus("NO BATTERIES · SELECT A PACK");
+    if (!hasProvider) setBatteryStatus("NO BATTERIES");
     else if (verifiedProvider === installedProvider) setBatteryStatus(`${providerLabel()} · READY`, "ready");
     else setBatteryStatus(`${providerLabel()} · UNTESTED`);
     if (batteryTrayOpen) renderBatteryTray();
@@ -213,6 +215,7 @@ import {
     batteryPack.inert = !batteryDoorOpen;
     batteryChooser.inert = !batteryDoorOpen;
     batteryLidSlot.inert = !batteryDoorOpen;
+    updateControlGuides();
     return true;
   }
 
@@ -227,6 +230,10 @@ import {
       return false;
     }
     const nextProvider = normalizeProvider(provider);
+    if (nextProvider && installedProvider) {
+      setBatteryStatus("EJECT INSTALLED BATTERIES FIRST", "failed");
+      return false;
+    }
     const previousProvider = installedProvider;
     const previousVerified = verifiedProvider;
     batteryChanging = true;
@@ -301,10 +308,27 @@ import {
       Boolean(installedProvider);
     const needsPower = ready && !shellBackVisible && !trayOpen && !batteryTrayOpen && !powerTransitioning
       && (Boolean(cartridge) !== powered || (!powered && !installedProvider));
+    const needsBatteryTab =
+      ready &&
+      shellBackVisible &&
+      !batteryTrayOpen &&
+      !powered &&
+      !installedProvider &&
+      !batteryDoorOpen;
+    const needsBatteryBay =
+      ready &&
+      shellBackVisible &&
+      !batteryTrayOpen &&
+      !powered &&
+      !installedProvider &&
+      batteryDoorOpen;
     cartGuide.classList.toggle("hidden", !needsCart);
     powerGuide.classList.toggle("hidden", !needsPower);
+    batteryGuide.classList.toggle("hidden", !needsBatteryTab);
     $("cart-back").classList.toggle("guided", needsCart);
     $("power-switch").classList.toggle("guided", needsPower);
+    batteryDoor.classList.toggle("guided", needsBatteryTab);
+    batteryBay.classList.toggle("guided", needsBatteryBay);
     const switchingOff = powered && !cartridge;
     const missingBatteries = !powered && !installedProvider;
     const failedProvider = !powered && Boolean(lastPowerFailure);
@@ -729,11 +753,17 @@ import {
   }
 
   function renderBatteryTray() {
+    const hasProvider = Boolean(installedProvider);
     batteryOptions.querySelectorAll("[data-provider]").forEach((choice) => {
       const current = choice.dataset.provider === installedProvider;
       choice.classList.toggle("current", current);
       choice.setAttribute("aria-pressed", String(current));
+      choice.disabled = hasProvider;
     });
+    batteryEject.disabled = !hasProvider;
+    document.querySelector(".battery-tray-hint").textContent = hasProvider
+      ? "EJECT CURRENT PACK BEFORE LOADING ANOTHER"
+      : "SELECT A PACK · ESC TO CLOSE";
   }
 
   function openBatteryTray() {
@@ -743,8 +773,10 @@ import {
     batteryTray.classList.remove("hidden");
     batteryTray.setAttribute("aria-hidden", "false");
     batteryTrayOpen = true;
-    const current = batteryOptions.querySelector(`[data-provider="${installedProvider}"]`);
-    (current || batteryOptions.querySelector("button"))?.focus();
+    const firstAction = installedProvider
+      ? batteryEject
+      : batteryOptions.querySelector("[data-provider]");
+    firstAction?.focus();
     updateControlGuides();
   }
 
@@ -794,7 +826,7 @@ import {
         event.preventDefault();
         closeBatteryTray();
       } else if (event.key === "Tab") {
-        const choices = [...batteryOptions.querySelectorAll("button")];
+        const choices = [...batteryOptions.querySelectorAll("button:not(:disabled)")];
         const firstChoice = choices[0];
         const lastChoice = choices.at(-1);
         if (event.shiftKey && document.activeElement === firstChoice) {
@@ -897,10 +929,7 @@ import {
     choice.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (choice.dataset.provider === installedProvider) {
-        closeBatteryTray();
-        return;
-      }
+      if (installedProvider) return;
       setInstalledProvider(choice.dataset.provider).then((changed) => {
         if (changed) closeBatteryTray();
       });
@@ -909,13 +938,16 @@ import {
   batteryEject.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (!installedProvider) {
-      closeBatteryTray();
-      return;
-    }
+    if (!installedProvider) return;
     setInstalledProvider(null).then((changed) => {
-      if (changed) closeBatteryTray();
+      if (changed) batteryOptions.querySelector("[data-provider]")?.focus();
     });
+  });
+
+  batteryGuide.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setBatteryDoorOpen(true);
   });
 
   $("power-switch").addEventListener("pointerdown", (event) => {

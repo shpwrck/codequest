@@ -1107,25 +1107,16 @@ html, body {
 .battery-chooser {
   appearance: none;
   position: absolute;
-  left: 50%;
-  top: 50%;
+  inset: 0;
   z-index: 4;
-  width: 124px;
-  height: 28px;
-  transform: translate(-50%, -50%);
-  color: #d5d7ee;
-  background: rgba(20,21,43,.84);
-  border: 1px dashed #777bad;
-  border-radius: 5px;
-  font: 800 9px/1 Inter, Aptos, "Segoe UI", Arial, sans-serif;
-  letter-spacing: 1.1px;
-  -webkit-font-smoothing: antialiased;
+  color: transparent;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
   cursor: pointer;
-  box-shadow: 0 2px 5px rgba(0,0,0,.55);
 }
 .battery-chooser.hidden { display: none; }
-.battery-chooser:hover { filter: brightness(1.16); }
-.battery-chooser:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.battery-chooser:focus-visible { outline: 2px solid var(--gold); outline-offset: -5px; }
 .battery-status {
   position: absolute;
   left: 0;
@@ -2078,14 +2069,42 @@ html, body {
   border-left-color: var(--gold);
   border-right: 0;
 }
+#battery-guide {
+  --guide-x: -50%;
+  left: 50%;
+  top: 210px;
+}
+#battery-guide::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  margin-left: -6px;
+  border: 6px solid transparent;
+  border-bottom-color: var(--gold);
+  border-top: 0;
+}
 #cart-back.guided { animation: targetGlow 1.4s ease-in-out infinite; }
 #power-switch.guided { animation: targetGlow 1.4s ease-in-out infinite; }
+.rear-battery-door.guided .rear-latch { animation: targetGlow 1.4s ease-in-out infinite; }
+.battery-bay.guided {
+  outline: 2px solid var(--gold);
+  outline-offset: -5px;
+  animation: targetGlow 1.4s ease-in-out infinite;
+}
 @keyframes guideBob {
   0%, 100% { transform: translate(var(--guide-x), 0); }
   50% { transform: translate(var(--guide-x), -3px); }
 }
 @keyframes targetGlow {
   50% { filter: brightness(1.5) drop-shadow(0 0 5px var(--gold)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .control-guide,
+  #cart-back.guided,
+  #power-switch.guided,
+  .rear-battery-door.guided .rear-latch,
+  .battery-bay.guided { animation: none; }
 }
 
 /* ============================ CARTRIDGE ============================ */
@@ -2152,7 +2171,7 @@ html, body {
 .tray-head { font-size: 12px; color: #e8e9f4; letter-spacing: 2px; margin-bottom: 16px; }
 #battery-options {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 16px;
   justify-content: center;
 }
@@ -2160,7 +2179,7 @@ html, body {
 .battery-option {
   appearance: none;
   position: relative;
-  width: 160px;
+  width: 150px;
   height: 108px;
   padding: 0;
   overflow: visible;
@@ -2173,9 +2192,14 @@ html, body {
   cursor: pointer;
   transition: transform .1s ease, box-shadow .1s ease;
 }
-.battery-option:hover { transform: translateY(-4px); }
+.battery-option:hover:not(:disabled) { transform: translateY(-4px); }
 .battery-option:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
 .battery-option.current { outline: 3px solid var(--gold); }
+.battery-option:disabled {
+  cursor: not-allowed;
+  filter: saturate(.28) brightness(.68);
+}
+.battery-option.current:disabled { filter: saturate(.62) brightness(.82); }
 .battery-option.current::after {
   content: 'INSTALLED';
   position: absolute;
@@ -2192,9 +2216,9 @@ html, body {
 }
 .battery-option-cell {
   position: absolute;
-  left: 15px;
-  width: 128px;
-  height: 32px;
+  left: 14px;
+  width: 120px;
+  height: 30px;
   border: 1px solid #080914;
   border-radius: 3px;
   box-shadow:
@@ -2203,12 +2227,12 @@ html, body {
     0 2px 3px rgba(0,0,0,.55);
 }
 .battery-option-cell.top { top: 12px; }
-.battery-option-cell.bottom { top: 48px; }
+.battery-option-cell.bottom { top: 46px; }
 .battery-option-cell::before,
 .battery-option-cell::after {
   content: '';
   position: absolute;
-  top: 8px;
+  top: 7px;
   width: 6px;
   height: 14px;
   background: linear-gradient(90deg, #777982, #f1f1ef 48%, #777982);
