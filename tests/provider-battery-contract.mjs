@@ -69,9 +69,9 @@ assert.equal(
   "Each negative lead must contain a conical coil",
 );
 assert.equal(
-  [...html.matchAll(/class="codex-logo-mark"/g)].length,
-  2,
-  "Both provider cells must carry the smooth Codex terminal-cloud mark",
+  [...html.matchAll(/class="battery-logo|class="codex-logo-mark/g)].length,
+  0,
+  "Provider cells must not include a Codex logo or its surrounding arc",
 );
 assert.equal(
   [...html.matchAll(/class="battery-cradle /g)].length,
@@ -156,6 +156,19 @@ assert.deepEqual(
   ["#d97757", "#f0eee6"],
   "The Claude battery choice must match the installed two-tone treatment",
 );
+for (const [selector, color, neutral] of [
+  [".battery-pack.codex .aa-battery-label", "#2459e0", "#111217"],
+  [".battery-choice.codex", "#2459e0", "#111217"],
+  [".battery-pack.claude .aa-battery-label", "#d97757", "#f0eee6"],
+  [".battery-choice.claude", "#d97757", "#f0eee6"],
+]) {
+  assert.match(
+    block(selector),
+    new RegExp(`${color} 0 28%,\\s*${neutral} 28% 100%`, "i"),
+    `${selector} must use the same 28% colored section`,
+  );
+}
+assert.doesNotMatch(css, /\.battery-logo|\.codex-logo-mark|\.codex-cloud|\.codex-terminal-mark/, "Removed Codex artwork must not leave a drawn arc or logo");
 const rearLatch = block(".rear-latch");
 assert.match(rearLatch, /top:\s*-13px/, "The removable cover lever must straddle its top edge");
 assert.doesNotMatch(rearLatch, /bottom:/, "The cover lever must not drift back to the bottom edge");

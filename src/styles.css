@@ -1008,7 +1008,7 @@ html, body {
   inset: 1px 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: 30px 50px 1fr 30px;
+  grid-template-columns: 34px 1fr 34px;
   align-items: center;
   overflow: hidden;
   border-radius: 11px;
@@ -1049,67 +1049,27 @@ html, body {
   text-align: center;
 }
 .battery-polarity.positive { grid-column: 1; }
-.battery-polarity.negative { grid-column: 4; }
-.battery-logo {
-  position: relative;
-  z-index: 1;
-  grid-column: 2;
-  justify-self: center;
-  width: 48px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border-radius: 0;
-  filter: drop-shadow(0 1px 1px rgba(0,0,0,.24));
-}
-.battery-pack.codex .battery-logo::after {
-  content: '';
-  position: absolute;
-  left: -10px;
-  top: -4px;
-  width: 45px;
-  height: 42px;
-  border-left: 2px solid rgba(255,255,255,.94);
-  border-radius: 50%;
-}
-.codex-logo-mark {
-  position: relative;
-  z-index: 1;
-  width: 48px;
-  height: 34px;
-  overflow: visible;
-}
-.codex-cloud { fill: #fff; }
-.codex-terminal-mark {
-  fill: none;
-  stroke: #2459e0;
-  stroke-width: 3.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
+.battery-polarity.negative { grid-column: 3; }
 .battery-word {
   position: relative;
   z-index: 1;
-  grid-column: 3;
+  grid-column: 2;
   justify-self: center;
   white-space: nowrap;
 }
 .battery-pack.codex { --battery-accent: #2459e0; }
 .battery-pack.codex .aa-battery-label {
   color: #fff;
-  background: linear-gradient(90deg, #2459e0 0 37%, #111217 37% 100%);
+  background: linear-gradient(90deg, #2459e0 0 28%, #111217 28% 100%);
 }
 .battery-pack.codex .battery-polarity.positive { color: #fff; }
 .battery-pack.codex .battery-polarity.negative { color: #fff; }
 .battery-pack.codex .battery-word { font-size: 23px; letter-spacing: 1.6px; }
 .battery-pack.claude { --battery-accent: #d97757; }
 .battery-pack.claude .aa-battery-label {
-  grid-template-columns: 34px 0 1fr 34px;
   color: #141413;
   background: linear-gradient(90deg, #d97757 0 28%, #f0eee6 28% 100%);
 }
-.battery-pack.claude .battery-logo { display: none; }
 .battery-pack.claude .battery-polarity.positive { color: #fff; }
 .battery-pack.claude .battery-polarity.negative { color: #141413; }
 .battery-pack.claude .battery-word { font-size: 22px; letter-spacing: 1.3px; }
@@ -1149,7 +1109,7 @@ html, body {
   cursor: pointer;
   -webkit-font-smoothing: antialiased;
 }
-.battery-choice.codex { background: linear-gradient(90deg, #2459e0 0 37%, #111217 37% 100%); }
+.battery-choice.codex { background: linear-gradient(90deg, #2459e0 0 28%, #111217 28% 100%); }
 .battery-choice.claude { color: #141413; background: linear-gradient(90deg, #d97757 0 28%, #f0eee6 28% 100%); }
 .battery-choice:hover,
 .battery-choice:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
