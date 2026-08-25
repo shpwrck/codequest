@@ -24,6 +24,12 @@ function pixels(selector, property) {
   return Number(match[1]);
 }
 
+function backgroundColors(selector) {
+  const match = block(selector).match(/background:\s*([^;]+);/);
+  assert.ok(match, `Missing background on ${selector}`);
+  return [...new Set([...match[1].matchAll(/#[0-9a-f]{6}/gi)].map(([color]) => color.toLowerCase()))];
+}
+
 for (const id of [
   "battery-compartment",
   "battery-bay",
@@ -130,9 +136,26 @@ assert.match(
 );
 assert.match(css, /\.battery-pack\.codex[\s\S]*?#2459e0/, "Codex batteries must use the blue brand treatment");
 assert.match(css, /\.battery-pack\.claude[\s\S]*?#d97757/i, "Claude batteries must use the coral brand treatment");
-const claudeLabel = block(".battery-pack.claude .aa-battery-label");
-assert.match(claudeLabel, /background:\s*#d97757/i, "Claude battery wrappers must be uniformly orange");
-assert.doesNotMatch(claudeLabel, /linear-gradient\(90deg/, "Claude battery wrappers must not use color bands");
+assert.deepEqual(
+  backgroundColors(".battery-pack.codex .aa-battery-label"),
+  ["#2459e0", "#111217"],
+  "Installed Codex batteries must use the blue/black two-tone treatment",
+);
+assert.deepEqual(
+  backgroundColors(".battery-choice.codex"),
+  ["#2459e0", "#111217"],
+  "The Codex battery choice must match the installed two-tone treatment",
+);
+assert.deepEqual(
+  backgroundColors(".battery-pack.claude .aa-battery-label"),
+  ["#d97757", "#f0eee6"],
+  "Installed Claude batteries must use the orange/cream two-tone treatment",
+);
+assert.deepEqual(
+  backgroundColors(".battery-choice.claude"),
+  ["#d97757", "#f0eee6"],
+  "The Claude battery choice must match the installed two-tone treatment",
+);
 const rearLatch = block(".rear-latch");
 assert.match(rearLatch, /top:\s*-13px/, "The removable cover lever must straddle its top edge");
 assert.doesNotMatch(rearLatch, /bottom:/, "The cover lever must not drift back to the bottom edge");
