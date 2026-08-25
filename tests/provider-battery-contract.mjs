@@ -324,7 +324,7 @@ const rejectedPowerOn = adapter.match(
 )?.[0] || "";
 assert.match(
   rejectedPowerOn,
-  /powered = false[\s\S]*?setPhysicalPowerSwitch\(\{ on: false, checking: false/,
+  /powered = false[\s\S]*?setPhysicalPowerSwitch\(\{ on: false/,
   "A failed provider check must return the physical power switch to off",
 );
 assert.match(

@@ -18,7 +18,7 @@ function pixels(source, property, label) {
   return Number(match[1]);
 }
 
-for (const control of ["cart", "power", "battery"]) {
+for (const control of ["cart", "power", "battery", "view"]) {
   assert.match(
     html,
     new RegExp(`id=["']${control}-guide["']`),
@@ -34,9 +34,11 @@ for (const control of ["cart", "power", "battery"]) {
 assert.match(css, /#cart-guide::before\s*\{[^}]*border-bottom-color:/s, "Cartridge guide has no arrow pointer");
 assert.match(css, /#power-guide::after\s*\{[^}]*border-left-color:/s, "Power guide has no arrow pointer");
 assert.match(css, /#battery-guide::before\s*\{[^}]*border-bottom-color:/s, "Battery guide has no arrow pointing to the lid tab");
+assert.match(css, /#view-guide::after\s*\{[^}]*border-left-color:/s, "Battery-check guide must point toward the front/back toggle");
 assert.match(adapter, /function updateControlGuides\(\)/, "Guide visibility is not synchronized with device state");
 assert.match(adapter, /cartGuide\.classList\.toggle\("hidden", !needsCart\)/, "Cartridge guide never becomes visible");
 assert.match(adapter, /powerGuide\.classList\.toggle\("hidden", !needsPower\)/, "Power guide never becomes visible");
+assert.match(adapter, /viewGuide\.classList\.toggle\("hidden", !needsBatteryCheck\)/, "Battery-check guide never becomes visible");
 assert.match(adapter, /batteryGuide\.classList\.toggle\("hidden", !needsBatteryTab\)/, "Battery-tab guide never becomes visible");
 assert.match(adapter, /batteryBay\.classList\.toggle\("guided", needsBatteryBay\)/, "The exposed empty battery bay never receives its guided glow");
 assert.match(
@@ -51,6 +53,16 @@ assert.match(
 );
 assert.match(
   adapter,
+  /const needsBatteryCheck =[\s\S]*?!shellBackVisible[\s\S]*?!powered[\s\S]*?!installedProvider \|\| Boolean\(lastPowerFailure\)/,
+  "Missing or failed batteries must guide the user toward the front/back toggle",
+);
+assert.match(
+  adapter,
+  /viewGuide\.addEventListener\("click"[\s\S]*?turnShell\(\)/,
+  "Clicking CHECK BATTERIES must turn the device over",
+);
+assert.match(
+  adapter,
   /batteryGuide\.addEventListener\("click"[\s\S]*?setBatteryDoorOpen\(true\)/,
   "The battery-tab pointer must open the physical cover",
 );
@@ -59,6 +71,16 @@ assert.match(
   adapter,
   /for \(const switchControl of powerSwitches\)[\s\S]*?switchControl\.addEventListener\("pointerdown", \(event\) => \{\s*event\.preventDefault\(\);/,
   "Mouse activation from either device face must not leave its power switch focused",
+);
+assert.doesNotMatch(
+  css,
+  /#(?:rear-)?power-switch\.checking\s*\{/,
+  "Provider verification must not recolor or glow the physical power tab",
+);
+assert.doesNotMatch(
+  adapter,
+  /switchControl\.classList\.toggle\("checking"/,
+  "The physical power tab must only track its on/off position",
 );
 
 const switchOffTop = pixels(block("#power-switch"), "top", "off switch top");

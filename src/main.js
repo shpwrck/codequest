@@ -40,6 +40,7 @@ import {
   const cartGuide = $("cart-guide");
   const powerGuide = $("power-guide");
   const batteryGuide = $("battery-guide");
+  const viewGuide = $("view-guide");
   const viewToggle = $("device-view-toggle");
   const rearSerial = $("rear-serial");
   const batteryCompartment = $("battery-compartment");
@@ -95,10 +96,9 @@ import {
     scaleEl.style.zoom = snapped;
   }
 
-  function setPhysicalPowerSwitch({ on, checking, label }) {
+  function setPhysicalPowerSwitch({ on, label }) {
     for (const switchControl of powerSwitches) {
       switchControl.classList.toggle("on", on);
-      switchControl.classList.toggle("checking", checking);
       switchControl.setAttribute("aria-label", label);
     }
   }
@@ -316,7 +316,7 @@ import {
     hideDeviceBoot();
     lastPowerFailure = installedProvider ? `${providerLabel()} NOT READY` : "NO BATTERIES";
     renderProviderBatteries();
-    setPhysicalPowerSwitch({ on: false, checking: false, label: `Power switch, off: ${lastPowerFailure}` });
+    setPhysicalPowerSwitch({ on: false, label: `Power switch, off: ${lastPowerFailure}` });
     batteryCompartment.classList.remove("locked");
     powerLed.classList.remove("off", "checking");
     powerLed.classList.add("rejected");
@@ -329,6 +329,14 @@ import {
   }
 
   function updateControlGuides() {
+    const needsBatteryCheck =
+      ready &&
+      !shellBackVisible &&
+      !trayOpen &&
+      !batteryTrayOpen &&
+      !powerTransitioning &&
+      !powered &&
+      (!installedProvider || Boolean(lastPowerFailure));
     const needsCart =
       ready &&
       !shellBackVisible &&
@@ -336,9 +344,16 @@ import {
       !batteryTrayOpen &&
       !cartridge &&
       !powered &&
+      !needsBatteryCheck &&
       Boolean(installedProvider);
-    const needsPower = ready && !shellBackVisible && !trayOpen && !batteryTrayOpen && !powerTransitioning
-      && (Boolean(cartridge) !== powered || (!powered && !installedProvider));
+    const needsPower =
+      ready &&
+      !shellBackVisible &&
+      !trayOpen &&
+      !batteryTrayOpen &&
+      !powerTransitioning &&
+      !needsBatteryCheck &&
+      Boolean(cartridge) !== powered;
     const needsBatteryTab =
       ready &&
       shellBackVisible &&
@@ -355,34 +370,25 @@ import {
       batteryDoorOpen;
     cartGuide.classList.toggle("hidden", !needsCart);
     powerGuide.classList.toggle("hidden", !needsPower);
+    viewGuide.classList.toggle("hidden", !needsBatteryCheck);
     batteryGuide.classList.toggle("hidden", !needsBatteryTab);
     $("cart-back").classList.toggle("guided", needsCart);
     $("power-switch").classList.toggle("guided", needsPower);
     batteryDoor.classList.toggle("guided", needsBatteryTab);
     batteryBay.classList.toggle("guided", needsBatteryBay);
     const switchingOff = powered && !cartridge;
-    const missingBatteries = !powered && !installedProvider;
-    const failedProvider = !powered && Boolean(lastPowerFailure);
     powerGuide.classList.toggle("switching-off", switchingOff);
     powerGuide.querySelector(".guide-action").textContent = switchingOff
       ? "TURN POWER OFF"
-      : missingBatteries || failedProvider
-        ? "CHECK BATTERIES"
-        : "TURN POWER ON";
+      : "TURN POWER ON";
     powerGuide.querySelector(".guide-detail").textContent = switchingOff
       ? "TO LOAD A GAME"
-      : missingBatteries
-        ? "TURN UNIT OVER"
-        : failedProvider
-          ? lastPowerFailure
-          : "TO START";
+      : "TO START";
     powerGuide.setAttribute(
       "aria-label",
       switchingOff
         ? "Turn the power off to load a game"
-        : missingBatteries || failedProvider
-          ? "Check the AI provider batteries on the back of the device"
-          : "Turn the power on to start",
+        : "Turn the power on to start",
     );
   }
 
@@ -433,7 +439,7 @@ import {
       powered = true;
       lastPowerFailure = "";
       renderProviderBatteries();
-      setPhysicalPowerSwitch({ on: true, checking: true, label: "Power switch, checking AI batteries" });
+      setPhysicalPowerSwitch({ on: true, label: "Power switch, checking AI batteries" });
       powerLed.classList.remove("off", "rejected");
       powerLed.classList.add("checking");
       batteryCompartment.classList.add("locked");
@@ -448,7 +454,7 @@ import {
           await invoke("engine_power", { powered: false }).catch(() => {});
           return;
         }
-        setPhysicalPowerSwitch({ on: true, checking: false, label: `Power on, ${providerLabel()} batteries ready` });
+        setPhysicalPowerSwitch({ on: true, label: `Power on, ${providerLabel()} batteries ready` });
         powerLed.classList.remove("checking");
         releaseDeviceBoot(providerBootGeneration);
       } catch (error) {
@@ -463,7 +469,7 @@ import {
     }
 
     powered = false;
-    setPhysicalPowerSwitch({ on: false, checking: false, label: "Power switch, off" });
+    setPhysicalPowerSwitch({ on: false, label: "Power switch, off" });
     powerLed.classList.remove("checking", "rejected");
     powerLed.classList.add("off");
     batteryCompartment.classList.remove("locked");
@@ -474,7 +480,7 @@ import {
     } catch (error) {
       if (generation === powerGeneration) {
         powered = true;
-        setPhysicalPowerSwitch({ on: true, checking: false, label: "Power on; shutdown failed" });
+        setPhysicalPowerSwitch({ on: true, label: "Power on; shutdown failed" });
         powerLed.classList.remove("off");
         batteryCompartment.classList.add("locked");
         showTrayError(error);
@@ -942,6 +948,11 @@ import {
   });
 
   viewToggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    turnShell();
+  });
+  viewGuide.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
     turnShell();

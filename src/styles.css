@@ -2005,7 +2005,6 @@ html, body {
   transition: top .12s;
 }
 #power-switch.on { top: 70px; }
-#power-switch.checking { border-color: #9c7427; }
 #rear-power-switch {
   position: absolute;
   left: -12px;
@@ -2020,7 +2019,6 @@ html, body {
   transition: top .12s;
 }
 #rear-power-switch.on { top: 70px; }
-#rear-power-switch.checking { border-color: #9c7427; }
 .ps-nub { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2089,6 +2087,23 @@ html, body {
   border-left-color: var(--gold);
   border-right: 0;
 }
+#view-guide {
+  position: fixed;
+  right: 158px;
+  top: 20px;
+  z-index: 46;
+  animation: viewGuideBob 1.4s ease-in-out infinite;
+}
+#view-guide::after {
+  content: '';
+  position: absolute;
+  right: -11px;
+  top: 50%;
+  margin-top: -6px;
+  border: 6px solid transparent;
+  border-left-color: var(--gold);
+  border-right: 0;
+}
 #battery-guide {
   --guide-x: -50%;
   left: 50%;
@@ -2119,6 +2134,10 @@ html, body {
 @keyframes powerGuideBob {
   0%, 100% { transform: translate(var(--guide-x), calc(-50% + 3px)); }
   50% { transform: translate(var(--guide-x), calc(-50% - 3px)); }
+}
+@keyframes viewGuideBob {
+  0%, 100% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
 }
 @keyframes targetGlow {
   50% { filter: brightness(1.5) drop-shadow(0 0 5px var(--gold)); }
