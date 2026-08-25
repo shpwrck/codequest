@@ -33,6 +33,7 @@ function backgroundColors(selector) {
 for (const id of [
   "battery-compartment",
   "battery-bay",
+  "battery-lid-slot",
   "battery-pack",
   "battery-chooser",
   "battery-status",
@@ -87,6 +88,11 @@ assert.match(
   /<button id="battery-door"[\s\S]*?<span class="rear-latch"[\s\S]*?<\/button>/,
   "The light latch must be part of the removable battery cover",
 );
+assert.match(
+  html,
+  /id="battery-bay"[\s\S]*?<button id="battery-lid-slot"[^>]*aria-label="Replace battery cover"/,
+  "The open bay must retain the centered receptacle used to replace the cover",
+);
 
 assert.match(block(".battery-compartment"), /position:\s*absolute/, "The battery bay must belong to the rear shell");
 assert.match(
@@ -138,11 +144,24 @@ assert.match(
   /(?:^|\n)\.aa-battery\.bottom::before\s*\{\s*right:\s*calc\(100% \+ 1px\)/,
   "The reversed battery's positive nub must begin outside the barrel edge",
 );
+const negativeEnd = css.match(
+  /\.aa-battery\.top::before,\s*\.aa-battery\.bottom::after\s*\{([\s\S]*?)\}/,
+)?.[1] || "";
+assert.match(negativeEnd, /display:\s*none/, "Negative AA ends must not add a silver box over the spring");
 assert.match(block(".battery-contact.spring"), /overflow:\s*visible/, "The conical springs must remain fully visible");
 assert.match(css, /\.spring-coil\s*\{[^}]*stroke:/s, "The conical spring wire must be visibly drawn");
 assert.match(block(".battery-contact.leaf"), /background:/, "The flat electrical leads must be visible");
 assert.ok(pixels(".battery-pack", "left") <= 30, "Reference AA cells must reach the compact end contacts");
 assert.ok(pixels(".battery-pack", "width") >= 260, "Reference AA cells must span the molded compartment");
+assert.equal(pixels(".battery-pack", "top"), 14, "The cells must leave room for the cover's centered tab opening");
+assert.equal(pixels(".battery-contact.top-left", "top"), 21, "The upper spring must align with the AA barrel");
+assert.equal(pixels(".battery-contact.top-right", "top"), 23, "The upper positive lead must align with its nub");
+assert.equal(pixels(".battery-contact.bottom-left", "top"), 73, "The lower positive lead must align with its nub");
+assert.equal(pixels(".battery-contact.bottom-right", "top"), 71, "The lower spring must align with the AA barrel");
+const lidSlot = block(".battery-lid-slot");
+assert.match(lidSlot, /position:\s*absolute/, "The cover tab opening must stay attached to the battery bay");
+assert.match(lidSlot, /left:\s*50%/, "The cover tab opening must stay centered");
+assert.match(lidSlot, /background:/, "The cover tab receptacle must remain visibly open");
 assert.match(css, /(?:^|\n)\.rear-brand\s*\{[^}]*display:\s*none/s, "The reference cover has no embossed wordmark");
 const batteryLabel = block(".aa-battery-label");
 assert.match(batteryLabel, /font-family:\s*[^;]*sans-serif/, "Battery labels must use smooth product typography");
@@ -223,6 +242,12 @@ assert.doesNotMatch(
   "Rejected power feedback must not recolor the physical toggle",
 );
 assert.match(adapter, /batteryDoor\.addEventListener\("click"/, "The rear battery door is not interactive");
+assert.match(
+  adapter,
+  /batteryLidSlot\.addEventListener\("click"[\s\S]*?setBatteryDoorOpen\(false\)/,
+  "The stationary tab opening must let the user replace the cover",
+);
+assert.match(adapter, /batteryLidSlot\.inert = !batteryDoorOpen/, "The cover return control must only activate while open");
 
 assert.match(externalTools, /CQA_CODEX/, "Codex executable discovery must be configurable");
 assert.match(rust, /fn engine_set_ai_provider\(/, "The Tauri boundary cannot accept installed batteries");

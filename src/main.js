@@ -43,6 +43,7 @@ import {
   const rearSerial = $("rear-serial");
   const batteryCompartment = $("battery-compartment");
   const batteryDoor = $("battery-door");
+  const batteryLidSlot = $("battery-lid-slot");
   const batteryPack = $("battery-pack");
   const batteryChooser = $("battery-chooser");
   const batteryStatus = $("battery-status");
@@ -205,6 +206,7 @@ import {
     );
     batteryPack.inert = !batteryDoorOpen;
     batteryChooser.inert = !batteryDoorOpen;
+    batteryLidSlot.inert = !batteryDoorOpen;
     return true;
   }
 
@@ -818,6 +820,11 @@ import {
     event.preventDefault();
     event.stopPropagation();
     setBatteryDoorOpen(!batteryDoorOpen);
+  });
+  batteryLidSlot.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setBatteryDoorOpen(false);
   });
   batteryPack.addEventListener("click", (event) => {
     event.preventDefault();
