@@ -116,7 +116,14 @@ assert.doesNotMatch(
 );
 const batteryBody = block(".aa-battery");
 assert.match(batteryBody, /linear-gradient\(to bottom/, "AA cells need cylindrical cross-body shading");
-assert.match(batteryBody, /border-radius:\s*12px/, "AA cells need straight cylindrical barrels with shallow shoulders");
+assert.match(batteryBody, /border-radius:\s*4px/, "AA cells need the reference's squared side-profile barrel");
+const positiveNub = css.match(
+  /\.aa-battery\.top::before,\s*\.aa-battery\.bottom::after\s*\{([\s\S]*?)\}/,
+)?.[1] || "";
+assert.match(positiveNub, /width:\s*11px/, "Positive AA terminals need a distinct metal nub");
+assert.match(positiveNub, /height:\s*21px/, "Positive AA terminal nubs must remain compact");
+assert.match(positiveNub, /border-radius:\s*3px/, "Positive AA terminal nubs need softly rounded square edges");
+assert.doesNotMatch(css, /\.aa-battery\.(?:top::before|bottom::after)\s*\{[^}]*50%/s, "Positive AA terminal nubs must not be semicircular caps");
 assert.match(block(".battery-contact.spring"), /overflow:\s*visible/, "The conical springs must remain fully visible");
 assert.match(css, /\.spring-coil\s*\{[^}]*stroke:/s, "The conical spring wire must be visibly drawn");
 assert.match(block(".battery-contact.leaf"), /background:/, "The flat electrical leads must be visible");
@@ -127,7 +134,7 @@ const batteryLabel = block(".aa-battery-label");
 assert.match(batteryLabel, /font-family:\s*[^;]*sans-serif/, "Battery labels must use smooth product typography");
 assert.match(batteryLabel, /-webkit-font-smoothing:\s*antialiased/, "Battery labels must be anti-aliased");
 assert.match(batteryLabel, /image-rendering:\s*auto/, "Battery labels must opt out of the pixel-art rendering rule");
-assert.match(batteryLabel, /border-radius:\s*11px/, "The printed wrapper must follow the cylindrical barrel");
+assert.match(batteryLabel, /border-radius:\s*3px/, "The printed wrapper must preserve the squared reference silhouette");
 assert.match(css, /\.aa-battery-label::after\s*\{[^}]*linear-gradient\(to bottom/s, "The wrapper needs a curved barrel highlight");
 assert.match(
   block(".aa-battery.bottom .aa-battery-label"),
