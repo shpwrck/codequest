@@ -38,6 +38,9 @@ for (const id of [
   "battery-chooser",
   "battery-status",
   "battery-door",
+  "battery-tray",
+  "battery-options",
+  "battery-eject",
 ]) {
   assert.match(html, new RegExp(`id=["']${id}["']`), `Missing ${id}`);
 }
@@ -49,6 +52,21 @@ assert.match(
 );
 assert.match(html, /data-provider="codex"/, "The compartment is missing Codex batteries");
 assert.match(html, /data-provider="claude"/, "The compartment is missing Claude batteries");
+assert.match(
+  html,
+  /id="battery-tray"[^>]*role="dialog"[^>]*aria-modal="true"/,
+  "Battery selection must open as an accessible modal view",
+);
+assert.match(
+  html,
+  /id="battery-options"[\s\S]*?data-provider="codex"[\s\S]*?data-provider="claude"[\s\S]*?id="battery-eject"/,
+  "The battery view must offer Codex, Claude, and eject in one menu",
+);
+assert.match(
+  html,
+  /<button id="battery-chooser"[^>]*>[^<]*SELECT BATTERIES[^<]*<\/button>/,
+  "An empty physical bay must open the battery view instead of embedding provider buttons",
+);
 assert.equal(
   [...html.matchAll(/class="aa-battery /g)].length,
   2,
@@ -206,7 +224,7 @@ assert.deepEqual(
   "Installed Codex batteries must use the blue/black two-tone treatment",
 );
 assert.deepEqual(
-  backgroundColors(".battery-choice.codex"),
+  backgroundColors(".battery-option.codex .battery-option-cell"),
   ["#2459e0", "#111217"],
   "The Codex battery choice must match the installed two-tone treatment",
 );
@@ -216,7 +234,7 @@ assert.deepEqual(
   "Installed Claude batteries must use the orange/cream two-tone treatment",
 );
 assert.deepEqual(
-  backgroundColors(".battery-choice.claude"),
+  backgroundColors(".battery-option.claude .battery-option-cell"),
   ["#d97757", "#f0eee6"],
   "The Claude battery choice must match the installed two-tone treatment",
 );
@@ -231,8 +249,8 @@ for (const selector of [
   );
 }
 for (const [selector, color, neutral] of [
-  [".battery-choice.codex", "#2459e0", "#111217"],
-  [".battery-choice.claude", "#d97757", "#f0eee6"],
+  [".battery-option.codex .battery-option-cell", "#2459e0", "#111217"],
+  [".battery-option.claude .battery-option-cell", "#d97757", "#f0eee6"],
 ]) {
   assert.match(
     block(selector),
@@ -272,6 +290,43 @@ assert.match(
   "The stationary tab opening must let the user replace the cover",
 );
 assert.match(adapter, /batteryLidSlot\.inert = !batteryDoorOpen/, "The cover return control must only activate while open");
+assert.match(block("#battery-tray"), /position:\s*absolute/, "The battery menu must occupy a separate view");
+assert.match(block("#battery-tray"), /inset:\s*0/, "The battery view must dim the entire device");
+assert.match(block("#battery-tray"), /z-index:\s*50/, "The battery view must sit above the physical device");
+assert.match(block("#battery-tray"), /background:\s*rgba\(7,8,18,\.82\)/, "The battery view must use the cartridge tray dimmer");
+assert.match(adapter, /let batteryTrayOpen = false/, "The battery view needs explicit open state");
+assert.match(adapter, /function openBatteryTray\(/, "The battery view cannot be opened");
+assert.match(adapter, /function closeBatteryTray\(/, "The battery view cannot be closed");
+assert.match(
+  adapter,
+  /batteryPack\.addEventListener\("click"[\s\S]*?openBatteryTray\(\)/,
+  "Pressing installed batteries must open the selection view",
+);
+assert.match(
+  adapter,
+  /batteryChooser\.addEventListener\("click"[\s\S]*?openBatteryTray\(\)/,
+  "Pressing the empty bay prompt must open the selection view",
+);
+assert.match(
+  adapter,
+  /batteryOptions\.querySelectorAll\("\[data-provider\]"\)[\s\S]*?setInstalledProvider\(choice\.dataset\.provider\)[\s\S]*?closeBatteryTray\(\)/,
+  "Choosing a provider must install it and close the battery view",
+);
+assert.match(
+  adapter,
+  /batteryEject\.addEventListener\("click"[\s\S]*?setInstalledProvider\(null\)[\s\S]*?closeBatteryTray\(\)/,
+  "The battery view must eject the installed pack and close",
+);
+assert.match(
+  adapter,
+  /batteryTray\.addEventListener\("pointerdown"[\s\S]*?event\.target === batteryTray[\s\S]*?closeBatteryTray\(\)/,
+  "Pressing the dimmed backdrop must close the battery view",
+);
+assert.match(
+  adapter,
+  /batteryTrayOpen[\s\S]*?event\.key === "Escape"[\s\S]*?closeBatteryTray\(\)/,
+  "Escape must close the battery view",
+);
 
 assert.match(externalTools, /CQA_CODEX/, "Codex executable discovery must be configurable");
 assert.match(rust, /fn engine_set_ai_provider\(/, "The Tauri boundary cannot accept installed batteries");

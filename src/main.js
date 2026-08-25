@@ -47,6 +47,9 @@ import {
   const batteryPack = $("battery-pack");
   const batteryChooser = $("battery-chooser");
   const batteryStatus = $("battery-status");
+  const batteryTray = $("battery-tray");
+  const batteryOptions = $("battery-options");
+  const batteryEject = $("battery-eject");
   const powerSwitch = $("power-switch");
   const powerLed = document.querySelector(".power-led");
   const context = canvas.getContext("2d", { alpha: false });
@@ -58,6 +61,7 @@ import {
   let cartridge = null;
   let cartridges = [];
   let trayOpen = false;
+  let batteryTrayOpen = false;
   let picking = false;
   let framePending = false;
   let bootTimer = null;
@@ -178,12 +182,13 @@ import {
     batteryPack.setAttribute(
       "aria-label",
       hasProvider
-        ? `${providerLabel()} batteries installed. Press to remove both AA batteries.`
+        ? `${providerLabel()} batteries installed. Press to choose or eject batteries.`
         : "No AI provider batteries installed",
     );
     if (!hasProvider) setBatteryStatus("NO BATTERIES · SELECT A PACK");
     else if (verifiedProvider === installedProvider) setBatteryStatus(`${providerLabel()} · READY`, "ready");
     else setBatteryStatus(`${providerLabel()} · UNTESTED`);
+    if (batteryTrayOpen) renderBatteryTray();
     updateControlGuides();
   }
 
@@ -194,6 +199,7 @@ import {
       batteryCompartment.classList.add("locked");
       return false;
     }
+    if (!nextOpen && batteryTrayOpen) closeBatteryTray({ restoreFocus: false });
     batteryDoorOpen = nextOpen;
     batteryCompartment.classList.toggle("open", batteryDoorOpen);
     batteryCompartment.classList.toggle("locked", powered);
@@ -289,10 +295,11 @@ import {
       ready &&
       !shellBackVisible &&
       !trayOpen &&
+      !batteryTrayOpen &&
       !cartridge &&
       !powered &&
       Boolean(installedProvider);
-    const needsPower = ready && !shellBackVisible && !trayOpen && !powerTransitioning
+    const needsPower = ready && !shellBackVisible && !trayOpen && !batteryTrayOpen && !powerTransitioning
       && (Boolean(cartridge) !== powered || (!powered && !installedProvider));
     cartGuide.classList.toggle("hidden", !needsCart);
     powerGuide.classList.toggle("hidden", !needsPower);
@@ -367,6 +374,7 @@ import {
 
     if (target) {
       if (trayOpen) closeTray();
+      if (batteryTrayOpen) closeBatteryTray({ restoreFocus: false });
       setBatteryDoorOpen(false, { force: true });
       powerSwitch.classList.add("on", "checking");
       powerLed.classList.remove("off", "rejected");
@@ -706,6 +714,7 @@ import {
 
   function openTray() {
     if (powered) return;
+    if (batteryTrayOpen) closeBatteryTray({ restoreFocus: false });
     buildTray();
     $("cart-tray").classList.remove("hidden");
     trayOpen = true;
@@ -716,6 +725,36 @@ import {
   function closeTray() {
     $("cart-tray").classList.add("hidden");
     trayOpen = false;
+    updateControlGuides();
+  }
+
+  function renderBatteryTray() {
+    batteryOptions.querySelectorAll("[data-provider]").forEach((choice) => {
+      const current = choice.dataset.provider === installedProvider;
+      choice.classList.toggle("current", current);
+      choice.setAttribute("aria-pressed", String(current));
+    });
+  }
+
+  function openBatteryTray() {
+    if (powered || batteryChanging || !batteryDoorOpen) return;
+    if (trayOpen) closeTray();
+    renderBatteryTray();
+    batteryTray.classList.remove("hidden");
+    batteryTray.setAttribute("aria-hidden", "false");
+    batteryTrayOpen = true;
+    const current = batteryOptions.querySelector(`[data-provider="${installedProvider}"]`);
+    (current || batteryOptions.querySelector("button"))?.focus();
+    updateControlGuides();
+  }
+
+  function closeBatteryTray({ restoreFocus = true } = {}) {
+    batteryTray.classList.add("hidden");
+    batteryTray.setAttribute("aria-hidden", "true");
+    batteryTrayOpen = false;
+    if (restoreFocus && shellBackVisible && batteryDoorOpen) {
+      (installedProvider ? batteryPack : batteryChooser).focus();
+    }
     updateControlGuides();
   }
 
@@ -750,6 +789,24 @@ import {
   };
 
   window.addEventListener("keydown", (event) => {
+    if (batteryTrayOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeBatteryTray();
+      } else if (event.key === "Tab") {
+        const choices = [...batteryOptions.querySelectorAll("button")];
+        const firstChoice = choices[0];
+        const lastChoice = choices.at(-1);
+        if (event.shiftKey && document.activeElement === firstChoice) {
+          event.preventDefault();
+          lastChoice.focus();
+        } else if (!event.shiftKey && document.activeElement === lastChoice) {
+          event.preventDefault();
+          firstChoice.focus();
+        }
+      }
+      return;
+    }
     if (event.code === "F1") {
       event.preventDefault();
       if (!event.repeat) turnShell();
@@ -829,13 +886,35 @@ import {
   batteryPack.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    setInstalledProvider(null);
+    openBatteryTray();
   });
-  batteryChooser.querySelectorAll("[data-provider]").forEach((choice) => {
+  batteryChooser.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openBatteryTray();
+  });
+  batteryOptions.querySelectorAll("[data-provider]").forEach((choice) => {
     choice.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      setInstalledProvider(choice.dataset.provider);
+      if (choice.dataset.provider === installedProvider) {
+        closeBatteryTray();
+        return;
+      }
+      setInstalledProvider(choice.dataset.provider).then((changed) => {
+        if (changed) closeBatteryTray();
+      });
+    });
+  });
+  batteryEject.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!installedProvider) {
+      closeBatteryTray();
+      return;
+    }
+    setInstalledProvider(null).then((changed) => {
+      if (changed) closeBatteryTray();
     });
   });
 
@@ -863,6 +942,9 @@ import {
   });
   $("cart-tray").addEventListener("pointerdown", (event) => {
     if (event.target === $("cart-tray")) closeTray();
+  });
+  batteryTray.addEventListener("pointerdown", (event) => {
+    if (event.target === batteryTray) closeBatteryTray();
   });
   window.addEventListener("resize", fit);
 

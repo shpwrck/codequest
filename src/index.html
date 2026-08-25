@@ -164,11 +164,7 @@
                       </span>
                     </span>
                   </button>
-                  <div id="battery-chooser" class="battery-chooser" role="group" aria-label="Choose two AA provider batteries">
-                    <span class="battery-chooser-title">LOAD 2×AA</span>
-                    <button class="battery-choice codex" type="button" data-provider="codex">CODEX</button>
-                    <button class="battery-choice claude" type="button" data-provider="claude">CLAUDE</button>
-                  </div>
+                  <button id="battery-chooser" class="battery-chooser" type="button" aria-label="Open AI battery selection">SELECT BATTERIES</button>
                   <div id="battery-status" class="battery-status" role="status" aria-live="polite">NO BATTERIES</div>
                 </div>
                 <button id="battery-door" class="rear-battery-door" type="button" aria-expanded="false" aria-controls="battery-bay" aria-label="Open AI provider battery compartment">
@@ -193,6 +189,28 @@
           <div id="tray-error" class="hidden"></div>
           <div class="tray-hint">DRAG UP TO LOAD &middot; DRAG DOWN TO RECYCLE</div>
           <div class="tray-safety">RECYCLE CLEARS THE RACK ONLY &middot; REPOSITORY FILES STAY ON DISK</div>
+        </div>
+      </div>
+      <div id="battery-tray" class="hidden" role="dialog" aria-modal="true" aria-labelledby="battery-tray-head" aria-hidden="true">
+        <div class="tray-panel battery-tray-panel">
+          <div id="battery-tray-head" class="tray-head">SELECT AI BATTERIES</div>
+          <div id="battery-options">
+            <button class="battery-option codex" type="button" data-provider="codex" aria-pressed="false">
+              <span class="battery-option-cell top" aria-hidden="true"><span>CODEX</span></span>
+              <span class="battery-option-cell bottom" aria-hidden="true"><span>CODEX</span></span>
+              <span class="battery-option-caption">CODEX</span>
+            </button>
+            <button class="battery-option claude" type="button" data-provider="claude" aria-pressed="false">
+              <span class="battery-option-cell top" aria-hidden="true"><span>CLAUDE</span></span>
+              <span class="battery-option-cell bottom" aria-hidden="true"><span>CLAUDE</span></span>
+              <span class="battery-option-caption">CLAUDE</span>
+            </button>
+            <button id="battery-eject" class="battery-option eject" type="button">
+              <span class="battery-eject-icon" aria-hidden="true">↑</span>
+              <span class="battery-option-caption">EJECT BATTERY</span>
+            </button>
+          </div>
+          <div class="tray-hint battery-tray-hint">SELECT A PACK &middot; ESC TO CLOSE</div>
         </div>
       </div>
     </div>
