@@ -831,7 +831,7 @@ html, body {
 .battery-compartment.open { overflow: visible; }
 .battery-bay {
   position: absolute;
-  inset: 14px 0 22px;
+  inset: 14px 0 14px;
   z-index: 1;
   overflow: hidden;
   background:
@@ -885,9 +885,9 @@ html, body {
 }
 .battery-cradle {
   position: absolute;
-  left: 8px;
-  right: 8px;
-  height: 43px;
+  left: 38px;
+  right: 38px;
+  height: 48px;
   background: linear-gradient(to bottom, #070812, #171931 48%, #070813 100%);
   border: 2px solid #282b58;
   border-radius: 9px;
@@ -896,7 +896,7 @@ html, body {
     inset 0 -2px 2px rgba(107,111,185,.15);
 }
 .battery-cradle.top { top: 10px; }
-.battery-cradle.bottom { top: 59px; }
+.battery-cradle.bottom { top: 64px; }
 .battery-cradle::before,
 .battery-cradle::after {
   position: absolute;
@@ -946,31 +946,31 @@ html, body {
   box-shadow: inset 0 2px 1px rgba(255,255,255,.38);
 }
 .battery-contact.top-left {
-  left: 5px;
-  top: 17px;
+  left: 35px;
+  top: 20px;
   transform: scaleX(-1);
 }
 .battery-contact.top-right {
-  right: 8px;
-  top: 19px;
+  right: 38px;
+  top: 23px;
   transform: scaleX(-1);
 }
 .battery-contact.bottom-left {
-  left: 8px;
-  top: 69px;
+  left: 38px;
+  top: 77px;
 }
 .battery-contact.bottom-right {
-  right: 5px;
-  top: 67px;
+  right: 35px;
+  top: 74px;
 }
 .battery-pack {
   appearance: none;
   position: absolute;
-  left: 28px;
+  left: 58px;
   top: 10px;
   z-index: 3;
-  width: 260px;
-  height: 95px;
+  width: 200px;
+  height: 104px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -990,7 +990,7 @@ html, body {
 .aa-battery {
   position: relative;
   display: block;
-  flex: 0 0 45px;
+  flex: 0 0 50px;
   overflow: visible;
   border: 1px solid #080914;
   border-radius: 4px;
@@ -1015,9 +1015,9 @@ html, body {
 }
 .aa-battery.top::after,
 .aa-battery.bottom::before {
-  top: 11px;
-  width: 11px;
-  height: 21px;
+  top: 14px;
+  width: 10px;
+  height: 22px;
   border-radius: 3px;
 }
 .aa-battery.top::after {
