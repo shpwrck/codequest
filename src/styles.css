@@ -229,11 +229,14 @@ html, body {
   box-shadow: 0 0 9px #f02f4f, 0 0 3px #fff;
   animation: powerIndicatorRejected .72s ease-in-out 1;
 }
-@keyframes providerChecking { 50% { opacity: .38; } }
+@keyframes providerChecking {
+  0%, 100% { background: var(--gold); box-shadow: 0 0 8px var(--gold), 0 0 2px var(--gold); }
+  50% { background: #796723; box-shadow: 0 0 2px #796723; }
+}
 @keyframes powerIndicatorRejected {
-  0%, 100% { filter: none; }
-  18%, 58% { background: #f02f4f; filter: brightness(1.65) drop-shadow(0 0 7px #f02f4f); }
-  38%, 78% { background: #6f1728; filter: brightness(.72); }
+  0%, 100% { background: #f02f4f; box-shadow: 0 0 9px #f02f4f, 0 0 3px #fff; }
+  18%, 58% { background: #ff526c; box-shadow: 0 0 13px #f02f4f, 0 0 5px #fff; }
+  38%, 78% { background: #6f1728; box-shadow: 0 0 2px #6f1728; }
 }
 
 /* ============================ THE SCREEN ============================ */
@@ -1104,14 +1107,6 @@ html, body {
 .battery-pack.claude .battery-polarity.positive { color: #fff; }
 .battery-pack.claude .battery-polarity.negative { color: #141413; }
 .battery-pack.claude .battery-word { font-size: 22px; letter-spacing: 1.3px; }
-.battery-pack.failed { --battery-accent: #c92f45; }
-.battery-pack.failed .aa-battery-label {
-  color: #fff;
-  background:
-    radial-gradient(ellipse 4px 50% at calc(28% - 4px) 50%, #c92f45 0 98%, transparent 100%),
-    linear-gradient(90deg, #c92f45 0 calc(28% - 4px), #35131b calc(28% - 4px) 100%);
-}
-.battery-pack.failed .battery-polarity { color: #fff; }
 .battery-chooser {
   appearance: none;
   position: absolute;
@@ -2064,9 +2059,11 @@ html, body {
 }
 #power-guide {
   right: 37px;
-  top: 105px;
+  top: 129px;
+  transform: translate(var(--guide-x), -50%);
+  animation: powerGuideBob 1.4s ease-in-out infinite;
 }
-#power-guide.switching-off { top: 79px; }
+#power-guide.switching-off { top: 103px; }
 #power-guide::after {
   content: '';
   position: absolute;
@@ -2103,6 +2100,10 @@ html, body {
 @keyframes guideBob {
   0%, 100% { transform: translate(var(--guide-x), 0); }
   50% { transform: translate(var(--guide-x), -3px); }
+}
+@keyframes powerGuideBob {
+  0%, 100% { transform: translate(var(--guide-x), calc(-50% + 3px)); }
+  50% { transform: translate(var(--guide-x), calc(-50% - 3px)); }
 }
 @keyframes targetGlow {
   50% { filter: brightness(1.5) drop-shadow(0 0 5px var(--gold)); }

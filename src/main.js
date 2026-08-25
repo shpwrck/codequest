@@ -200,7 +200,6 @@ import {
     batteryChooser.classList.toggle("hidden", hasProvider);
     batteryPack.classList.remove("codex", "claude");
     if (installedProvider) batteryPack.classList.add(installedProvider);
-    batteryPack.classList.toggle("failed", hasProvider && Boolean(lastPowerFailure));
     batteryPack.querySelectorAll(".battery-word").forEach((word) => {
       word.textContent = providerLabel();
     });
@@ -283,7 +282,6 @@ import {
 
   async function verifyInstalledProvider() {
     if (!installedProvider) throw new Error("INSTALL AI BATTERIES");
-    if (verifiedProvider === installedProvider) return;
     batteryCompartment.classList.add("checking");
     setBatteryStatus(`${providerLabel()} · CHECKING`, "checking");
     try {
@@ -304,19 +302,19 @@ import {
   }
 
   async function rejectPowerOn(message) {
+    powered = false;
     hideDeviceBoot();
     lastPowerFailure = installedProvider ? `${providerLabel()} NOT READY` : "NO BATTERIES";
     renderProviderBatteries();
-    powerSwitch.classList.remove("checking");
-    powerSwitch.classList.add("on");
+    powerSwitch.classList.remove("on", "checking");
+    batteryCompartment.classList.remove("locked");
     powerLed.classList.remove("off", "checking");
     powerLed.classList.add("rejected");
-    powerSwitch.setAttribute("aria-label", `Power rejected: ${lastPowerFailure}`);
+    powerSwitch.setAttribute("aria-label", `Power switch, off: ${lastPowerFailure}`);
     await invoke("engine_power", { powered: false }).catch(() => {});
     await wait(POWER_REJECTION_MS);
     powerLed.classList.remove("rejected");
     powerLed.classList.add("off");
-    if (powered) powerSwitch.setAttribute("aria-label", `Power on, ${lastPowerFailure}`);
     updateControlGuides();
     if (message) console.warn("CQA: power rejected", message);
   }

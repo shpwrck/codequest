@@ -63,13 +63,35 @@ assert.match(
 
 const switchOffTop = pixels(block("#power-switch"), "top", "off switch top");
 const switchOnTop = pixels(block("#power-switch.on"), "top", "on switch top");
+const switchHeight = pixels(block("#power-switch"), "height", "switch height");
+const switchBorder = pixels(block("#power-switch"), "border", "switch border");
+const shellTop = pixels(block("#shell"), "top", "shell top");
 const guideOffTop = pixels(block("#power-guide"), "top", "off-position guide top");
 const guideOnTop = pixels(block("#power-guide.switching-off"), "top", "on-position guide top");
-assert.ok(guideOffTop > guideOnTop, "TURN POWER ON pointer must align with the lowered off switch");
+assert.equal(
+  guideOffTop,
+  shellTop + switchOffTop + (switchHeight + 2 * switchBorder) / 2,
+  "TURN POWER ON pointer must use the exact centerline of the switch's off position",
+);
+assert.equal(
+  guideOnTop,
+  shellTop + switchOnTop + (switchHeight + 2 * switchBorder) / 2,
+  "TURN POWER OFF pointer must use the exact centerline of the raised switch",
+);
 assert.equal(
   guideOffTop - guideOnTop,
   switchOffTop - switchOnTop,
   "Power pointer must move by the same distance as the physical switch",
+);
+assert.match(
+  block("#power-guide"),
+  /transform:\s*translate\(var\(--guide-x\),\s*-50%\)/,
+  "The callout arrow must be centered on its declared switch centerline",
+);
+assert.match(
+  css,
+  /@keyframes powerGuideBob\s*\{[\s\S]*?calc\(-50% \+ 3px\)[\s\S]*?calc\(-50% - 3px\)/,
+  "The power callout must bounce above and below the physical switch center",
 );
 
 console.log("Device pointer contract OK: contextual cartridge, power, and battery callouts are present");

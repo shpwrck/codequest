@@ -78,15 +78,23 @@ impl AiProviderState {
         Ok(())
     }
 
-    fn selected(&self) -> Option<AiProvider> {
-        self.0.read().ok().and_then(|session| session.selected)
-    }
-
     fn ready_provider(&self) -> Option<AiProvider> {
         self.0.read().ok().and_then(|session| {
             let provider = session.selected?;
             (session.verified == Some(provider)).then_some(provider)
         })
+    }
+
+    fn begin_verification(&self, provider: AiProvider) -> Result<(), String> {
+        let mut session = self
+            .0
+            .write()
+            .map_err(|_| "AI BATTERY STATE UNAVAILABLE".to_string())?;
+        if session.selected != Some(provider) {
+            return Err("INSTALL THE SELECTED AI BATTERIES FIRST".to_string());
+        }
+        session.verified = None;
+        Ok(())
     }
 
     fn mark_verified(&self, provider: AiProvider) -> Result<(), String> {
@@ -940,9 +948,7 @@ async fn verify_ai_provider(
 ) -> Result<AiProviderVerification, String> {
     let provider_state = provider_state.inner().clone();
     let provider = AiProvider::parse(&provider)?;
-    if provider_state.selected() != Some(provider) {
-        return Err("INSTALL THE SELECTED AI BATTERIES FIRST".to_string());
-    }
+    provider_state.begin_verification(provider)?;
     tauri::async_runtime::spawn_blocking(move || prove_ai_provider(provider))
         .await
         .map_err(|_| format!("{} READINESS CHECK FAILED", provider.name()))??;
@@ -1097,11 +1103,20 @@ mod question_policy_tests {
         assert_eq!(providers.ready_provider(), Some(AiProvider::Claude));
 
         providers.select(Some(AiProvider::Codex)).unwrap();
-        assert_eq!(providers.selected(), Some(AiProvider::Codex));
         assert_eq!(providers.ready_provider(), None);
 
         providers.select(None).unwrap();
-        assert_eq!(providers.selected(), None);
+        assert_eq!(providers.ready_provider(), None);
+    }
+
+    #[test]
+    fn starting_each_power_check_invalidates_the_previous_readiness_proof() {
+        let providers = AiProviderState::default();
+        providers.select(Some(AiProvider::Claude)).unwrap();
+        providers.mark_verified(AiProvider::Claude).unwrap();
+        assert_eq!(providers.ready_provider(), Some(AiProvider::Claude));
+
+        providers.begin_verification(AiProvider::Claude).unwrap();
         assert_eq!(providers.ready_provider(), None);
     }
 

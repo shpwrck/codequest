@@ -267,10 +267,31 @@ assert.doesNotMatch(rearLatch, /bottom:/, "The cover lever must not drift back t
 assert.match(css, /@keyframes powerIndicatorRejected/, "Rejected power-on attempts need an LED flash sequence");
 assert.doesNotMatch(css, /#power-switch\.power-rejected/, "The physical power toggle must never flash red");
 assert.match(css, /prefers-reduced-motion:[\s\S]*?\.power-led\.rejected/s, "The rejection LED needs a reduced-motion state");
+for (const animationName of ["providerChecking", "powerIndicatorRejected"]) {
+  const animation = css.match(new RegExp(`@keyframes ${animationName}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] || "";
+  assert.doesNotMatch(
+    animation,
+    /opacity|filter/,
+    `${animationName} must not pulse or glow the POWER decal along with the indicator`,
+  );
+  assert.match(
+    animation,
+    /background:[\s\S]*?box-shadow:/,
+    `${animationName} must animate only the indicator's color and halo`,
+  );
+}
 
 assert.match(adapter, /const PROVIDER_STORAGE_KEY = "cqa-ai-provider"/, "Provider selection must persist locally");
 assert.match(adapter, /invoke\("engine_set_ai_provider"/, "Battery changes must reach the backend");
 assert.match(adapter, /invoke\("verify_ai_provider"/, "Power-on must prove the selected provider works");
+const verifyInstalledProvider = adapter.match(
+  /async function verifyInstalledProvider\(\) \{[\s\S]*?\n  \}(?=\n\n  async function rejectPowerOn)/,
+)?.[0] || "";
+assert.doesNotMatch(
+  verifyInstalledProvider,
+  /verifiedProvider === installedProvider[\s\S]*?return/,
+  "Every power-on must run a fresh provider readiness check",
+);
 assert.match(
   adapter,
   /await verifyInstalledProvider\(\)[\s\S]*?invoke\("engine_power", \{ powered: true \}\)/,
@@ -301,25 +322,25 @@ assert.doesNotMatch(
 const rejectedPowerOn = adapter.match(
   /async function rejectPowerOn\(message\) \{[\s\S]*?\n  \}(?=\n\n  function updateControlGuides)/,
 )?.[0] || "";
-assert.doesNotMatch(
+assert.match(
   rejectedPowerOn,
-  /powered = false|powerSwitch\.classList\.remove\([^)]*"on"/,
-  "A failed provider check must leave the physical power switch up",
+  /powered = false[\s\S]*?powerSwitch\.classList\.remove\("on", "checking"\)/,
+  "A failed provider check must return the physical power switch to off",
 );
 assert.match(
   rejectedPowerOn,
   /hideDeviceBoot\(\)[\s\S]*?invoke\("engine_power", \{ powered: false \}\)/,
   "A failed provider check must blank the boot screen while keeping the engine off",
 );
-assert.match(
+assert.doesNotMatch(
   adapter,
-  /batteryPack\.classList\.toggle\("failed", hasProvider && Boolean\(lastPowerFailure\)\)/,
-  "Failed provider batteries must gain their visible red failure state",
+  /batteryPack\.classList\.(?:add|toggle)\("failed"/,
+  "Provider failure must not recolor the installed battery cells",
 );
-assert.match(
+assert.doesNotMatch(
   css,
-  /\.battery-pack\.failed \.aa-battery-label\s*\{[^}]*#c92f45[^}]*#35131b/s,
-  "Unavailable installed batteries must turn red while retaining a two-tone wrapper",
+  /\.battery-pack\.failed/,
+  "Provider failure must not define a replacement battery color scheme",
 );
 assert.doesNotMatch(adapter, /OPEN_DEVICE_HEIGHT|battery-door-open/, "The open cover must not affect native fitting");
 assert.match(adapter, /window\.innerHeight \/ DEVICE_HEIGHT/, "Device fitting must use one stable height");
@@ -398,8 +419,8 @@ assert.match(rust, /fn engine_set_ai_provider\(/, "The Tauri boundary cannot acc
 assert.match(rust, /async fn verify_ai_provider\(/, "Provider verification must not block the native UI thread");
 assert.match(
   rust,
-  /verify_ai_provider[\s\S]*?tauri::async_runtime::spawn_blocking/,
-  "The blocking provider CLI probe must run off the native UI thread",
+  /verify_ai_provider[\s\S]*?begin_verification\(provider\)[\s\S]*?tauri::async_runtime::spawn_blocking/,
+  "Each off-to-on cycle must invalidate the old proof before probing off the native UI thread",
 );
 assert.match(rust, /AiProviderState/, "Verified provider state must be shared with question generation");
 assert.match(
