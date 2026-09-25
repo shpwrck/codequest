@@ -244,6 +244,8 @@ pub struct RunAudio {
     pub completed_batches: usize,
     /// The committed answer redeemed a previously missed question.
     pub redeemed: bool,
+    /// The lens mastery stage (1-3) the committed answer woke, if any.
+    pub lens_woke: Option<u8>,
     /// A first B press has armed the leave confirmation.
     pub leave_armed: bool,
 }
@@ -313,6 +315,7 @@ pub enum Cue {
     LeaveWarning,
     FlowUp(u32),
     RuneAwaken(usize),
+    LensWake(u8),
     Wrong,
     LowWard,
     WardBreak,
@@ -342,6 +345,7 @@ impl Cue {
             Self::Correct | Self::Wrong => 8,
             Self::Redeemed | Self::FlowUp(_) | Self::LowWard => 9,
             Self::RuneAwaken(_) | Self::WardBreak => 10,
+            Self::LensWake(_) => 11,
             Self::Confirm
             | Self::Cancel
             | Self::Leave
@@ -508,6 +512,20 @@ impl Cue {
                 ]);
                 commit_then(tones)
             }
+            // A lens mastery rune wakes (stage 1-3), the run's loudest reward:
+            // two rising notes on the Oracle's D-major crest, climbing a chord
+            // tone higher with each stage, over the root and a bright shimmer.
+            Self::LensWake(stage) => {
+                let (low, high) =
+                    [(D5, A5), (FS5, D6), (A5, FS6)][usize::from(stage.clamp(1, 3)) - 1];
+                commit_then(vec![
+                    tone(2, Pulse1, low, 6, 12),
+                    tone(8, Pulse1, high, 20, 13).decay(3),
+                    tone(8, Pulse2, low, 20, 9).duty(Duty::Quarter).decay(3),
+                    tone(2, Wave, D4, 26, 10),
+                    tone(8, Noise, NOISE_HAT, 8, 7).decay(1),
+                ])
+            }
             Self::Wrong => commit_then(wrong_buzz()),
             Self::LowWard => {
                 let mut tones = wrong_buzz();
@@ -672,6 +690,7 @@ const CS6: u8 = 85;
 const D6: u8 = 86;
 const E6: u8 = 88;
 const F6: u8 = 89;
+const FS6: u8 = 90;
 const A6: u8 = 93;
 const CS7: u8 = 97;
 const PENTATONIC: [u8; 6] = [D5, E5, G5, A5, C6, D6];
@@ -1181,17 +1200,22 @@ fn quiz_events(before: &AudioSnapshot, after: &AudioSnapshot, candidates: &mut V
     if run.question != previous.question {
         candidates.push(Cue::QuestionReveal);
     } else if previous.phase == AnswerPhase::Choosing && run.phase != AnswerPhase::Choosing {
-        // One result cue per commit: the rarest threshold it crossed wins.
-        let result = match run.phase {
-            AnswerPhase::Correct if run.insight > previous.insight => Cue::RuneAwaken(run.insight),
-            AnswerPhase::Correct if run.redeemed => Cue::Redeemed,
-            AnswerPhase::Correct if run.multiplier > previous.multiplier => {
+        // One result cue per commit: a woken lens rune (the pedagogical
+        // reward) outranks every score threshold, then the rarest one wins.
+        let lens_woke = run.lens_woke.filter(|_| previous.lens_woke.is_none());
+        let result = match (run.phase, lens_woke) {
+            (AnswerPhase::Correct, Some(stage)) => Cue::LensWake(stage),
+            (AnswerPhase::Correct, None) if run.insight > previous.insight => {
+                Cue::RuneAwaken(run.insight)
+            }
+            (AnswerPhase::Correct, None) if run.redeemed => Cue::Redeemed,
+            (AnswerPhase::Correct, None) if run.multiplier > previous.multiplier => {
                 Cue::FlowUp(run.multiplier)
             }
-            AnswerPhase::Correct => Cue::Correct,
-            AnswerPhase::Wrong if run.hearts == 0 => Cue::WardBreak,
-            AnswerPhase::Wrong if run.hearts == 1 => Cue::LowWard,
-            AnswerPhase::Wrong | AnswerPhase::Choosing => Cue::Wrong,
+            (AnswerPhase::Correct, None) => Cue::Correct,
+            (AnswerPhase::Wrong, _) if run.hearts == 0 => Cue::WardBreak,
+            (AnswerPhase::Wrong, _) if run.hearts == 1 => Cue::LowWard,
+            (AnswerPhase::Wrong | AnswerPhase::Choosing, _) => Cue::Wrong,
         };
         candidates.push(result);
     } else if run.phase == AnswerPhase::Choosing && run.selected != previous.selected {
@@ -1585,6 +1609,7 @@ mod tests {
                 Cue::ChargeRune(stage),
                 Cue::SealBreak(stage),
                 Cue::RuneAwaken(stage),
+                Cue::LensWake(stage as u8),
                 Cue::FlowUp(stage as u32),
             ]);
         }
@@ -1874,6 +1899,60 @@ mod tests {
             step(&mut director, &mut snapshot);
             assert_eq!(director.last_cue(), Some(expected));
         }
+    }
+
+    #[test]
+    fn a_woken_lens_rune_outranks_every_score_threshold_with_one_cue() {
+        // (lens stage woken, insight after, redeemed) -> the single result cue.
+        let cases = [
+            (Some(1), 0, false, Cue::LensWake(1)),
+            (Some(2), 1, false, Cue::LensWake(2)),
+            (Some(3), 0, true, Cue::LensWake(3)),
+            (None, 1, false, Cue::RuneAwaken(1)),
+        ];
+        for (lens_woke, insight_after, redeemed, expected) in cases {
+            let mut director = AudioDirector::default();
+            let mut snapshot = quiz_scene(3);
+            let run = RunAudio {
+                multiplier: 2,
+                ..snapshot.run.unwrap()
+            };
+            snapshot.run = Some(run);
+            run_for(&mut director, &mut snapshot, 5);
+            snapshot.run = Some(RunAudio {
+                phase: AnswerPhase::Correct,
+                multiplier: 3,
+                insight: insight_after,
+                redeemed,
+                lens_woke,
+                ..run
+            });
+            step(&mut director, &mut snapshot);
+            assert_eq!(director.last_cue(), Some(expected));
+            // The held lesson card never starts a second result cue.
+            for _ in 0..60 {
+                step(&mut director, &mut snapshot);
+                assert_eq!(director.last_cue(), None);
+            }
+        }
+        // Each stage climbs: the crest note rises with the stage.
+        let crest = |stage: u8| {
+            Cue::LensWake(stage)
+                .tones()
+                .iter()
+                .filter(|tone| tone.voice == Pulse1)
+                .map(|tone| tone.pitch)
+                .max()
+                .unwrap()
+        };
+        assert!(crest(1) < crest(2) && crest(2) < crest(3));
+        let pitches = |cue: Cue| {
+            cue.tones()
+                .iter()
+                .map(|tone| (tone.voice, tone.pitch))
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(pitches(Cue::LensWake(1)), pitches(Cue::RuneAwaken(1)));
     }
 
     #[test]
