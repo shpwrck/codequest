@@ -660,6 +660,7 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
             .collect(),
         questions: saved.questions,
         question_batch_ends: saved.batch_ends,
+        question_batch_levels: saved.batch_levels,
         lessons: saved.lessons,
         mastery: saved.mastery,
     })

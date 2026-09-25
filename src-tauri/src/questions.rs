@@ -772,14 +772,18 @@ pub(crate) fn persist_answer_evidence(
 pub(crate) struct CartridgeQuestions {
     pub(crate) questions: Vec<engine::QuizQuestion>,
     pub(crate) batch_ends: Vec<usize>,
+    /// The generation level of each batch, parallel to `batch_ends`.
+    pub(crate) batch_levels: Vec<u32>,
     pub(crate) lessons: Vec<Lesson>,
     pub(crate) mastery: Mastery,
 }
 
 /// Builds the playable queue and lesson journal from saved batches (oldest
 /// first). Retired questions leave the queue; missed questions stay in it as
-/// reviews. Every recorded question becomes one journal lesson. A question
-/// repeated across batches is queued and journaled once.
+/// reviews. Every recorded question becomes one journal lesson, in the order
+/// it was generated. A question repeated across batches is queued and
+/// journaled once. The queue plays lower-level batches first (stable within a
+/// level), so a new Initiate run never opens on leftover Oracle-bound questions.
 pub(crate) fn cartridge_questions(
     batches: Vec<SavedQuestionBatch>,
     progress: SavedQuizProgress,
@@ -791,8 +795,9 @@ pub(crate) fn cartridge_questions(
         mastery: progress.mastery,
         ..CartridgeQuestions::default()
     };
+    let mut queued = Vec::new();
     for batch in batches {
-        let batch_start = loaded.questions.len();
+        let mut playable = Vec::new();
         for question in batch.questions {
             let identity = question_identity(&question.q);
             if !seen.insert(identity.clone()) {
@@ -803,12 +808,18 @@ pub(crate) fn cartridge_questions(
                 loaded.lessons.push(question.lesson(outstanding));
             }
             if !retired.contains(&identity) {
-                loaded.questions.push(question.quiz_question(outstanding));
+                playable.push(question.quiz_question(outstanding));
             }
         }
-        if loaded.questions.len() > batch_start {
-            loaded.batch_ends.push(loaded.questions.len());
+        if !playable.is_empty() {
+            queued.push((batch.level, playable));
         }
+    }
+    queued.sort_by_key(|(level, _)| *level);
+    for (level, playable) in queued {
+        loaded.questions.extend(playable);
+        loaded.batch_ends.push(loaded.questions.len());
+        loaded.batch_levels.push(level);
     }
     loaded
 }
