@@ -142,12 +142,15 @@ of evidence (first-try successes plus misses redeemed in a later launch) and an
 amber count of that lens's lessons awaiting review. Rune II also needs 60% of
 the lens's newest five graded answers correct, and rune III 80% plus no pending
 review; a rune those gates hold back is drawn cracked, and the totals row then
-reads `CRACKED = REVIEW DUE`. Each later page shows one lesson, oldest
-first: lens, question, correct answer, rationale, and whether a review is
-pending. A pending lesson is a self-test: it shows the player's wrong pick and
-the misconception it reveals, and seals the answer. A reveals a pending
-lesson's answer; revealing before the review counts the next redemption as
-relearning, which is saved but is not evidence. Left, Up, and L page back;
+reads `CRACKED = REVIEW DUE` while a cracked lens has a pending review, or
+`CRACKED = LOW ACCURACY` while only recent accuracy holds its runes back.
+Each later page shows one lesson, oldest first: lens, question, and whether a
+review is pending; a learned page adds the correct answer and rationale. A
+pending lesson, or a relearned lesson whose spaced check is still due, is a
+self-test: it shows the player's wrong pick and the misconception it reveals,
+and seals the answer. A reveals a sealed lesson's answer; revealing before the
+review or spaced check counts the next correct answer as relearning, which is
+saved but is not evidence. Left, Up, and L page back;
 Right, Down, and R page forward; paging wraps between the mastery page and the
 newest lesson and seals the page again. A and Start are inactive on every
 other page, and B emits `back`. An empty journal renders an explicit

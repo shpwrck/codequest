@@ -74,8 +74,8 @@ score. Every question assesses one of five concept lenses: **purpose**,
   redemptions). Rune II also needs 60% of your last five graded answers on the
   lens right (same-launch retry successes are not graded), and rune III needs
   80% and no pending review, so volume alone cannot hide a current
-  misconception. A rune held back by those gates shows *cracked* (review due)
-  instead of going dark. Waking one is the loudest moment of a run: its own
+  misconception. A rune held back by those gates shows *cracked* (a review is
+  due, or recent answers slipped) instead of going dark. Waking one is the loudest moment of a run: its own
   banner (`ROLES RUNE I`) outranks every score banner, the new rune blinks on
   the lesson card, and it has its own chime. The Codex shows the runes with
   pending reviews, and pages through the lesson journal: question, answer, and
@@ -85,7 +85,8 @@ score. Every question assesses one of five concept lenses: **purpose**,
   the result screen adds a learning ledger to the score: first-try successes,
   corrected misses (`REDEEMED`), reviews still open, and the lens whose runes
   woke this run (or a pointer to the Codex while reviews remain).
-- **Pending reviews are self-tests.** A Codex page for a missed question shows
+- **Pending reviews are self-tests.** A Codex page for a missed question (or a
+  relearned one whose spaced check is still due) shows
   the wrong choice you picked and the misconception behind it, and keeps the
   answer sealed until you press A. Reading it first is allowed, but it is not
   evidence: the next correct answer to that question counts as relearning and

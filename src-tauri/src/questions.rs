@@ -9,7 +9,8 @@
 //! depends on Tauri.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -114,12 +115,25 @@ impl QQuestion {
         }
     }
 
-    /// The journal entry for this question. `pick` is the source index of the
-    /// player's last wrong choice, when the save recorded one; an index that
-    /// is out of range or names the answer is ignored.
-    fn lesson(&self, outstanding: bool, pick: Option<usize>, peeked: bool) -> Lesson {
+    /// The journal entry for this question. `pick` is the player's last wrong
+    /// choice, when the save recorded one: its text, found among this copy's
+    /// choices (a stem repeated across batches can order them differently),
+    /// or, from saves without the text, its source index. A pick that names
+    /// the answer or no choice is ignored. `spaced_check` marks a relearned
+    /// question queued for its spaced check.
+    fn lesson(
+        &self,
+        outstanding: bool,
+        pick: SavedPick<'_>,
+        spaced_check: bool,
+        peeked: bool,
+    ) -> Lesson {
         let correct = self.choices.get(self.answer);
-        let misconception = pick
+        let index = match pick.text {
+            Some(text) => self.choices.iter().position(|choice| choice.text() == text),
+            None => pick.index,
+        };
+        let misconception = index
             .filter(|pick| *pick != self.answer)
             .and_then(|pick| self.choices.get(pick))
             .map(|choice| {
@@ -130,6 +144,7 @@ impl QQuestion {
                 };
                 (choice.text().to_string(), why.to_string())
             });
+        let pending = outstanding || spaced_check;
         Lesson {
             question: self.q.clone(),
             answer: correct.map(QChoice::text).unwrap_or_default().to_string(),
@@ -140,9 +155,18 @@ impl QQuestion {
             concept: self.lens(),
             outstanding,
             misconception,
-            peeked: outstanding && peeked,
+            peeked: pending && peeked,
+            spaced_check: !outstanding && spaced_check,
         }
     }
+}
+
+/// A saved wrong pick: its choice text when the save has it, and the source
+/// choice index earlier builds recorded.
+#[derive(Clone, Copy, Debug, Default)]
+struct SavedPick<'a> {
+    text: Option<&'a str>,
+    index: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -179,8 +203,14 @@ pub(crate) struct SavedQuizProgress {
     /// reload. A later correct answer keeps the entry. Absent from older saves.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) missed_picks: BTreeMap<String, usize>,
-    /// Missed questions whose answer the player revealed in the Codex before
-    /// answering them again. The next attempt clears the entry.
+    /// The text of each question's latest wrong pick, keyed like
+    /// `missed_picks`. A stem repeated across batches can order its choices
+    /// differently, so the reload finds the pick by text rather than trusting
+    /// an index into whichever copy was played. Absent from older saves.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) missed_pick_choices: BTreeMap<String, String>,
+    /// Missed or relearned questions whose answer the player revealed in the
+    /// Codex before answering them again. The next attempt clears the entry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) peeked_questions: Vec<String>,
 }
@@ -199,11 +229,23 @@ impl SavedQuizProgress {
         }
         if let (false, Some(pick)) = (evidence.correct, evidence.picked) {
             self.missed_picks.insert(identity.clone(), pick);
+            match &evidence.picked_choice {
+                Some(choice) => self
+                    .missed_pick_choices
+                    .insert(identity.clone(), choice.clone()),
+                None => self.missed_pick_choices.remove(&identity),
+            };
         }
         self.peeked_questions
             .retain(|question| question_identity(question) != identity);
         let relearning =
             evidence.correct && (evidence.peeked || evidence.review == Review::InSession);
+        if relearning && self.retired().contains(&identity) {
+            // A delivered repeat of a stem already retired: relearning never
+            // pulls a fully credited question back out for another check.
+            learning::record_evidence(&mut self.mastery, evidence);
+            return;
+        }
         let [answered, missed, relearned] = [
             &mut self.answered_questions,
             &mut self.missed_questions,
@@ -238,12 +280,13 @@ impl SavedQuizProgress {
         learning::record_evidence(&mut self.mastery, evidence);
     }
 
-    /// Records that the player revealed a pending lesson's answer in the
-    /// Codex. Only a question that is still missed can be peeked.
+    /// Records that the player revealed a sealed lesson's answer in the
+    /// Codex. Only a question still missed, or relearned and awaiting its
+    /// spaced check, can be peeked.
     pub(crate) fn record_peek(&mut self, question: &str) {
         let identity = question_identity(question);
         if identity.is_empty()
-            || !self.missed().contains(&identity)
+            || !(self.missed().contains(&identity) || self.relearned().contains(&identity))
             || self.peeked().contains(&identity)
         {
             return;
@@ -1353,9 +1396,24 @@ pub(crate) struct CartridgeQuestions {
 /// it was generated. A question repeated across batches is queued and
 /// journaled once. The queue plays lower-level batches first (stable within a
 /// level), so a new Initiate run never opens on leftover Oracle-bound questions.
+#[cfg(test)]
 pub(crate) fn cartridge_questions(
     batches: Vec<SavedQuestionBatch>,
     progress: SavedQuizProgress,
+) -> CartridgeQuestions {
+    cartridge_questions_in_launch(batches, progress, &HashSet::new())
+}
+
+/// `cartridge_questions` for a reload inside a launch that already
+/// answered the identities in `this_launch`. A missed or relearned question
+/// among them was last attempted in this launch, moments after its lesson
+/// card, so it returns as a same-launch review ([`Review::InSession`]), never
+/// as a spaced check: ejecting and reinserting a cartridge is not a later
+/// launch.
+pub(crate) fn cartridge_questions_in_launch(
+    batches: Vec<SavedQuestionBatch>,
+    progress: SavedQuizProgress,
+    this_launch: &HashSet<String>,
 ) -> CartridgeQuestions {
     let retired = progress.retired();
     let missed = progress.missed();
@@ -1376,20 +1434,29 @@ pub(crate) fn cartridge_questions(
                 continue;
             }
             let outstanding = missed.contains(&identity);
-            let spaced = outstanding || relearned.contains(&identity);
-            if spaced || retired.contains(&identity) {
+            let reviewed = outstanding || relearned.contains(&identity);
+            let review = match (reviewed, this_launch.contains(&identity)) {
+                (false, _) => Review::Fresh,
+                (true, false) => Review::Spaced,
+                (true, true) => Review::InSession,
+            };
+            if reviewed || retired.contains(&identity) {
+                let pick = SavedPick {
+                    text: progress
+                        .missed_pick_choices
+                        .get(&identity)
+                        .map(String::as_str),
+                    index: progress.missed_picks.get(&identity).copied(),
+                };
                 loaded.lessons.push(question.lesson(
                     outstanding,
-                    progress.missed_picks.get(&identity).copied(),
+                    pick,
+                    review == Review::Spaced && !retired.contains(&identity),
                     peeked.contains(&identity),
                 ));
             }
             if !retired.contains(&identity) {
-                playable.push(question.quiz_question(if spaced {
-                    Review::Spaced
-                } else {
-                    Review::Fresh
-                }));
+                playable.push(question.quiz_question(review));
             }
         }
         if !playable.is_empty() {
@@ -1408,10 +1475,41 @@ pub(crate) fn cartridge_questions(
 /// Everything a cartridge load needs from its save, from one read of it.
 pub(crate) fn load_cartridge_questions(path: &Path) -> Result<CartridgeQuestions, String> {
     let save = save::SaveFile::open_or_create(path)?;
-    Ok(cartridge_questions(
+    Ok(cartridge_questions_in_launch(
         saved_question_batches(&save),
         quiz_progress(&save),
+        &answered_this_launch(path),
     ))
+}
+
+/// Question identities this process has recorded answers for, per save.
+fn launch_answers() -> MutexGuard<'static, HashMap<PathBuf, HashSet<String>>> {
+    static ANSWERS: OnceLock<Mutex<HashMap<PathBuf, HashSet<String>>>> = OnceLock::new();
+    ANSWERS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Identities answered in this launch on the save at `path`.
+fn answered_this_launch(path: &Path) -> HashSet<String> {
+    launch_answers().get(path).cloned().unwrap_or_default()
+}
+
+/// The app's progress recorder: [`persist_progress`], remembering each
+/// answered identity for the rest of this launch so a cartridge reinserted
+/// before the app quits reloads it as a same-launch review.
+pub(crate) fn persist_launch_progress(path: &Path, event: &ProgressEvent) -> Result<(), String> {
+    if let ProgressEvent::Answered(evidence) = event {
+        let identity = question_identity(&evidence.question);
+        if !identity.is_empty() {
+            launch_answers()
+                .entry(path.to_path_buf())
+                .or_default()
+                .insert(identity);
+        }
+    }
+    persist_progress(path, event)
 }
 
 /// Maps a freshly generated batch to engine questions, leaving out any the
@@ -1752,6 +1850,7 @@ pub(crate) mod tests {
             correct,
             review: Review::Fresh,
             picked: None,
+            picked_choice: None,
             peeked: false,
         }
     }
@@ -2632,6 +2731,7 @@ pub(crate) mod tests {
                     outstanding: false,
                     misconception: None,
                     peeked: false,
+                    spaced_check: false,
                 },
                 Lesson {
                     question: "WHY KEEP THE DEVICE SHELL THIN?".into(),
@@ -2641,6 +2741,7 @@ pub(crate) mod tests {
                     outstanding: true,
                     misconception: None,
                     peeked: false,
+                    spaced_check: false,
                 },
                 Lesson {
                     question: explained.q.clone(),
@@ -2650,6 +2751,7 @@ pub(crate) mod tests {
                     outstanding: true,
                     misconception: None,
                     peeked: false,
+                    spaced_check: false,
                 },
             ]
         );
@@ -2774,6 +2876,160 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_relearned_lessons_spaced_check_is_sealed_and_a_peek_there_demotes_it() {
+        let mut explained = engine_state_question();
+        explained.q = "WHY DOES THE ENGINE OWN STATE?".into();
+        let batches = vec![SavedQuestionBatch {
+            level: 1,
+            questions: vec![explained.clone()],
+        }];
+        let lens = Some(Concept::Responsibility);
+        let mut progress = SavedQuizProgress::default();
+        progress.record(&evidence(&explained.q, lens, false));
+        progress.record(&AnswerEvidence {
+            review: Review::InSession,
+            ..evidence(&explained.q, lens, true)
+        });
+
+        let loaded = cartridge_questions(batches.clone(), progress.clone());
+        let lesson = &loaded.lessons[0];
+        assert!(!lesson.outstanding && lesson.spaced_check && !lesson.peeked);
+
+        // Reading its answer in the Codex is recorded like a pending peek.
+        progress.record_peek(&explained.q);
+        assert_eq!(progress.peeked_questions, [explained.q.clone()]);
+        let loaded = cartridge_questions(batches.clone(), progress.clone());
+        assert!(loaded.lessons[0].peeked);
+
+        // So the spaced check it leans on is relearning, and it returns again.
+        progress.record(&AnswerEvidence {
+            review: Review::Spaced,
+            peeked: true,
+            ..evidence(&explained.q, lens, true)
+        });
+        assert!(progress.answered_questions.is_empty());
+        assert_eq!(progress.relearned_questions, [explained.q.clone()]);
+        assert_eq!(progress.mastery[&Concept::Responsibility].evidence(), 0);
+        let loaded = cartridge_questions(batches, progress);
+        assert_eq!(loaded.questions[0].review, Review::Spaced);
+        assert!(loaded.lessons[0].spaced_check && !loaded.lessons[0].peeked);
+    }
+
+    #[test]
+    fn a_cartridge_reinserted_in_the_same_launch_never_turns_its_reviews_into_spaced_checks() {
+        let path = temporary_cartridge_path();
+        let (missed, relearned) = (
+            "WHY DOES THE ENGINE OWN STATE?",
+            "WHY KEEP THE DEVICE SHELL THIN?",
+        );
+        let batch = SavedQuestionBatch {
+            level: 1,
+            questions: [missed, relearned]
+                .map(|q| QQuestion {
+                    q: q.into(),
+                    ..engine_state_question()
+                })
+                .into(),
+        };
+        persist_ai_question_batch(&path, batch.level, &batch.questions).unwrap();
+        let lens = Some(Concept::Responsibility);
+        persist_launch_progress(&path, &evidence(missed, lens, false).into()).unwrap();
+        persist_launch_progress(&path, &evidence(relearned, lens, false).into()).unwrap();
+        let retry = AnswerEvidence {
+            review: Review::InSession,
+            ..evidence(relearned, lens, true)
+        };
+        persist_launch_progress(&path, &retry.into()).unwrap();
+
+        // Ejected and reinserted: both come back as same-launch reviews.
+        let reloaded = load_cartridge_questions(&path).unwrap();
+        let reviews = reloaded
+            .questions
+            .iter()
+            .map(|question| (question.question.as_str(), question.review))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reviews,
+            [(missed, Review::InSession), (relearned, Review::InSession)]
+        );
+        assert!(reloaded.lessons.iter().all(|lesson| !lesson.spaced_check));
+
+        // The next launch starts with no answers of its own.
+        let next_launch = cartridge_questions(vec![batch], load_quiz_progress(&path).unwrap());
+        assert!(next_launch
+            .questions
+            .iter()
+            .all(|question| question.review == Review::Spaced));
+        remove_save(&path);
+    }
+
+    #[test]
+    fn relearning_a_repeat_of_a_retired_stem_leaves_it_retired() {
+        let question = "WHY WRITE SAVES ATOMICALLY?";
+        let lens = Some(Concept::Invariant);
+        let mut progress = SavedQuizProgress::default();
+        progress.record(&evidence(question, lens, true));
+        for peeked in [false, true] {
+            progress.record(&AnswerEvidence {
+                review: Review::InSession,
+                peeked,
+                ..evidence(question, lens, true)
+            });
+        }
+        assert_eq!(progress.answered_questions, [question]);
+        assert!(progress.relearned_questions.is_empty());
+        assert!(progress.retired().contains(question));
+        assert!(progress.question_attempts.is_empty());
+        let record = progress.mastery[&Concept::Invariant];
+        assert_eq!(
+            (record.first_try, record.redeemed, record.relearned),
+            (1, 0, 2)
+        );
+    }
+
+    #[test]
+    fn a_saved_pick_is_found_by_its_text_in_a_reordered_repeat_of_the_stem() {
+        let question = engine_state_question();
+        let mut reordered = question.clone();
+        reordered.choices.rotate_left(2);
+        reordered.answer = (question.answer + question.choices.len() - 2) % question.choices.len();
+        let wrong = (0..question.choices.len())
+            .find(|index| {
+                *index != reordered.answer
+                    && reordered.choices[*index].text() != question.choices[*index].text()
+            })
+            .unwrap();
+        let picked = reordered.choices[wrong].text().to_string();
+        let mut progress = SavedQuizProgress::default();
+        // The player misses the newer, reordered copy.
+        progress.record(&AnswerEvidence {
+            picked: Some(wrong),
+            picked_choice: Some(picked.clone()),
+            ..evidence(&question.q, question.lens(), false)
+        });
+        let batches = vec![
+            SavedQuestionBatch {
+                level: 1,
+                questions: vec![question],
+            },
+            SavedQuestionBatch {
+                level: 1,
+                questions: vec![reordered],
+            },
+        ];
+        let loaded = cartridge_questions(batches, progress);
+        assert_eq!(loaded.lessons.len(), 1, "the stem is journaled once");
+        assert_eq!(
+            loaded.lessons[0]
+                .misconception
+                .as_ref()
+                .map(|(pick, _)| pick.as_str()),
+            Some(picked.as_str()),
+            "the reload shows the choice the player actually picked"
+        );
+    }
+
+    #[test]
     fn a_saved_pick_and_peek_survive_a_reload_as_the_codex_self_test() {
         let path = temporary_cartridge_path();
         let mut explained = engine_state_question();
@@ -2885,7 +3141,17 @@ pub(crate) mod tests {
 
         let plain = legacy_question("WHO DRAWS FRAMES?", &["THE SHELL", "THE ENGINE", "X", "Y"]);
         assert_eq!(
-            plain.lesson(true, Some(1), false).misconception,
+            plain
+                .lesson(
+                    true,
+                    SavedPick {
+                        text: None,
+                        index: Some(1)
+                    },
+                    false,
+                    false
+                )
+                .misconception,
             Some(("THE ENGINE".to_string(), String::new())),
             "a legacy question keeps the pick without inventing a rationale"
         );

@@ -1324,6 +1324,7 @@ fn record_lesson(lessons: &mut Vec<Lesson>, question: &QuizQuestion, correct: bo
         outstanding: !correct,
         misconception,
         peeked: false,
+        spaced_check: false,
     };
     match existing {
         Some(index) => lessons[index] = lesson,
@@ -1788,11 +1789,20 @@ impl GameState {
             .cracks_with(pending_reviews(self.lessons(), concept))
     }
 
-    /// Whether any lens shows a cracked rune.
-    fn mastery_cracked(&self) -> bool {
-        Concept::ALL
-            .into_iter()
-            .any(|concept| self.mastery_cracks(concept) > 0)
+    /// What the cracked runes mean, while any lens shows one: a review is due
+    /// when a cracked lens has a pending review, and otherwise only its recent
+    /// accuracy holds the rune back, so no review exists to promise.
+    fn mastery_crack_legend(&self) -> Option<&'static str> {
+        let mut cracked = false;
+        for concept in Concept::ALL {
+            if self.mastery_cracks(concept) > 0 {
+                if pending_reviews(self.lessons(), concept) > 0 {
+                    return Some(CODEX_CRACKED_LEGEND);
+                }
+                cracked = true;
+            }
+        }
+        cracked.then_some(CODEX_SLIPPED_LEGEND)
     }
 
     /// The current question's place in its batch and the batch's length,
@@ -1821,10 +1831,11 @@ impl GameState {
         self.lessons().get(index).map(|lesson| (index, lesson))
     }
 
-    /// Whether the Codex hides `lesson`'s answer: a pending review is a
-    /// self-test, sealed until A reveals it on this page.
+    /// Whether the Codex hides `lesson`'s answer: a pending review, or a
+    /// relearned lesson whose spaced check is still due, is a self-test,
+    /// sealed until A reveals it on this page.
     fn codex_answer_sealed(&self, lesson: &Lesson) -> bool {
-        lesson.outstanding && !self.codex_revealed
+        (lesson.outstanding || lesson.spaced_check) && !self.codex_revealed
     }
 
     /// Reveals the current Codex page's sealed answer. The first reveal of a
@@ -2269,6 +2280,9 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
         correct,
         review,
         picked: (!correct).then_some(picked),
+        picked_choice: (!correct)
+            .then(|| question.choices.get(picked).cloned())
+            .flatten(),
         peeked,
     };
     // The lens-wake check reads the gated stage after both the evidence and
@@ -4848,10 +4862,12 @@ fn codex_lesson_counter(index: usize, total: usize) -> String {
 }
 
 fn codex_lesson_status(lesson: &Lesson) -> (&'static str, Color) {
-    match (lesson.outstanding, lesson.peeked) {
-        (true, true) => ("PENDING PEEKED", AMBER),
-        (true, false) => ("REVIEW PENDING", AMBER),
-        (false, _) => ("LEARNED", CYAN),
+    match (lesson.outstanding, lesson.spaced_check, lesson.peeked) {
+        (true, _, true) => ("PENDING PEEKED", AMBER),
+        (true, _, false) => ("REVIEW PENDING", AMBER),
+        (false, true, true) => ("CHECK PEEKED", AMBER),
+        (false, true, false) => ("CHECK PENDING", AMBER),
+        (false, false, _) => ("LEARNED", CYAN),
     }
 }
 
@@ -4925,19 +4941,28 @@ fn codex_totals(lessons: &[Lesson]) -> (String, String, Color) {
     }
 }
 
-/// The legend the Codex totals row shows while any lens has a cracked rune.
+/// The legend the Codex totals row shows while a lens with a pending review
+/// has a cracked rune.
 const CODEX_CRACKED_LEGEND: &str = "CRACKED = REVIEW DUE";
+/// The legend while every cracked rune is held back by recent accuracy alone:
+/// there is no review to take, only fresh answers to get right.
+const CODEX_SLIPPED_LEGEND: &str = "CRACKED = LOW ACCURACY";
 
-/// Whether the totals row in `bounds` shows the cracked-rune legend instead
-/// of the learned and pending counts: only while a rune is cracked, and only
-/// when the legend fits inside the row's panel border.
-fn codex_totals_show_legend(bounds: UiBox, cracked: bool) -> bool {
-    cracked && text_width(CODEX_CRACKED_LEGEND, 1) <= bounds.width - 4
+/// The cracked-rune legend the totals row in `bounds` shows instead of the
+/// learned and pending counts: only while a rune is cracked, and only when
+/// the legend fits inside the row's panel border.
+fn codex_totals_show_legend(bounds: UiBox, legend: Option<&str>) -> Option<&str> {
+    legend.filter(|legend| text_width(legend, 1) <= bounds.width - 4)
 }
 
-fn draw_codex_totals(frame: &mut Framebuffer, bounds: UiBox, lessons: &[Lesson], cracked: bool) {
-    if codex_totals_show_legend(bounds, cracked) {
-        frame.centered_text_box(bounds, CODEX_CRACKED_LEGEND, AMBER, 1);
+fn draw_codex_totals(
+    frame: &mut Framebuffer,
+    bounds: UiBox,
+    lessons: &[Lesson],
+    legend: Option<&str>,
+) {
+    if let Some(legend) = codex_totals_show_legend(bounds, legend) {
+        frame.centered_text_box(bounds, legend, AMBER, 1);
         return;
     }
     let (learned, review, review_color) = codex_totals(lessons);
@@ -5097,7 +5122,7 @@ fn render_codex_mastery(frame: &mut Framebuffer, state: &GameState) {
                 height: 7,
             },
             lessons,
-            state.mastery_cracked(),
+            state.mastery_crack_legend(),
         );
         frame.text(5, 151, "L/R:PAGE", MIST, 1);
     }
@@ -5200,7 +5225,12 @@ fn render_oracle_codex_mastery(frame: &mut Framebuffer, state: &GameState) {
         frame.centered_text_box(CODEX_TOTALS_BOX, "NO LESSONS YET", AMBER, 1);
         frame.centered_text_box(CODEX_PROMPT_BOX, "ANSWER A TRIAL  B:BACK", MIST, 1);
     } else {
-        draw_codex_totals(frame, CODEX_TOTALS_BOX, lessons, state.mastery_cracked());
+        draw_codex_totals(
+            frame,
+            CODEX_TOTALS_BOX,
+            lessons,
+            state.mastery_crack_legend(),
+        );
         frame.centered_text_box(CODEX_PROMPT_BOX, "L/R:READ LESSONS  B:BACK", MIST, 1);
     }
 }
@@ -8784,6 +8814,7 @@ mod tests {
                     outstanding: true,
                     misconception: misconception.clone(),
                     peeked: false,
+                    spaced_check: false,
                 }],
                 "the journal remembers the pick and the misconception it reveals"
             );
@@ -10337,6 +10368,7 @@ mod tests {
             outstanding,
             misconception: None,
             peeked: false,
+            spaced_check: false,
         }
     }
 
@@ -12013,6 +12045,7 @@ mod tests {
                     "THE SHELL ONLY PAINTS WHAT THE ENGINE HANDS IT.".into(),
                 )),
                 peeked: false,
+                spaced_check: false,
             },
             Lesson {
                 question: WORST_LESSON_QUESTION.into(),
@@ -12022,6 +12055,7 @@ mod tests {
                 outstanding: true,
                 misconception: Some((WORST_LESSON_PICK.into(), WORST_LESSON_MISCONCEPTION.into())),
                 peeked: false,
+                spaced_check: false,
             },
             Lesson {
                 question: "WHAT DID THIS OLDER SAVE ASK?".into(),
@@ -12031,6 +12065,7 @@ mod tests {
                 outstanding: false,
                 misconception: None,
                 peeked: false,
+                spaced_check: false,
             },
         ]
     }
@@ -12270,6 +12305,49 @@ mod tests {
 
         press(&mut engine, Button::B);
         assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn a_relearned_lesson_awaiting_its_spaced_check_is_sealed_and_its_reveal_is_recorded() {
+        let mut cartridge = journal_cartridge();
+        cartridge.lessons[0].spaced_check = true;
+        let question = cartridge.lessons[0].question.clone();
+        let mut engine = quiz_menu_engine(cartridge);
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        let _ = engine.take_effects();
+        let answer_green = |engine: &GameEngine| {
+            color_pixels_in_region(
+                engine.frame(),
+                GREEN,
+                CODEX_ANSWER_BOX.x as usize..(CODEX_ANSWER_BOX.x + CODEX_ANSWER_BOX.width) as usize,
+                CODEX_ANSWER_BOX.y as usize
+                    ..(CODEX_ANSWER_BOX.y + CODEX_ANSWER_BOX.height) as usize,
+            )
+        };
+        press(&mut engine, Button::Right);
+        let lesson = game_state(&engine).codex_lesson().unwrap().1.clone();
+        assert!(!lesson.outstanding);
+        assert_eq!(codex_lesson_status(&lesson).0, "CHECK PENDING");
+        assert_eq!(
+            answer_green(&engine),
+            0,
+            "a due spaced check is never open-book"
+        );
+
+        press(&mut engine, Button::A);
+        assert!(answer_green(&engine) > 0);
+        let effects = engine.take_effects();
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EngineEffect::MarkPeeked { question: peeked, .. }] if *peeked == question
+            ),
+            "{effects:?}"
+        );
+        let lesson = &game_state(&engine).lessons()[0];
+        assert!(lesson.peeked);
+        assert_eq!(codex_lesson_status(lesson).0, "CHECK PEEKED");
     }
 
     #[test]
@@ -12579,6 +12657,7 @@ mod tests {
             outstanding,
             misconception: None,
             peeked: false,
+            spaced_check: false,
         };
         for (name, renderer, runes_x, row_y, totals) in [
             (
@@ -12614,7 +12693,7 @@ mod tests {
                 };
                 let mut frame = Framebuffer::default();
                 renderer(&mut frame, &state);
-                (frame.pixels, state.mastery_cracked())
+                (frame.pixels, state.mastery_crack_legend())
             };
             for (record, outstanding, expected) in [
                 (gated_record(5), false, [Lit, Lit, Lit]),
@@ -12633,7 +12712,8 @@ mod tests {
                     [Lit, Cracked, Unlit],
                 ),
             ] {
-                let (frame, cracked) = render(record, outstanding);
+                let (frame, crack_legend) = render(record, outstanding);
+                let cracked = crack_legend.is_some();
                 assert_eq!(
                     meter_styles(&frame, runes_x, row_y),
                     expected,
@@ -12652,7 +12732,22 @@ mod tests {
                     "{name}: the totals row turns amber for a cracked rune or a review"
                 );
                 if cracked {
-                    assert!(codex_totals_show_legend(totals, true), "{name}");
+                    assert_eq!(
+                        codex_totals_show_legend(totals, crack_legend),
+                        crack_legend,
+                        "{name}"
+                    );
+                    // Only a crack with a pending review behind it promises
+                    // one; an accuracy-only crack says so instead.
+                    assert_eq!(
+                        crack_legend,
+                        Some(if outstanding {
+                            CODEX_CRACKED_LEGEND
+                        } else {
+                            CODEX_SLIPPED_LEGEND
+                        }),
+                        "{name}: {record:?} with an open miss: {outstanding}"
+                    );
                 }
             }
 
@@ -13073,6 +13168,11 @@ mod tests {
                 "cracked legend",
                 totals,
                 centered_text_box_bounds(CODEX_TOTALS_BOX, CODEX_CRACKED_LEGEND, 1),
+            ),
+            (
+                "accuracy legend",
+                totals,
+                centered_text_box_bounds(CODEX_TOTALS_BOX, CODEX_SLIPPED_LEGEND, 1),
             ),
             (
                 "reading controls",
