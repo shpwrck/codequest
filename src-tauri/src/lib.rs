@@ -784,7 +784,8 @@ where
 }
 
 /// The engine's question loader: a fresh verified batch, without questions
-/// the player has already retired. Missed questions stay playable.
+/// the player has already retired. Missed questions stay playable and arrive
+/// as reviews, exactly as a cartridge reload queues them.
 fn load_new_questions_with<F>(
     path: &std::path::Path,
     level: u32,
@@ -797,8 +798,8 @@ where
 {
     let generated =
         load_verified_question_batch_with(path, level, count, provider_state, generate)?;
-    let retired = questions::load_retired_questions(path).unwrap_or_default();
-    Ok(questions::playable_new_questions(generated, &retired))
+    let progress = questions::load_quiz_progress(path).unwrap_or_default();
+    Ok(questions::playable_new_questions(generated, &progress))
 }
 
 /// The short reason the waiting Oracle shows for a failed generation
@@ -908,6 +909,7 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
         question_batch_levels: saved.batch_levels,
         lessons: saved.lessons,
         mastery: saved.mastery,
+        question_attempts: saved.attempts,
     })
 }
 
@@ -2016,6 +2018,14 @@ mod question_policy_tests {
         assert!(!spec.lessons[1].rationale.is_empty());
         let lens = spec.mastery[&Concept::Responsibility];
         assert_eq!((lens.first_try, lens.missed), (1, 1));
+        assert_eq!(
+            spec.question_attempts
+                .iter()
+                .map(|(identity, attempts)| (identity.as_str(), *attempts))
+                .collect::<Vec<_>>(),
+            [(explained.q.as_str(), 1)],
+            "the miss's attempt count survives the relaunch"
+        );
 
         remove_temporary_repo(repo);
     }
@@ -2062,7 +2072,7 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn the_question_loader_maps_new_batches_and_skips_only_retired_questions() {
+    fn the_question_loader_skips_retired_questions_and_marks_missed_ones_as_reviews() {
         let repo = temporary_git_repo();
         let providers = AiProviderState::default();
         providers.select(Some(AiProvider::Claude)).unwrap();
@@ -2096,7 +2106,10 @@ mod question_policy_tests {
         assert_eq!(loaded[0].question, missed.q);
         assert_eq!(loaded[0].concept, missed.lens());
         assert_eq!(loaded[0].rationales, missed.rationales());
-        assert!(!loaded[0].review);
+        assert!(
+            loaded[0].review,
+            "a regenerated missed stem returns as a review, as a reload queues it"
+        );
 
         let failing = |_: &std::path::Path, _: u32, _: usize, _: AiProvider| {
             Err("CLAUDE CALL TIMED OUT".to_string())

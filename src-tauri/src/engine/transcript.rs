@@ -767,6 +767,7 @@ mod tests {
             question_batch_levels: Vec::new(),
             lessons: Vec::new(),
             mastery: Mastery::new(),
+            question_attempts: Default::default(),
         }
     }
 
