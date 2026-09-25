@@ -138,7 +138,7 @@ saves written by other builds.
 | `quiz.progress` | questions / learning | Yes | progress object |
 
 The lesson journal is rebuilt at load from the batches and `quiz.progress`
-(see 5.4). Only one Codex action is stored: revealing a pending lesson's
+(see 5.4). Only one Codex action is stored: revealing a sealed lesson's
 answer (`peeked_questions` in 5.2). Merely opening a page records nothing.
 `quest.progress` shows up only in tests, as an example of a foreign namespace
 that updates must preserve.
@@ -196,8 +196,9 @@ default, so any subset loads.
 | `relearned_questions` | array of strings | `[]` | always | Missed questions answered correctly on a retry in the same launch. The lesson counts as learned, but the question comes back once in a later launch, and only that spaced check retires it. |
 | `mastery` | object: lens → `LensRecord` | `{}` | always | Per-lens evidence (5.3). |
 | `question_attempts` | object: identity → `u32` | `{}` | only when non-empty | Committed attempts for each missed or relearned question, keyed by normalized identity. Choice rotation continues from this count across launches. |
-| `missed_picks` | object: identity → `usize` | `{}` | only when non-empty | The source choice index of each question's latest wrong pick, so the Codex self-test can show the misconception after a reload. A later correct answer keeps the entry. On load, an index that is out of range or names the answer is ignored. |
-| `peeked_questions` | array of strings | `[]` | only when non-empty | Missed questions whose answer the player revealed in the Codex before answering them again. A reveal is recorded only while the question is still missed, once per identity; the next attempt at the question removes it. |
+| `missed_picks` | object: identity → `usize` | `{}` | only when non-empty | The source choice index of each question's latest wrong pick, from earlier builds and as a fallback. A later correct answer keeps the entry. On load, an index that is out of range or names the answer is ignored. |
+| `missed_pick_choices` | object: identity → string | `{}` | only when non-empty | The text of each question's latest wrong pick. A stem repeated across batches can order its choices differently, so the reload finds the pick by this text first and falls back to `missed_picks`. |
+| `peeked_questions` | array of strings | `[]` | only when non-empty | Missed questions, or relearned questions awaiting their spaced check, whose answer the player revealed in the Codex before answering them again. A reveal is recorded once per identity; the next attempt at the question removes it. |
 
 The three lists store the question text as it was first committed. They are
 compared by identity (7), never by raw text. `SavedQuizProgress::record` keeps
@@ -212,8 +213,11 @@ list:
 | correct | any, after a Codex peek (`AnswerEvidence::peeked`) | `relearned_questions` | incremented |
 | wrong | any | `missed_questions` | incremented |
 
-A wrong answer with a recorded pick also sets `missed_picks[identity]`, and
-every attempt removes the identity from `peeked_questions`. The app persists
+A wrong answer with a recorded pick also sets `missed_picks[identity]` and
+`missed_pick_choices[identity]`, and every attempt removes the identity from
+`peeked_questions`. A relearning success on a question that is already
+retired (a delivered repeat of its stem) only updates `mastery`: it never
+pulls the question back out for another check. The app persists
 a `learning::ProgressEvent` through `persist_progress`: `Answered` applies
 `record`, and `Peeked` applies `record_peek`.
 
@@ -243,23 +247,32 @@ lens names, in enum order: `purpose`, `responsibility`, `interaction`,
 
 Evidence is `first_try + redeemed`, and runes light at 1, 3 and 5. Rune II
 needs at least 60% correct over the newest 5 graded outcomes. Rune III needs
-at least 80% and no open miss on the lens. A record with `recent_len == 0`,
-such as one written by an earlier build, passes both accuracy gates, and only
-the open-miss gate applies to it (test
-`legacy_lens_records_load_and_keep_their_runes`). Answers to questions
-without a known lens do not update `mastery`.
+at least 80% and no open miss on the lens. The gates read
+`LensRecord::gate_accuracy`: evidence the window never saw (a record from an
+earlier build) fills the window's older slots as successes, so an upgraded
+veteran's first miss weighs as one answer among its history. A record with
+`recent_len == 0` and such evidence passes both accuracy gates, and only the
+open-miss gate applies to it (tests
+`legacy_lens_records_load_and_keep_their_runes`,
+`an_upgraded_veterans_first_miss_weighs_as_one_answer_among_its_history`).
+Answers to questions without a known lens do not update `mastery`.
 
 ### 5.4 Derived at load, never stored
 
 `load_cartridge_questions` reads the save once and builds these from the
 batches and `quiz.progress`:
 
-- the play queue, with each question marked `Fresh` or `Spaced`;
+- the play queue, with each question marked `Fresh` or `Spaced`, or
+  `InSession` for a missed or relearned identity this process already
+  answered on the same save (a cartridge ejected and reinserted within one
+  launch; the identities live in memory only and are never saved);
 - the batch boundaries and levels;
 - the lesson journal, with one entry for each missed, relearned or retired
   question, flagged `outstanding` while it is still missed, carrying the saved
-  pick's text and misconception (`missed_picks`) and flagged `peeked` while
-  it is outstanding and listed in `peeked_questions`;
+  pick's text and misconception (`missed_pick_choices`, else `missed_picks`),
+  flagged `spaced_check` while a relearned question awaits its spaced check,
+  and flagged `peeked` while it is outstanding or awaiting that check and
+  listed in `peeked_questions`;
 - the mastery;
 - the attempt counts.
 
@@ -347,7 +360,7 @@ Non-ASCII characters pass through unchanged. It is the key for:
 
 - membership in `answered_questions`, `missed_questions`,
   `relearned_questions` and `peeked_questions`;
-- the keys of `question_attempts` and `missed_picks`;
+- the keys of `question_attempts`, `missed_picks` and `missed_pick_choices`;
 - de-duplication across batches, in the prompt's avoided-stems list and in
   repair merges;
 - the seed of the stable choice order (`presentation_order`).
@@ -386,7 +399,8 @@ identity is never recorded.
 
 - Every field defaults, so progress from any earlier build loads. This covers
   saves with only `answered_questions`, saves without the relearning fields
-  or the Codex self-test fields (`missed_picks`, `peeked_questions`), and
+  or the Codex self-test fields (`missed_picks`, `missed_pick_choices`,
+  `peeked_questions`), and
   `LensRecord`s without `relearned`, `recent` or `recent_len` (tests
   `progress_from_earlier_builds_loads_as_retired_questions`,
   `legacy_progress_without_relearning_fields_loads`,
@@ -512,7 +526,9 @@ Notes on the example, from top to bottom:
 9. `question_attempts` is keyed by normalized identity and appears only when
    non-empty. The miss's next review continues the choice rotation from
    attempt 1.
-10. `missed_picks` and `peeked_questions` are absent because they are empty:
+10. `missed_picks`, `missed_pick_choices` and `peeked_questions` are absent
+    because they are empty:
     this miss was recorded without a pick, and nothing was revealed in the
     Codex. A miss committed in the app would add
-    `"missed_picks": { "WHY KEEP THE SHELL THIN?": <choice index> }`.
+    `"missed_picks": { "WHY KEEP THE SHELL THIN?": <choice index> }` and
+    `"missed_pick_choices": { "WHY KEEP THE SHELL THIN?": "<choice text>" }`.

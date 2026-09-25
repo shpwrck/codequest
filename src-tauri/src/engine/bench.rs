@@ -121,6 +121,7 @@ fn oracle_cartridge(questions: Vec<QuizQuestion>) -> CartridgeSpec {
             outstanding: index % 2 == 1,
             misconception: None,
             peeked: false,
+            spaced_check: false,
         })
         .collect();
     let mastery = Mastery::from([

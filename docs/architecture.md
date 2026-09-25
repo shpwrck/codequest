@@ -426,9 +426,10 @@ display slot; `QuizRun::source_choice` maps it back to a source index.
 3. Increments `question_attempts` for the identity.
 4. Grades the attempt: a `Review::Fresh` question whose stem the journal
    already holds is regraded as `InSession`. It builds `AnswerEvidence
-   { question, concept, correct, review, picked, peeked }`: `picked` is the
-   source index of a miss's pick, and `peeked` is true when the player
-   revealed this pending lesson's answer in the Codex first.
+   { question, concept, correct, review, picked, picked_choice, peeked }`:
+   `picked` is the source index of a miss's pick and `picked_choice` its
+   text, and `peeked` is true when the player revealed this lesson's sealed
+   answer in the Codex first.
 5. Updates mastery (`learning::record_evidence`) and the journal
    (`record_lesson`, keyed by identity), and sets `run.lens_woke` when the
    gated stage rose.
@@ -440,9 +441,10 @@ display slot; `QuizRun::source_choice` maps it back to a source index.
 
 The engine hands the host a `learning::ProgressEvent`: `Answered(evidence)`
 for a commit, or `Peeked { question }` for a Codex reveal. The writer thread
-calls `questions::persist_progress`, which applies `SavedQuizProgress::apply`
-in one `save::update` of `quiz.progress`. An answer goes through
-`SavedQuizProgress::record`:
+calls `questions::persist_launch_progress`, which remembers each answered
+identity for the rest of the launch and then applies
+`SavedQuizProgress::apply` in one `save::update` of `quiz.progress`
+(`persist_progress`). An answer goes through `SavedQuizProgress::record`:
 
 | Outcome | List it moves to | Attempt count |
 |---|---|---|
@@ -451,17 +453,23 @@ in one `save::update` of `quiz.progress`. An answer goes through
 | Wrong, any | `missed_questions` | incremented |
 
 The three lists never share an identity. `SavedQuizProgress::retired` excludes
-anything still missed or relearned. A miss also records its pick in
-`missed_picks` (kept after a later correct answer), and every attempt clears
-the identity from `peeked_questions`. A `Peeked` event adds the identity to
-`peeked_questions` only while it is still missed. The same call updates
-`mastery` with `learning::record_evidence`, so the save and the engine apply
-the same rule.
+anything still missed or relearned. A relearning success on an already
+retired question (a delivered repeat of its stem) only updates mastery, so
+one question cannot earn redemption evidence twice. A miss also records its
+pick in `missed_picks` (index) and `missed_pick_choices` (text), both kept
+after a later correct answer, and every attempt clears the identity from
+`peeked_questions`. A `Peeked` event adds the identity to `peeked_questions`
+only while it is still missed or relearned. The same call updates `mastery`
+with `learning::record_evidence`, so the save and the engine apply the same
+rule.
 
-On the next load, `cartridge_questions` queues missed and relearned
-questions as `Review::Spaced`, drops retired ones, and journals every recorded
-question (`QQuestion::lesson`, outstanding when missed, with the saved pick's
-misconception and the peek flag).
+On the next load, `cartridge_questions_in_launch` queues missed and
+relearned questions as `Review::Spaced`, or as `Review::InSession` when this
+process already answered them on the same save (a cartridge reinserted
+within one launch is not a later launch), drops retired ones, and journals
+every recorded question (`QQuestion::lesson`, outstanding when missed,
+`spaced_check` while a relearned question awaits its spaced check, with the
+saved pick found by text and the peek flag).
 
 ## 6. The learning model
 
@@ -483,8 +491,8 @@ proves:
 | Kind | Arises from | Correct answer counts as |
 |---|---|---|
 | `Fresh` | first appearance | evidence (`first_try`), graded |
-| `InSession` | `schedule_retry`, `retire_consumed_questions` requeue, `playable_new_questions` for a same-launch miss, `commit_answer` regrading a journaled stem | relearning (`relearned`), not graded |
-| `Spaced` | `cartridge_questions` for a question missed or relearned in an earlier launch | evidence (`redeemed`), graded |
+| `InSession` | `schedule_retry`, `retire_consumed_questions` requeue, `playable_new_questions` and `append_question_batch` for a same-launch miss, `commit_answer` regrading a journaled stem, a reload within the launch that answered it | relearning (`relearned`), not graded |
+| `Spaced` | `cartridge_questions_in_launch` for a question missed or relearned in an earlier launch | evidence (`redeemed`), graded |
 
 A miss of any kind increments `missed` and is graded. Whatever the kind, a
 correct answer with `AnswerEvidence::peeked` set (the answer was revealed in
@@ -528,11 +536,15 @@ register of the newest graded outcomes (`recent`, `recent_len`, capacity
   evidence reaches.
 - `stage_with(outstanding)` applies two gates over the newest
   `MASTERY_GATE_WINDOW` (5) outcomes: rune II needs at least 60% correct, and
-  rune III needs at least 80% and no outstanding miss on the lens. A record
-  with no recent outcomes passes the accuracy gates.
+  rune III needs at least 80% and no outstanding miss on the lens. The gates
+  read `gate_accuracy`, where evidence the window never saw (a record from an
+  earlier build) fills its older slots as successes, so an upgraded veteran's
+  first miss weighs as one answer among its history.
 - `cracks_with(outstanding)` is `volume_stage - stage_with`: runes the volume
   earned that a gate holds back. Renderers draw them cracked
-  (`mastery_meter_styles`), meaning a review is due.
+  (`mastery_meter_styles`). The Codex totals row reads `CRACKED = REVIEW DUE`
+  while a cracked lens has a pending review, and `CRACKED = LOW ACCURACY`
+  when none does.
 
 `engine::lens_stage` is the one stage rule the trial footer, the Codex, and
 the lens-wake check share; it counts outstanding lessons with
@@ -558,9 +570,11 @@ and emits `EngineEffect::MarkPeeked`, which the host persists as
 `quiz.progress.peeked_questions` through the same ordered save writer. The
 next correct answer to a peeked question counts as `LensRecord::relearned`,
 not evidence, moves it to `relearned_questions` so it returns once more as a
-spaced check, and any attempt clears the peek. The reveal plays
-`Cue::QuestionReveal`, and the screen transcript reads the sealed page
-without the answer.
+spaced check, and any attempt clears the peek. A relearned lesson whose
+spaced check is still queued (`Lesson::spaced_check`) is sealed the same way
+under `CHECK PENDING`, and a reveal there is recorded as a peek too, so the
+check is never open-book. The reveal plays `Cue::QuestionReveal`, and the
+screen transcript reads the sealed page without the answer.
 
 ## 7. The scene machine and manifest compilation
 
