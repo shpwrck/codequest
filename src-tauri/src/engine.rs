@@ -7999,8 +7999,8 @@ mod tests {
             }
         }
         assert!(
-            aborted.elapsed() < Duration::from_secs(2),
-            "the abort does not wait for the quest's children"
+            aborted.elapsed() < QUEST_OUTPUT_GRACE / 2,
+            "the abort stops the quest's children too, without waiting them out"
         );
 
         effect(EngineEffect::RunQuest("echo again".into()));
