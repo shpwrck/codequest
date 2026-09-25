@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use crate::codequest::{CodeQuestConfig, GameType, VisualTemplate};
 use crate::external_tools;
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
+use crate::learning::{AnswerEvidence, Concept, Lesson, Mastery};
 use crate::scene_machine::{
     SceneEvent, SceneHandler, SceneMachine, SceneMachineDefinition, SceneSignal,
 };
@@ -405,16 +406,24 @@ pub struct QuestSpec {
     pub command: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)] // SCAFFOLD: remove once lesson review reads rationales.
 pub struct QuizQuestion {
     pub question: String,
     pub choices: Vec<String>,
     pub answer: usize,
+    /// The conceptual lens this question assesses, when the provider named one.
+    pub concept: Option<Concept>,
+    /// One rationale per choice (same order as `choices`), or empty for legacy
+    /// questions generated before rationales existed.
+    pub rationales: Vec<String>,
+    /// True when this question returns because the player previously missed it.
+    pub review: bool,
 }
 
 pub type QuestionLoader =
     Arc<dyn Fn(String, u32, usize) -> Vec<QuizQuestion> + Send + Sync + 'static>;
-pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, String) + Send + Sync + 'static>;
+pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, AnswerEvidence) + Send + Sync + 'static>;
 
 pub fn quiz_question_fits(question: &str, choices: &[String], answer: usize) -> bool {
     !question.trim().is_empty()
@@ -447,6 +456,7 @@ pub struct RepositoryProvenance {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // SCAFFOLD: remove once the Codex reads lessons and mastery.
 pub struct CartridgeSpec {
     pub id: String,
     pub title: String,
@@ -457,6 +467,10 @@ pub struct CartridgeSpec {
     pub quests: Vec<QuestSpec>,
     pub questions: Vec<QuizQuestion>,
     pub question_batch_ends: Vec<usize>,
+    /// The player's lesson journal for this cartridge, oldest first.
+    pub lessons: Vec<Lesson>,
+    /// Per-lens mastery evidence accumulated across launches.
+    pub mastery: Mastery,
 }
 
 impl CartridgeSpec {
@@ -574,7 +588,7 @@ enum EngineEffect {
     },
     RecordAnsweredQuestion {
         cartridge_id: String,
-        question: String,
+        evidence: AnswerEvidence,
     },
 }
 
@@ -1541,10 +1555,16 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                 Button::A => {
                     let answered = state.cartridge.as_ref().and_then(|cart| {
                         cart.questions.get(run.question).map(|question| {
-                            (cart.id.clone(), question.question.clone(), question.answer)
+                            (
+                                cart.id.clone(),
+                                question.question.clone(),
+                                question.answer,
+                                question.concept,
+                                question.review,
+                            )
                         })
                     });
-                    let answer = answered.as_ref().map_or(0, |(_, _, answer)| *answer);
+                    let answer = answered.as_ref().map_or(0, |answered| answered.2);
                     let correct = run.selected == answer;
                     if correct {
                         run.streak += 1;
@@ -1554,10 +1574,15 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                         run.streak = 0;
                     }
                     run.feedback = Some((correct, QUIZ_FEEDBACK_TICKS));
-                    if let Some((cartridge_id, question, _)) = answered {
+                    if let Some((cartridge_id, question, _, concept, review)) = answered {
                         effects.0.push_back(EngineEffect::RecordAnsweredQuestion {
                             cartridge_id,
-                            question,
+                            evidence: AnswerEvidence {
+                                question,
+                                concept,
+                                correct,
+                                review,
+                            },
                         });
                     }
                 }
@@ -3112,8 +3137,8 @@ fn handle_effect(
         }
         EngineEffect::RecordAnsweredQuestion {
             cartridge_id,
-            question,
-        } => answered_question_recorder(cartridge_id, question),
+            evidence,
+        } => answered_question_recorder(cartridge_id, evidence),
     }
 }
 
@@ -3194,7 +3219,7 @@ fn run_quest(
     });
 }
 
-fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+pub(crate) fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
@@ -3285,8 +3310,11 @@ mod tests {
                 question: "WHO OWNS THE GAME LOOP?".into(),
                 choices: vec!["BEVY".into(), "CSS".into(), "WEBKIT".into(), "HTML".into()],
                 answer: 0,
+                ..Default::default()
             }],
             question_batch_ends: Vec::new(),
+            lessons: Vec::new(),
+            mastery: Mastery::new(),
         }
     }
 
@@ -3476,8 +3504,10 @@ mod tests {
             effect,
             EngineEffect::RecordAnsweredQuestion {
                 cartridge_id,
-                question,
-            } if cartridge_id == "/tmp/engine-test" && question == "WHO OWNS THE GAME LOOP?"
+                evidence,
+            } if cartridge_id == "/tmp/engine-test"
+                && evidence.question == "WHO OWNS THE GAME LOOP?"
+                && evidence.correct
         )));
     }
 
@@ -4714,6 +4744,7 @@ mod tests {
                         "A COMMAND".into(),
                     ],
                     answer: 0,
+                    ..Default::default()
                 }],
             },
         );
@@ -4751,6 +4782,7 @@ mod tests {
                     question: "STALE".into(),
                     choices: vec!["A".into()],
                     answer: 0,
+                    ..Default::default()
                 }],
             },
         );
@@ -4847,6 +4879,7 @@ mod tests {
                         "HOST POINTERS".into(),
                     ],
                     answer: 0,
+                    ..Default::default()
                 }],
             },
         );
@@ -4921,6 +4954,7 @@ mod tests {
                     question: "WHAT ARRIVED NEXT?".into(),
                     choices: vec!["A NEW QUESTION".into(), "NOTHING".into()],
                     answer: 0,
+                    ..Default::default()
                 }],
             },
         );
@@ -5479,6 +5513,7 @@ mod tests {
                     question: "NEW BATCH".into(),
                     choices: vec!["A".into()],
                     answer: 0,
+                    ..Default::default()
                 }],
             },
         );
@@ -5863,6 +5898,7 @@ mod tests {
                 "TO COUPLE RENDERING TO CSS".into(),
             ],
             answer: 0,
+            ..Default::default()
         };
         let machine = SceneMachine::new((*cartridge.machine).clone());
         let mut state = GameState {

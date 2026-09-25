@@ -3,6 +3,7 @@ mod codequest;
 mod engine;
 mod external_tools;
 mod font5x7;
+mod learning;
 mod save;
 pub mod scene_machine;
 
@@ -887,6 +888,7 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
                     question: question.q,
                     choices: question.choices,
                     answer: question.answer,
+                    ..Default::default()
                 }),
         );
         if questions.len() > batch_start {
@@ -912,6 +914,8 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
             .collect(),
         questions,
         question_batch_ends,
+        lessons: Vec::new(),
+        mastery: learning::Mastery::new(),
     })
 }
 
@@ -1039,12 +1043,13 @@ pub fn run() {
                 question: question.q,
                 choices: question.choices,
                 answer: question.answer,
+                ..Default::default()
             })
             .collect()
     });
     let answered_question_recorder: engine::AnsweredQuestionRecorder =
-        Arc::new(|path, question| {
-            let _ = persist_answered_question(std::path::Path::new(&path), &question);
+        Arc::new(|path, evidence: learning::AnswerEvidence| {
+            let _ = persist_answered_question(std::path::Path::new(&path), &evidence.question);
         });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
