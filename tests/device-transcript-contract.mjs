@@ -26,13 +26,37 @@ assert.match(region, /role="status"/);
 assert.match(region, /aria-live="polite"/, "Screen changes must not interrupt the player");
 assert.match(region, /aria-atomic="true"/, "Each screen is read as a whole");
 assert.doesNotMatch(region, /\shidden\b|aria-hidden/, "The transcript must stay in the accessibility tree");
-const screenInner = html.indexOf('id="screen-inner"');
-assert.ok(
-  html.indexOf('id="engine-canvas"') > screenInner
-    && html.indexOf('id="engine-transcript"') > html.indexOf('id="engine-canvas"')
-    && html.indexOf('id="engine-transcript"') < html.indexOf('id="device-boot"'),
-  "The transcript belongs to the screen it describes",
+/** The ids of every element enclosing the first tag carrying `id`. */
+function ancestorIds(markup, id) {
+  const target = markup.lastIndexOf("<", markup.indexOf(`id="${id}"`));
+  const open = [];
+  const tags = /<(\/?)([a-zA-Z][\w-]*)([^>]*?)(\/?)>/g;
+  for (let tag = tags.exec(markup); tag && tag.index < target; tag = tags.exec(markup)) {
+    const [, closing, name, attributes, selfClosing] = tag;
+    if (closing) {
+      while (open.length && open.pop().name !== name.toLowerCase());
+    } else if (!selfClosing && !/^(?:meta|link|input|br|img|hr|source)$/i.test(name)) {
+      open.push({ name: name.toLowerCase(), id: attributes.match(/\sid="([^"]+)"/)?.[1] });
+    }
+  }
+  return open.map((element) => element.id).filter(Boolean);
+}
+assert.ok(ancestorIds(html, "engine-canvas").includes("device-front"), "The parser sees the screen inside the front face");
+// The shell hides a face (aria-hidden + inert) whenever the other one shows,
+// and makes the whole device inert behind a tray, while the engine keeps
+// publishing. The transcript therefore sits outside both, beside the device
+// message, so no presentation state can hide what the engine says.
+assert.deepEqual(
+  ancestorIds(html, "engine-transcript"),
+  ancestorIds(html, "device-message"),
+  "The transcript lives beside the device message",
 );
+for (const hider of ["shell-scale", "device-rotator", "device-front", "device-back"]) {
+  assert.ok(!ancestorIds(html, "engine-transcript").includes(hider), `The transcript must not sit inside #${hider}`);
+}
+for (const hidden of ["frontFace", "backFace", "scaleEl"]) {
+  assert.match(adapter, new RegExp(`${hidden}\\.inert = `), `${hidden} is still one of the regions the shell makes inert`);
+}
 const srOnly = css.match(/\.sr-only \{([\s\S]*?)\}/)?.[1] || "";
 assert.match(srOnly, /position:\s*absolute/);
 assert.match(srOnly, /clip:\s*rect\(0, 0, 0, 0\)/);

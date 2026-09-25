@@ -457,6 +457,85 @@ assert.ok(
   "The silenced voice's gate is released now",
 );
 
+// A clock that jumps back maps new ticks before notes already planned. Those
+// notes must never sound after the later ticks, nor on top of them. Each test
+// note's pitch is its tick, so a source names the tick it plays.
+const RELEASE_TOLERANCE = 0.008 + 1e-9;
+function soundingNotes(context) {
+  return context.nodes
+    .filter((node) => node.kind === "oscillator")
+    .map((source) => ({
+      source,
+      tick: Math.round(69 + 12 * Math.log2(source.frequency.events[0][1] / 440)),
+      start: source.startAt,
+      stop: source.stopAt,
+      connected: source.output.output.output != null,
+    }))
+    .filter(({ start, stop, connected }) => stop > start && connected);
+}
+function assertTickOrderAndMonophony(context, voiceOf, label) {
+  const heard = soundingNotes(context).map((entry) => ({ ...entry, voice: voiceOf(entry.tick) }));
+  for (const earlier of heard) {
+    for (const later of heard) {
+      if (earlier.tick >= later.tick) continue;
+      assert.ok(
+        earlier.start <= later.start + 1e-9,
+        `${label}: tick ${earlier.tick} starts at ${earlier.start.toFixed(3)}, after tick ${later.tick} at ${later.start.toFixed(3)}`,
+      );
+      if (earlier.voice === later.voice) {
+        assert.ok(
+          earlier.stop <= later.start + RELEASE_TOLERANCE,
+          `${label}: ${earlier.voice} plays tick ${earlier.tick} over tick ${later.tick}`,
+        );
+      }
+    }
+  }
+  return heard;
+}
+{
+  // The review repro: the audio clock freezes while the engine keeps ticking,
+  // until tick 104 maps past the lookahead and the clock re-anchors back.
+  const frozen = createSpeaker({ AudioContextClass: FakeAudioContext, storage: memoryStorage() });
+  frozen.unlock();
+  const frozenAudio = FakeAudioContext.last;
+  for (let tick = 100; tick <= 104; tick += 1) {
+    frozen.play({ tick, notes: [note({ tick, pitch: tick, durationTicks: 30 })] });
+  }
+  const heard = assertTickOrderAndMonophony(frozenAudio, () => "pulse1", "frozen audio clock");
+  assert.deepEqual(heard.map(({ tick }) => tick), [104], "Material the jump overtook never starts; the newest tick plays");
+  assert.equal(heard[0].start, 10 + SCHEDULE_LEAD_SECONDS);
+}
+{
+  // Across voices too: a later tick on one voice never plays before an
+  // earlier tick planned on another.
+  const voices = ["pulse1", "pulse2", "wave"];
+  const voiceOf = (tick) => voices[tick % voices.length];
+  const frozen = createSpeaker({ AudioContextClass: FakeAudioContext, storage: memoryStorage() });
+  frozen.unlock();
+  const frozenAudio = FakeAudioContext.last;
+  for (let tick = 100; tick <= 112; tick += 1) {
+    frozen.play({ tick, notes: [note({ voice: voiceOf(tick), tick, pitch: tick, durationTicks: 30 })] });
+  }
+  const heard = assertTickOrderAndMonophony(frozenAudio, voiceOf, "frozen clock, three voices");
+  assert.ok(heard.some(({ tick }) => tick === 112), "The newest tick still plays");
+}
+{
+  // The synthetic stream with audio-clock stalls, through the real speaker.
+  const streamed = createSpeaker({ AudioContextClass: FakeAudioContext, storage: memoryStorage() });
+  streamed.unlock();
+  const streamAudio = FakeAudioContext.last;
+  const polls = simulateStream({ seconds: 11, audioStalls: [{ at: 5, stall: 0.1 }, { at: 9, stall: 0.2 }] });
+  for (const poll of polls) {
+    streamAudio.currentTime = poll.now;
+    streamed.play({
+      tick: poll.tick,
+      notes: poll.notes.map((entry) => ({ ...entry, pitch: entry.tick, durationTicks: 3 })),
+    });
+  }
+  const heard = assertTickOrderAndMonophony(streamAudio, () => "pulse1", "audio clock stalls");
+  assert.ok(heard.length > polls.at(-1).tick * 0.9, "Only the few notes a jump overtakes are dropped");
+}
+
 // Noise brightness: every authored step sounds distinct, even past the
 // playback-rate ceiling (the archival tick is brighter than the hat).
 const NOISE_SCALE = [48, 72, 84, 96, 100];
