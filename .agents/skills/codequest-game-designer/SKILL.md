@@ -222,10 +222,52 @@ behaviors; the manifest can reorder or reuse them but cannot define arbitrary
 code or create a new renderer. Typed art templates select only renderers shipped
 with CODE QUEST; mechanics and template-less art remain validated design
 metadata. Schema v1 remains compatible metadata and uses the built-in flow.
+Sound follows the trusted handler rather than the manifest: classify an
+implemented cue as Implemented with its audio test as evidence, and its
+`art.kind = "audio"` entry as Configured/metadata.
 
 When the desired game type is unsupported, finish the design brief but do not
 put an invalid type in `CODEQUEST.toml`. Explain the runtime gap and propose the
 smallest schema/engine increment needed before authoring that manifest change.
+
+### 8. Build on the runtime learning mechanisms
+
+In the CODE QUEST engine repository, quiz cartridges already provide these
+mechanisms. Reuse them before proposing new ones, and cite them as evidence in
+the pedagogy map and runtime traceability:
+
+- Concept lenses: every generated question names one of five lenses
+  (`learning::Concept`: purpose, responsibility, interaction, invariant,
+  tradeoff) and carries a rationale for every choice (payload v2 in
+  `questions.rs`). Acceptance drops a question without a known lens or with a
+  missing, overlong, or location-citing rationale.
+- Lesson card: after commitment the `concept-quiz` handler replaces the
+  choices with the committed pick's rationale (the misconception) and then the
+  answer's rationale, holds input for 45 ticks, and waits for A or Start.
+- Shuffled choices: `learning::presentation_order` gives each question a stable
+  order and moves every choice on each retry, so answer position is never a
+  cue.
+- Spaced retry: a survivable miss inserts a review copy after up to three
+  intervening questions (`RETRY_GAP`) inside the current batch, and the batch
+  cannot complete until it is retried. A correct review is a redemption.
+- Lens mastery: evidence (first-try successes plus redemptions) wakes three
+  runes per lens at 1, 3, and 5 (`learning::MASTERY_THRESHOLDS`). The save
+  retires correct answers, keeps misses queued as reviews across launches, and
+  stores mastery per cartridge.
+- Oracle Codex: the `codex` handler, reached through the quiz menu's
+  `open-codex` signal and drawn by the `oracle-codex` template, shows lens
+  mastery with pending-review counts and rereads every lesson.
+- Difficulty as concept depth: `Concept::focus_for_level` sets each level's
+  focus lenses, level 4+ requests PREDICT transfer questions, and each request
+  names the player's weakest lens and earlier stems. These are prompt-level
+  requirements; acceptance does not enforce the focus share or the PREDICT
+  count.
+- Reduced motion: the engine follows the system's reduced-motion preference by
+  freezing decorative motion while keeping scene timing, input, and data.
+
+When a design needs different thresholds, gaps, or feedback, name the constant
+or handler that would change and classify it as proposed engine work; the
+manifest cannot configure these values.
 
 ## Produce the artifacts
 
@@ -241,10 +283,15 @@ production status, and implementation gaps; the manifest is the stable graph
 the engine can validate. Preserve unrelated existing design decisions and show
 material changes clearly.
 
-When the runtime contract has no dedicated sound schema, retain sound needs as
-referenced production entries (for example `art.kind = "audio"`) instead of
-inventing fields. State plainly that metadata does not play audio. Do not use a
-visual `template` name to imply sound playback.
+The runtime contract has no sound schema and no audio `template` value, so
+retain sound needs as referenced production entries (for example
+`art.kind = "audio"`) instead of inventing fields. In the CODE QUEST engine,
+sound is engine-owned: the audio director in `src-tauri/src/audio.rs` diffs a
+per-tick state snapshot and derives cues and scene loops for each trusted
+handler, so an audio entry is the requirement the director implements, not a
+switch that plays anything. State which ledger cues the director already
+implements and which need engine work. Do not use a visual `template` name to
+imply sound playback.
 
 ## Validate before handoff
 
@@ -270,6 +317,15 @@ CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
   oracle_templates_produce_nine_distinct_native_scene_frames --lib
 ```
 
+That test writes every reachable Oracle scene, including both Codex page
+layouts, despite its historical name. Lesson-card states come from
+`lesson_cards_render_the_misconception_and_the_answer`. The menu-to-Codex route
+and the remaining Codex states come from
+`dogfood_manifest_routes_its_menu_into_the_templated_codex`,
+`empty_codex_says_no_lessons_yet_and_cannot_page`, and
+`codex_lesson_pages_show_the_answer_and_mark_outstanding_reviews`. Run them
+with the same variable when those surfaces change.
+
 When the repository includes `scripts/compile-oracle-assets.sh`, run it before
 the preview test so inspectable PNG sources and embedded runtime buffers cannot
 drift.
@@ -285,7 +341,9 @@ Then perform a traceability pass:
   easiest successful strategy cannot bypass the intended knowledge through
   guessing, superficial pattern matching, or unrelated dexterity.
 - Failure feedback identifies the consequence of the player's misconception
-  and enables an informed retry.
+  and enables an informed retry. In a question-based design, every choice
+  carries a rationale and a miss returns for a spaced retry, or the brief
+  explains why not.
 - Progression increases conceptual independence or complexity, not only speed,
   punishment, health, score, or visual intensity.
 - Every start/transition target resolves and every scene is reachable.
