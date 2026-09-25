@@ -1,8 +1,9 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -734,6 +735,83 @@ struct Framebuffer {
     pixels: Vec<u8>,
 }
 
+/// A plate's address and grade (base, cyan, and gold scales), or no grade.
+type PlateKey = (usize, Option<[u16; 3]>);
+
+thread_local! {
+    /// RGBA expansions of the RGB plates drawn on this thread.
+    static PLATES: RefCell<Vec<(PlateKey, Box<[u8]>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Expands an RGB plate to opaque RGBA. A grade scales cyan-leaning pixels,
+/// gold-leaning pixels, and all others by its three `/255` factors.
+fn expand_plate(rgb: &[u8; NATIVE_RGB_BYTES], grade: Option<[u16; 3]>, rgba: &mut [u8]) {
+    let pixels = rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(rgba.as_chunks_mut::<4>().0.iter_mut());
+    let Some([base, cyan, gold]) = grade else {
+        for (source, destination) in pixels {
+            destination.copy_from_slice(&[source[0], source[1], source[2], 255]);
+        }
+        return;
+    };
+    for (source, destination) in pixels {
+        let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
+        let scale = if is_cyan_pixel(red, green, blue) {
+            cyan
+        } else if is_gold_pixel(red, green, blue) {
+            gold
+        } else {
+            base
+        };
+        destination.copy_from_slice(&[
+            (red * scale / 255) as u8,
+            (green * scale / 255) as u8,
+            (blue * scale / 255) as u8,
+            255,
+        ]);
+    }
+}
+
+fn is_cyan_pixel(red: u16, green: u16, blue: u16) -> bool {
+    blue > red.saturating_add(12) && green > red
+}
+
+fn is_gold_pixel(red: u16, green: u16, blue: u16) -> bool {
+    red > blue.saturating_add(14) && green > blue
+}
+
+/// Which awakening strength lights each pixel of the awakening plate: 0 the
+/// Oracle's center diamond, 1 cyan, 2 gold, 3 ambient. The plate is constant,
+/// so the classes are computed once.
+fn awakening_classes() -> &'static [u8] {
+    static CLASSES: OnceLock<Box<[u8]>> = OnceLock::new();
+    CLASSES.get_or_init(|| {
+        ORACLE_AWAKENING
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let x = (index % WIDTH) as i32;
+                let y = (index / WIDTH) as i32;
+                let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
+                if (x - 120).abs() + (y - 80).abs() < 47 {
+                    0
+                } else if is_cyan_pixel(red, green, blue) {
+                    1
+                } else if is_gold_pixel(red, green, blue) {
+                    2
+                } else {
+                    3
+                }
+            })
+            .collect()
+    })
+}
+
 impl Default for Framebuffer {
     fn default() -> Self {
         Self {
@@ -749,39 +827,39 @@ impl Framebuffer {
         }
     }
 
-    fn blit_rgb(&mut self, rgb: &[u8; NATIVE_RGB_BYTES]) {
-        for (source, destination) in rgb
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
-        {
-            destination.copy_from_slice(&[source[0], source[1], source[2], 255]);
-        }
+    fn blit_rgb(&mut self, rgb: &'static [u8; NATIVE_RGB_BYTES]) {
+        self.blit_plate(rgb, None);
     }
 
-    fn blit_rgb_graded(&mut self, rgb: &[u8; NATIVE_RGB_BYTES], base: u16, cyan: u16, gold: u16) {
-        for (source, destination) in rgb
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
-        {
-            let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
-            let scale = if blue > red.saturating_add(12) && green > red {
-                cyan
-            } else if red > blue.saturating_add(14) && green > blue {
-                gold
-            } else {
-                base
-            };
-            destination.copy_from_slice(&[
-                (red * scale / 255) as u8,
-                (green * scale / 255) as u8,
-                (blue * scale / 255) as u8,
-                255,
-            ]);
-        }
+    fn blit_rgb_graded(
+        &mut self,
+        rgb: &'static [u8; NATIVE_RGB_BYTES],
+        base: u16,
+        cyan: u16,
+        gold: u16,
+    ) {
+        self.blit_plate(rgb, Some([base, cyan, gold]));
+    }
+
+    /// Copies a plate's RGBA expansion, built once per plate and grade on
+    /// this thread: every plate and grade is a constant, so expanding it
+    /// again each tick would only redo identical work.
+    fn blit_plate(&mut self, rgb: &'static [u8; NATIVE_RGB_BYTES], grade: Option<[u16; 3]>) {
+        // A `'static` plate's address identifies it for the life of the
+        // process; a duplicated constant only costs one more cache entry.
+        let key = (rgb.as_ptr() as usize, grade);
+        PLATES.with_borrow_mut(|plates| {
+            let index = plates
+                .iter()
+                .position(|(cached, _)| *cached == key)
+                .unwrap_or_else(|| {
+                    let mut expanded = vec![0; FRAME_BYTES].into_boxed_slice();
+                    expand_plate(rgb, grade, &mut expanded);
+                    plates.push((key, expanded));
+                    plates.len() - 1
+                });
+            self.pixels.copy_from_slice(&plates[index].1);
+        });
     }
 
     fn blit_awakening(&mut self, ticks: u64) {
@@ -789,35 +867,32 @@ impl Framebuffer {
         let gold_strength = 38 + ticks.saturating_sub(112).min(108) as u16 * 197 / 108;
         let center_strength = 38 + ticks.saturating_sub(188).min(48) as u16 * 217 / 48;
         let ambient_strength = 34 + ticks.min(236) as u16 * 38 / 236;
+        // One scaled channel table per pixel class, indexed like
+        // `AwakeningClass`; each entry is the per-pixel `value * strength / 255`.
+        let tables = [
+            center_strength,
+            cyan_strength,
+            gold_strength,
+            ambient_strength,
+        ]
+        .map(|strength| {
+            std::array::from_fn::<u8, 256, _>(|value| (value as u16 * strength / 255) as u8)
+        });
 
-        for (index, (source, destination)) in ORACLE_AWAKENING
+        for ((source, class), destination) in ORACLE_AWAKENING
             .as_chunks::<3>()
             .0
             .iter()
+            .zip(awakening_classes())
             .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
-            .enumerate()
         {
-            let x = (index % WIDTH) as i32;
-            let y = (index / WIDTH) as i32;
-            let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
-            let in_oracle = (x - 120).abs() + (y - 80).abs() < 47;
-            let cyan_pixel = blue > red.saturating_add(12) && green > red;
-            let gold_pixel = red > blue.saturating_add(14) && green > blue;
-            let strength = if in_oracle {
-                center_strength
-            } else if cyan_pixel {
-                cyan_strength
-            } else if gold_pixel {
-                gold_strength
-            } else {
-                ambient_strength
-            };
-            destination.copy_from_slice(&[
-                (red * strength / 255) as u8,
-                (green * strength / 255) as u8,
-                (blue * strength / 255) as u8,
+            let table = &tables[*class as usize];
+            *destination = [
+                table[source[0] as usize],
+                table[source[1] as usize],
+                table[source[2] as usize],
                 255,
-            ]);
+            ];
         }
     }
 
@@ -914,7 +989,7 @@ impl Framebuffer {
 
     fn text(&mut self, x: i32, y: i32, text: &str, color: Color, scale: i32) {
         let mut cursor = x;
-        for ch in text.to_ascii_uppercase().chars() {
+        for ch in text.chars().map(|ch| ch.to_ascii_uppercase()) {
             for (gy, row) in glyph(ch).iter().enumerate() {
                 for gx in 0..GLYPH_WIDTH {
                     let mask = 1u8 << (GLYPH_WIDTH - 1 - gx) as u32;
@@ -935,7 +1010,7 @@ impl Framebuffer {
 
     fn compact_text(&mut self, x: i32, y: i32, text: &str, color: Color) {
         let mut cursor = x;
-        for ch in text.to_ascii_uppercase().chars() {
+        for ch in text.chars().map(|ch| ch.to_ascii_uppercase()) {
             for (glyph_y, row) in glyph(ch).iter().enumerate() {
                 for glyph_x in 0..GLYPH_WIDTH {
                     let mask = 1u8 << (GLYPH_WIDTH - 1 - glyph_x) as u32;
@@ -2567,6 +2642,8 @@ impl Default for GameEngine {
     }
 }
 
+#[cfg(test)]
+mod bench;
 mod transcript;
 
 use transcript::TranscriptChannel;
@@ -3225,23 +3302,27 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
 }
 
 fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
+    draw_screen(&mut frame, &state);
+}
+
+fn draw_screen(frame: &mut Framebuffer, state: &GameState) {
     match state.screen {
         Screen::Off => frame.clear(INK),
-        Screen::Boot => render_boot(&mut frame, &state),
-        Screen::Copyright => render_copyright(&mut frame, &state),
-        Screen::OpeningFanfare => render_opening_fanfare(&mut frame, &state),
-        Screen::Title => render_title(&mut frame, &state),
-        Screen::QuizMenu => render_quiz_menu(&mut frame, &state),
-        Screen::CharacterCreation => render_character_creation(&mut frame, &state),
-        Screen::Oracle => render_oracle(&mut frame, &state),
-        Screen::Quiz => render_quiz(&mut frame, &state),
-        Screen::LevelUp => render_level_up(&mut frame, &state),
-        Screen::GameOver => render_game_over(&mut frame, &state),
-        Screen::Codex => render_codex(&mut frame, &state),
-        Screen::QuestSelect => render_quest_select(&mut frame, &state),
-        Screen::Battle => render_battle(&mut frame, &state),
-        Screen::Victory => render_result(&mut frame, true),
-        Screen::Defeat => render_result(&mut frame, false),
+        Screen::Boot => render_boot(frame, state),
+        Screen::Copyright => render_copyright(frame, state),
+        Screen::OpeningFanfare => render_opening_fanfare(frame, state),
+        Screen::Title => render_title(frame, state),
+        Screen::QuizMenu => render_quiz_menu(frame, state),
+        Screen::CharacterCreation => render_character_creation(frame, state),
+        Screen::Oracle => render_oracle(frame, state),
+        Screen::Quiz => render_quiz(frame, state),
+        Screen::LevelUp => render_level_up(frame, state),
+        Screen::GameOver => render_game_over(frame, state),
+        Screen::Codex => render_codex(frame, state),
+        Screen::QuestSelect => render_quest_select(frame, state),
+        Screen::Battle => render_battle(frame, state),
+        Screen::Victory => render_result(frame, true),
+        Screen::Defeat => render_result(frame, false),
     }
 }
 

@@ -207,15 +207,22 @@ impl Transcript {
     /// Adds `text` as one sentence with collapsed whitespace, closing it with
     /// a period unless it already ends in terminal punctuation.
     fn say(&mut self, text: impl AsRef<str>) {
-        let text = text
-            .as_ref()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        match text.chars().last() {
+        let text = text.as_ref();
+        // Built in place: this runs for every sentence on every tick.
+        let mut sentence = String::with_capacity(text.len() + 1);
+        for word in text.split_whitespace() {
+            if !sentence.is_empty() {
+                sentence.push(' ');
+            }
+            sentence.push_str(word);
+        }
+        match sentence.chars().last() {
             None => {}
-            Some('.' | '!' | '?') => self.0.push(text),
-            Some(_) => self.0.push(format!("{text}.")),
+            Some('.' | '!' | '?') => self.0.push(sentence),
+            Some(_) => {
+                sentence.push('.');
+                self.0.push(sentence);
+            }
         }
     }
 
