@@ -779,15 +779,86 @@ fn ask_provider(provider: AiProvider, prompt: &str, timeout: Duration) -> Result
     provider_reply(provider, &output)
 }
 
-/// Time one generation request may take, its repair pass included.
-const AI_QUESTION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Time a Claude generation request may take, its repair pass included.
+/// Measured replies arrive in about 20 seconds, so this leaves room for a
+/// slow reply followed by a repair call.
+const CLAUDE_QUESTION_TIMEOUT: Duration = Duration::from_secs(150);
+/// Time a Codex generation request may take, its repair pass included.
+/// Codex with high reasoning effort answers in 40 to 70 seconds and
+/// sometimes takes more than two minutes.
+const CODEX_QUESTION_TIMEOUT: Duration = Duration::from_secs(300);
+/// Replaces the provider's generation budget, in whole seconds.
+const AI_TIMEOUT_ENV: &str = "CQA_AI_TIMEOUT_SECS";
+/// The range an [`AI_TIMEOUT_ENV`] value is clamped to: long enough for one
+/// reply, short enough that a hung CLI still ends in a retry.
+const MIN_AI_QUESTION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_AI_QUESTION_TIMEOUT: Duration = Duration::from_secs(900);
+/// Time the readiness probe may take. The probe asks for a one-word reply,
+/// so it keeps a shorter deadline than generation.
+const AI_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A repair pass is skipped when less than this is left of the budget.
 const MIN_REPAIR_TIME: Duration = Duration::from_secs(10);
 
-/// Generates up to `count` questions. When the reply falls short and some
+/// The generation budget for `provider` when nothing overrides it.
+fn default_question_timeout(provider: AiProvider) -> Duration {
+    match provider {
+        AiProvider::Claude => CLAUDE_QUESTION_TIMEOUT,
+        AiProvider::Codex => CODEX_QUESTION_TIMEOUT,
+    }
+}
+
+/// Parses an [`AI_TIMEOUT_ENV`] value. An unset or blank value is `Ok(None)`.
+/// A whole number of seconds is clamped to the allowed range. Anything else
+/// is an error that names the value, so the caller can log it and keep the
+/// default.
+fn parse_question_timeout(value: Option<&str>) -> Result<Option<Duration>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "{AI_TIMEOUT_ENV}={value:?} is not a whole number of seconds; using the default"
+        ));
+    }
+    // Only digits remain, so a failed parse is an overflow: clamp it too.
+    let seconds = value.parse::<u64>().unwrap_or(u64::MAX);
+    Ok(Some(
+        Duration::from_secs(seconds).clamp(MIN_AI_QUESTION_TIMEOUT, MAX_AI_QUESTION_TIMEOUT),
+    ))
+}
+
+/// The generation budget for `provider`: the override when one is given,
+/// otherwise the provider's default.
+fn question_timeout(provider: AiProvider, override_timeout: Option<Duration>) -> Duration {
+    override_timeout.unwrap_or_else(|| default_question_timeout(provider))
+}
+
+/// The generation budget for `provider`, with [`AI_TIMEOUT_ENV`] read from
+/// the environment. An invalid value is logged and the default is used.
+fn configured_question_timeout(provider: AiProvider) -> Duration {
+    let raw = std::env::var(AI_TIMEOUT_ENV).ok();
+    let override_timeout = parse_question_timeout(raw.as_deref()).unwrap_or_else(|warning| {
+        eprintln!("CODE QUEST {warning}");
+        None
+    });
+    question_timeout(provider, override_timeout)
+}
+
+/// Adds the budget to a timeout error so the log says how long the request
+/// was allowed. [`question_failure_reason`] still reports it as `TIMED OUT`.
+fn with_timeout_budget(error: String, budget: Duration) -> String {
+    if error.ends_with("TIMED OUT") {
+        format!("{error} AFTER {}S", budget.as_secs())
+    } else {
+        error
+    }
+}
+
+/// Generates up to `count` questions within the provider's budget (see
+/// [`configured_question_timeout`]). When the reply falls short and some
 /// rejections failed only on mechanics (length, rationale, lens, ASCII), one
 /// repair call through the same provider gives them a second chance within
-/// what is left of [`AI_QUESTION_TIMEOUT`].
+/// what is left of that budget.
 fn ai_questions(
     path: &std::path::Path,
     level: u32,
@@ -808,12 +879,14 @@ fn ai_questions(
     let brief = repo_context::project_brief(path, &tracked_files(path));
     let learner = questions::load_learner_state(path).unwrap_or_default();
     let prompt = questions::bounded_ai_question_prompt(&name, level, count, &brief, &learner);
+    let budget = configured_question_timeout(provider);
     let started = Instant::now();
-    let result = ask_provider(provider, &prompt, AI_QUESTION_TIMEOUT)?;
+    let result = ask_provider(provider, &prompt, budget)
+        .map_err(|error| with_timeout_budget(error, budget))?;
     let mut batch = questions::parse_generated_batch(&result, count)?;
     if let Some(repair) = batch.repair_request(count) {
         let before = batch.accepted.len();
-        let remaining = AI_QUESTION_TIMEOUT.saturating_sub(started.elapsed());
+        let remaining = budget.saturating_sub(started.elapsed());
         let repaired = if remaining < MIN_REPAIR_TIME {
             eprintln!(
                 "CODE QUEST question repair skipped: {}s of the budget left",
@@ -824,6 +897,7 @@ fn ai_questions(
             match ask_provider(provider, &repair.prompt, remaining) {
                 Ok(reply) => batch.merge_repairs(&repair, &reply, count),
                 Err(error) => {
+                    let error = with_timeout_budget(error, remaining);
                     eprintln!("CODE QUEST question repair failed: {error}");
                     0
                 }
@@ -999,7 +1073,7 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
 fn prove_ai_provider(provider: AiProvider) -> Result<(), String> {
     // The probe takes the same stdin path as generation, so a pass means
     // generation requests can reach the CLI too.
-    let response = ask_provider(provider, AI_PROBE_PROMPT, Duration::from_secs(60))?;
+    let response = ask_provider(provider, AI_PROBE_PROMPT, AI_PROBE_TIMEOUT)?;
     if response.trim() != "CODEQUEST_READY" {
         return Err(format!("{} READINESS CHECK FAILED", provider.name()));
     }
@@ -1685,7 +1759,8 @@ mod question_policy_tests {
         let batch = questions::tests::over_length_batch();
         let request = batch.repair_request(6).unwrap();
         let started = Instant::now();
-        let reply = ask_provider(provider, &request.prompt, AI_QUESTION_TIMEOUT)
+        let budget = configured_question_timeout(provider);
+        let reply = ask_provider(provider, &request.prompt, budget)
             .unwrap_or_else(|error| panic!("repair call failed: {error}"));
         let elapsed = started.elapsed();
         let mut repaired = batch.clone();
@@ -1727,7 +1802,7 @@ mod question_policy_tests {
                 elapsed.as_secs_f64()
             );
             assert!(
-                elapsed <= AI_QUESTION_TIMEOUT + Duration::from_secs(5),
+                elapsed <= budget + Duration::from_secs(5),
                 "generation and repair stay within the budget"
             );
         }
@@ -2491,6 +2566,74 @@ mod question_policy_tests {
         ] {
             assert_eq!(question_failure_reason(error), reason, "{error}");
         }
+    }
+
+    #[test]
+    fn generation_budgets_follow_the_provider_unless_overridden() {
+        assert_eq!(
+            question_timeout(AiProvider::Claude, None),
+            Duration::from_secs(150)
+        );
+        assert_eq!(
+            question_timeout(AiProvider::Codex, None),
+            Duration::from_secs(300)
+        );
+        let chosen = Some(Duration::from_secs(420));
+        for provider in [AiProvider::Claude, AiProvider::Codex] {
+            assert_eq!(
+                question_timeout(provider, chosen),
+                Duration::from_secs(420),
+                "{provider:?}"
+            );
+            assert!(
+                default_question_timeout(provider) > AI_PROBE_TIMEOUT,
+                "the readiness probe keeps a shorter deadline than generation"
+            );
+            assert!(default_question_timeout(provider) > MIN_REPAIR_TIME);
+        }
+    }
+
+    #[test]
+    fn the_timeout_override_is_validated_and_clamped() {
+        for unset in [None, Some(""), Some("   ")] {
+            assert_eq!(parse_question_timeout(unset), Ok(None), "{unset:?}");
+        }
+        for (value, seconds) in [
+            ("240", 240),
+            (" 90 ", 90),
+            ("30", 30),
+            ("900", 900),
+            ("0", 30),
+            ("5", 30),
+            ("901", 900),
+            ("86400", 900),
+            ("18446744073709551615", 900),
+            ("99999999999999999999", 900),
+        ] {
+            assert_eq!(
+                parse_question_timeout(Some(value)),
+                Ok(Some(Duration::from_secs(seconds))),
+                "{value:?}"
+            );
+        }
+        for invalid in ["abc", "-5", "+5", "2.5", "120s", "1e3", "1 20"] {
+            let error = parse_question_timeout(Some(invalid)).unwrap_err();
+            assert!(error.contains("CQA_AI_TIMEOUT_SECS"), "{error}");
+            assert!(error.contains(invalid), "{error}");
+        }
+    }
+
+    #[test]
+    fn timeout_errors_name_their_budget_and_still_read_as_timed_out() {
+        let budget = Duration::from_secs(300);
+        let error = with_timeout_budget("CODEX CALL TIMED OUT".to_string(), budget);
+        assert_eq!(error, "CODEX CALL TIMED OUT AFTER 300S");
+        assert_eq!(question_failure_reason(&error), "TIMED OUT");
+        assert_eq!(
+            with_timeout_budget("CODEX CALL FAILED - EXIT CODE 7".to_string(), budget),
+            "CODEX CALL FAILED - EXIT CODE 7",
+            "other failures pass through unchanged"
+        );
     }
 
     #[test]
