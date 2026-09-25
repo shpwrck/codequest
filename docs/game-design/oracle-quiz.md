@@ -271,11 +271,24 @@ and the selected provider retries.
   x1, x2, and x3 score. Score awakens Insight Runes at 300, 900, and 1800.
   Commitment immediately records the question in the cartridge save; future
   runs or launches compare normalized text and skip every recorded question.
-  After commitment, hold the revealed answer for 45 ticks with every input
-  intentionally inactive.
-- **Feedback:** Keep the correct choice visible in green after either result;
-  show an incorrect committed choice in red. Do not add redundant correct/wrong
-  words. Use visibly spaced glyphs that begin beyond the plate's left divider,
+  Choices appear in a stable order derived from the normalized question and
+  its attempt number, so the provider's answer position never predicts the
+  answer and every retry moves every choice. After commitment, hold the lesson
+  card for 45 ticks with every input intentionally inactive, then wait for A
+  or Start. A survivable miss inserts a review copy three questions later,
+  never past the current batch end, and shifts later batch ends so a batch
+  cannot complete before its misses are retried. Each commitment updates the
+  lens mastery record and upserts the lesson journal entry. B arms a 90-tick
+  in-scene confirmation; a second B inside the window leaves the run, and any
+  other button or the timeout disarms it.
+- **Feedback:** Replace the four choice frames with one lesson panel: a miss
+  shows the committed pick in red with its rationale (the misconception) and
+  then the answer in green with its rationale; a success shows the answer with
+  its rationale. `-` and `+` markers repeat the verdict without relying on hue.
+  The panel footer names the question's lens with its three mastery runes and
+  shows `A:CONTINUE` only once input is live. A correct review attempt shows
+  `REDEEMED` unless an Insight Rune crossing takes precedence.
+  Use visibly spaced glyphs that begin beyond the plate's left divider,
   keeping every ornament outside glyph and inter-glyph cells, plus distinct
   cursor, commit, low-ward, and batch-complete cues. Replace generic health
   stars with three Oracle ward runes; compose ward, flow multiplier, three
@@ -368,7 +381,8 @@ engine does not load or play them yet.
 | Oracle Datafall with safe recovery | Implemented in this pass | Held movement, authored drops, automatic counters, 3/6/9 charge runes, 1/3/5 breakable containment runes, split HUD, and B-back close the indefinite wait. |
 | Themed run instrumentation and score thresholds | Implemented in this pass | Oracle ward glyphs replace stars; x1/x2/x3 flow changes score awards; 300/900/1800 Insight Runes change HUD and review feedback; exact breakpoints and native sibling bounds are tested. |
 | Safe Oracle-to-quiz input boundary | Implemented | A/Start are ignored in Oracle; B exits to the menu; held D-pad controls have no answer action after the automatic transition. |
-| Quiz result and reward input boundaries | Implemented in this pass | The 45-tick answer reveal replaces active controls, and level-up enforces a 60-tick hold before A/Start can leave. |
+| Quiz result and reward input boundaries | Implemented in this pass | The 45-tick lesson hold replaces active controls and then waits for A/Start; B leaves an active question only through a 90-tick confirmation; level-up enforces a 60-tick hold before A/Start can leave. |
+| Lesson card, shuffled choices, and spaced retry | Implemented in this pass | Committed answers show the misconception and answer rationales in a composed lesson panel; display order follows `learning::presentation_order`; misses return within the batch; mastery and the lesson journal update on every commitment. Native layout, contrast, and flow tests cover worst-case copy. |
 | Answered-question continuity | Implemented | Answer commitment records question text under `quiz.progress`; cartridge reload compares normalized text and filters recorded questions while serialized save updates preserve the independent AI-batch namespace and read the legacy Claude key. |
 | Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
 | Concise answer review and reduced motion | Partially implemented | Green/red answer copy, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
@@ -417,9 +431,8 @@ engine does not load or play them yet.
 
 ## Open decisions
 
-- Should the generated question payload eventually include a short explanation,
-  or is revealing the correct choice enough feedback at this resolution?
 - Beyond answered-question history, should score, wards, hero identity, or
   presentation tier persist per cartridge across launches?
-- Should B from an active quiz abandon immediately, or use an in-scene
-  confirmation state before leaving the run?
+
+Resolved: every choice carries a short rationale shown on the lesson card, and
+B from an active quiz uses an in-scene 90-tick confirmation before leaving.

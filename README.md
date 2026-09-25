@@ -202,8 +202,10 @@ the running CODE QUEST ADVANCE build.
 | F1 | FRONT/BACK switch | Turn the device over |
 
 The engine consumes input edges, not browser key-repeat events. During the
-Datafall-to-question handoff and the 45-tick answer review, inactive controls are
+Datafall-to-question handoff and the 45-tick lesson hold, inactive controls are
 explicitly ignored so a held key cannot answer the next question accidentally.
+After the hold, the lesson card waits for a fresh A or Start press, and leaving
+an active question takes two B presses within 90 ticks.
 
 ## Architecture
 
