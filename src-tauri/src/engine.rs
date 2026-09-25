@@ -1670,15 +1670,19 @@ impl GameState {
     }
 
     /// The current question's place in its batch and the batch's length,
-    /// which grows as misses insert their review copies. Both cap at 99.
+    /// which grows as misses insert their review copies. An open (short) last
+    /// batch counts toward the full `QUESTION_BATCH_SIZE` it will be topped up
+    /// to, so the header never promises a batch end that is not coming. Both
+    /// cap at 99.
     fn batch_progress(&self) -> Option<(usize, usize)> {
         let run = self.quiz.as_ref()?;
         let batch = run.completed_batches;
         let start = self.batch_start(batch);
         let end = *self.batch_ends.get(batch)?;
+        let length = (end - start).max(QUESTION_BATCH_SIZE);
         (start..end)
             .contains(&run.question)
-            .then(|| ((run.question - start + 1).min(99), (end - start).min(99)))
+            .then(|| ((run.question - start + 1).min(99), length.min(99)))
     }
 
     fn codex_page_count(&self) -> usize {
@@ -3840,11 +3844,15 @@ fn trial_retry_note_x(column_x: i32, column_end: i32, concept: Option<Concept>, 
     left + (right - left - text_width(note, 1)) / 2
 }
 
-/// Where the legacy footer puts `note` after `banner`, when it fits before
-/// `A:CONTINUE` with a 4px gap.
+/// Where the legacy footer puts `note`: centered in the free span between
+/// `banner` and `A:CONTINUE`, when that leaves at least a glyph cell (6px) on
+/// each side. Both are amber, so a tight gap would read as one phrase
+/// (`WARD STRAINED BACK IN 3`).
 fn quiz_retry_note_x(banner: &str, note: &str) -> Option<i32> {
-    let x = 5 + text_width(banner, 1) + 8;
-    (x + text_width(note, 1) + 4 <= 235 - text_width(LESSON_CONTINUE, 1)).then_some(x)
+    let left = 5 + text_width(banner, 1);
+    let right = 235 - text_width(LESSON_CONTINUE, 1);
+    let spare = right - left - text_width(note, 1);
+    (spare >= 12).then_some(left + spare / 2)
 }
 
 /// True once the lesson card's input hold has elapsed and A or Start will
@@ -8225,6 +8233,18 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(next_batch.batch_progress(), Some((1, 6)));
+
+        // An open short batch (two carried questions awaiting their top-up,
+        // one miss already inserted) counts toward the full batch, not 3/3.
+        let open_batch = GameState {
+            batch_ends: vec![3],
+            quiz: Some(QuizRun {
+                question: 2,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(open_batch.batch_progress(), Some((3, QUESTION_BATCH_SIZE)));
     }
 
     #[test]
@@ -8602,19 +8622,32 @@ mod tests {
         );
         assert!(bounds_are_disjoint(legacy_banner, legacy_prompt));
         assert!(bounds_are_disjoint(legacy_panel, legacy_banner));
-        // The legacy footer adds the retry note only where it clears both the
-        // banner and A:CONTINUE; the widest banners drop it.
-        for banner in ["WARD STRAINED", "WARD FRACTURES", "INVARIANTS RUNE III"] {
+        // The legacy footer adds the retry note only where it keeps a glyph
+        // cell from both the same-colored ward banner and A:CONTINUE; the
+        // widest banners drop it.
+        for banner in [
+            "WARD STRAINED",
+            "WARD FRACTURES",
+            "WARD BROKEN",
+            "INVARIANTS RUNE III",
+        ] {
             let banner_bounds = text_bounds(5, 151, banner, 1);
-            for note in ["BACK IN 3", "NEXT RUN"] {
+            for note in ["BACK IN 3", "UP NEXT", "NEXT RUN"] {
                 if let Some(x) = quiz_retry_note_x(banner, note) {
                     let note_bounds = text_bounds(x, 151, note, 1);
-                    assert!(note_bounds.x - (banner_bounds.x + banner_bounds.width) >= 4);
-                    assert!(legacy_prompt.x - (note_bounds.x + note_bounds.width) >= 4);
+                    assert!(note_bounds.x - (banner_bounds.x + banner_bounds.width) >= 6);
+                    assert!(legacy_prompt.x - (note_bounds.x + note_bounds.width) >= 6);
                 }
             }
         }
-        assert!(quiz_retry_note_x("WARD STRAINED", "BACK IN 3").is_some());
+        // Every ward banner a miss can show keeps its note.
+        for (banner, note) in [
+            ("WARD STRAINED", "BACK IN 3"),
+            ("WARD FRACTURES", "BACK IN 3"),
+            ("WARD BROKEN", "NEXT RUN"),
+        ] {
+            assert!(quiz_retry_note_x(banner, note).is_some(), "{banner} {note}");
+        }
         assert!(quiz_retry_note_x("INVARIANTS RUNE III", "BACK IN 3").is_none());
         let ratio = contrast_ratio(AMBER, NAVY);
         assert!(ratio >= 4.5, "legacy retry note contrast {ratio:.2}:1");
