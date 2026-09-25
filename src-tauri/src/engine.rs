@@ -6242,6 +6242,125 @@ mod tests {
         }
     }
 
+    /// Asserts `frame` shows exactly `text` in `color` at `bounds` over the
+    /// pixels `background` holds there.
+    fn assert_text_drawn(
+        frame: &Framebuffer,
+        background: &Framebuffer,
+        bounds: LayoutBounds,
+        text: &str,
+        color: Color,
+    ) {
+        let mut expected = Framebuffer {
+            pixels: background.pixels.clone(),
+        };
+        expected.text(bounds.x, bounds.y, text, color, 1);
+        let x_range = bounds.x as usize..(bounds.x + bounds.width) as usize;
+        let y_range = bounds.y as usize..(bounds.y + bounds.height) as usize;
+        assert!(
+            frame_region(&frame.pixels, x_range.clone(), y_range.clone())
+                == frame_region(&expected.pixels, x_range, y_range),
+            "`{text}` is not drawn at {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn debrief_screens_draw_the_rows_they_report() {
+        let plain = |color| {
+            let mut frame = Framebuffer::default();
+            frame.clear(color);
+            frame
+        };
+        let mut state = worst_case_debrief_state();
+        // A batch recap distinct from the run totals, so the screens must read
+        // the completed batch's snapshot.
+        state.quiz.as_mut().unwrap().ledger.last_batch = (4, 6);
+
+        // The Aftermath draws every row it computes, lens row included.
+        let mut plate = Framebuffer::default();
+        plate.blit_rgb(ORACLE_AFTERMATH);
+        let mut frame = Framebuffer::default();
+        render_oracle_aftermath(&mut frame, &state);
+        let panel = ui_box_bounds(AFTERMATH_CONTENT_BOX);
+        let rows = aftermath_rows(&state, state.quiz.as_ref().unwrap());
+        assert_eq!(rows.len(), AFTERMATH_ROW_YS.len());
+        for (y, text, color) in &rows {
+            assert_text_drawn(
+                &frame,
+                &plate,
+                centered_text_in_bounds(panel, *y, text, 1),
+                text,
+                *color,
+            );
+        }
+
+        // The Ascension heading follows the tier crossing, and the recap and
+        // hold footer name the batch just survived and the lenses ahead.
+        let void = plain(VOID);
+        for (level, title) in [(3, "ORACLE BOND DEEPENS"), (4, "ORACLE BOND ASCENDS")] {
+            state.quiz.as_mut().unwrap().level = level;
+            let mut frame = Framebuffer::default();
+            render_oracle_ascension(&mut frame, &state);
+            assert_text_drawn(
+                &frame,
+                &void,
+                centered_text_in_bounds(ui_box_bounds(ASCENSION_TITLE_BOX), 73, title, 1),
+                title,
+                AMBER,
+            );
+            assert_text_drawn(
+                &frame,
+                &void,
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 4/6", 1),
+                "1ST TRY 4/6",
+                PARCH,
+            );
+            let next = next_focus_label(level);
+            assert_text_drawn(
+                &frame,
+                &void,
+                centered_text_box_bounds(MENU_FOOTER_BOX, &next, 1),
+                &next,
+                CYAN,
+            );
+        }
+
+        // The legacy screens carry the same debrief.
+        let template = state.cartridge.take().unwrap();
+        let mut legacy = quiz_cartridge();
+        legacy.lessons = template.lessons;
+        legacy.mastery = template.mastery;
+        state.cartridge = Some(legacy);
+        state.quiz.as_mut().unwrap().level = 3;
+        let mut frame = Framebuffer::default();
+        render_level_up(&mut frame, &state);
+        let navy = plain(NAVY);
+        let next = next_focus_label(3);
+        for (y, text, color) in [
+            (42, "ORACLE BOND DEEPENS", CYAN),
+            (130, "1ST TRY 4/6", CYAN),
+            (LEVEL_UP_FOOTER_Y, next.as_str(), MIST),
+        ] {
+            assert_text_drawn(&frame, &navy, centered_text_bounds(y, text, 1), text, color);
+        }
+
+        let mut frame = Framebuffer::default();
+        render_game_over(&mut frame, &state);
+        let run = state.quiz.as_ref().unwrap();
+        let insight = InsightStage::from_score(run.score);
+        let mut rows = vec![
+            ("SCORE 0000".to_string(), GOLD),
+            ("INSIGHT UNLIT".to_string(), insight.color()),
+            ("LEVEL 3 REACHED".to_string(), SKY),
+        ];
+        rows.extend(ledger_rows(&state, run));
+        assert_eq!(rows.len(), GAME_OVER_ROW_YS.len(), "the lens row is shown");
+        let ink = plain(INK);
+        for ((text, color), y) in rows.iter().zip(GAME_OVER_ROW_YS) {
+            assert_text_drawn(&frame, &ink, centered_text_bounds(y, text, 1), text, *color);
+        }
+    }
+
     #[test]
     fn the_bond_ascends_only_across_a_tier_and_names_the_next_lenses() {
         assert_eq!(bond_title(2), "ORACLE BOND ASCENDS", "initiate to adept");
