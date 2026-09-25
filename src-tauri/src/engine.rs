@@ -1931,11 +1931,17 @@ impl Default for GameEngine {
     }
 }
 
+mod transcript;
+
+use transcript::TranscriptChannel;
+pub use transcript::TranscriptUpdate;
+
 #[derive(Clone)]
 pub struct EngineRuntime {
     sender: mpsc::Sender<EngineCommand>,
     frame: Arc<RwLock<Vec<u8>>>,
     audio: Arc<Mutex<AudioQueue>>,
+    transcript: Arc<Mutex<TranscriptChannel>>,
 }
 
 impl EngineRuntime {
@@ -1948,6 +1954,8 @@ impl EngineRuntime {
         let shared_frame = Arc::clone(&frame);
         let audio = Arc::new(Mutex::new(AudioQueue::default()));
         let shared_audio = Arc::clone(&audio);
+        let transcript = Arc::new(Mutex::new(TranscriptChannel::default()));
+        let shared_transcript = Arc::clone(&transcript);
         let engine_sender = sender.clone();
         let child = Arc::new(Mutex::new(None));
         let running_child = Arc::clone(&child);
@@ -1977,6 +1985,10 @@ impl EngineRuntime {
                     if let Ok(mut queue) = shared_audio.lock() {
                         queue.append(engine.take_audio());
                     }
+                    let text = engine.transcript();
+                    if let Ok(mut channel) = shared_transcript.lock() {
+                        channel.publish(text);
+                    }
                     next_frame += FRAME_TIME;
                     if let Some(remaining) = next_frame.checked_duration_since(Instant::now()) {
                         thread::sleep(remaining);
@@ -1991,6 +2003,7 @@ impl EngineRuntime {
             sender,
             frame,
             audio,
+            transcript,
         }
     }
 
@@ -2031,6 +2044,14 @@ impl EngineRuntime {
             .lock()
             .map(|mut queue| queue.drain())
             .unwrap_or_default()
+    }
+
+    /// The latest screen transcript, when it is newer than `seq`.
+    pub fn transcript_since(&self, seq: u64) -> Option<TranscriptUpdate> {
+        self.transcript
+            .lock()
+            .ok()
+            .and_then(|channel| channel.since(seq))
     }
 
     fn send(&self, command: EngineCommand) -> Result<(), String> {

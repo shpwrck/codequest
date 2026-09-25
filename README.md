@@ -98,6 +98,14 @@ When your system asks for reduced motion, the engine freezes decorative motion
 inside the framebuffer (blinking prompts stay lit, heroes stop bobbing,
 starfields stop scrolling) without changing any scene timing, input, or data.
 
+Screen readers get the game in words. Beside the framebuffer and the notes,
+the engine writes a plain-language transcript of every screen: the question,
+its choices in display order and which one is focused, the lesson card's
+reasoning, the Codex pages, the Oracle's status, and the controls that work.
+The shell places it in a visually hidden, polite live region. The engine
+republishes the transcript only when its words change, so blinking prompts
+and falling data are never announced.
+
 ## Install
 
 Download the current packages from the
@@ -294,6 +302,7 @@ Gameplay and device presentation have a hard boundary:
 |---|---|
 | `src/` | JavaScript/CSS physical shell, cartridge rack, native-dialog bridge, boot overlay, input forwarding, window fitting, framebuffer canvas, device status strip, and the WebAudio speaker (`speaker.js`) that plays engine notes |
 | `src-tauri/src/engine.rs` | Headless Bevy game state, fixed-step timing, input edges, Oracle/quiz/Codex/quest behavior, lesson cards and spaced retry, command effects, and CPU rendering |
+| `src-tauri/src/engine/transcript.rs` | The screen transcript for screen readers, derived from the same state and helpers the renderers use, and its change-only publication |
 | `src-tauri/src/audio.rs` | Engine-owned four-voice chip sound: per-tick state snapshots, the cue/loop director, and tick-stamped notes |
 | `src-tauri/src/learning.rs` | The learning model: concept lenses, answer evidence, mastery thresholds, the lesson journal, and choice-presentation order |
 | `src-tauri/src/scene_machine.rs` | Executable finite-state machine and built-in quiz/quest templates |
