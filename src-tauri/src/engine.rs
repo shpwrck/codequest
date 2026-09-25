@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -323,6 +324,8 @@ const QUIZ_LESSON_BOX: UiBox = UiBox {
     width: 230,
     height: 80,
 };
+/// Top of the legacy lesson card's INK footer strip, just below the panel.
+const QUIZ_LESSON_FOOTER_STRIP_Y: i32 = QUIZ_LESSON_BOX.y + QUIZ_LESSON_BOX.height;
 /// Extra pixels between the misconception block and the answer block.
 const LESSON_BLOCK_GAP: i32 = 4;
 const ASCENSION_TITLE_BOX: UiBox = UiBox {
@@ -684,15 +687,23 @@ enum EngineCommand {
     QuestOutput {
         line: String,
         stderr: bool,
+        /// The `RunQuest` generation this output belongs to; output from an
+        /// earlier quest never lands in a later quest's log.
+        quest: u64,
     },
     QuestDone {
         success: bool,
+        quest: u64,
     },
 }
 
 #[derive(Clone, Debug)]
 enum EngineEffect {
-    RunQuest(String),
+    RunQuest {
+        command: String,
+        /// Echoed by the quest's output and completion.
+        quest: u64,
+    },
     AbortQuest,
     RequestQuestions {
         cartridge_id: String,
@@ -1402,6 +1413,12 @@ struct GameState {
     pending_questions: Option<(String, Vec<QuizQuestion>, u32)>,
     questions_loading: bool,
     question_retry_ticks: u16,
+    /// Ticks the request in flight has been out, so a retry after a failure
+    /// keeps the failure on the Oracle line until it has had time to answer.
+    question_request_ticks: u16,
+    /// The `screen_ticks` at which the Oracle line last became a recall, so
+    /// every recall starts at the top of the recall order, written in fresh.
+    oracle_recall_since: u64,
     /// Sequence number of the newest question request; only its reply lands.
     question_request_seq: u64,
     /// The level the newest question request asked for.
@@ -1417,6 +1434,8 @@ struct GameState {
     oracle_data: u32,
     oracle_bug_hits: u32,
     logs: VecDeque<(String, bool)>,
+    /// Generation of the newest quest started; only its messages land.
+    quest_generation: u64,
     active_boss: String,
 }
 
@@ -1446,6 +1465,8 @@ impl Default for GameState {
             pending_questions: None,
             questions_loading: false,
             question_retry_ticks: 0,
+            question_request_ticks: 0,
+            oracle_recall_since: 0,
             question_request_seq: 0,
             question_request_level: 1,
             question_failure: None,
@@ -1456,6 +1477,7 @@ impl Default for GameState {
             oracle_data: 0,
             oracle_bug_hits: 0,
             logs: VecDeque::new(),
+            quest_generation: 0,
             active_boss: String::new(),
         }
     }
@@ -1523,6 +1545,7 @@ impl GameState {
         }
         self.screen = screen;
         self.screen_ticks = 0;
+        self.oracle_recall_since = 0;
     }
 
     fn start_machine(&mut self) {
@@ -1662,6 +1685,26 @@ impl GameState {
         run_level.saturating_add(full_ahead).max(queued)
     }
 
+    /// The generation level of the batch the player enters next: its queued
+    /// level, else the level of the request in flight for it, else the level
+    /// the next request will ask for (never below the run's). Saved batches
+    /// can sit above the run's level, so this, not `run.level`, names the
+    /// lenses coming up.
+    fn upcoming_batch_level(&self) -> u32 {
+        let (completed, run_level) = self
+            .quiz
+            .as_ref()
+            .map_or((0, 1), |run| (run.completed_batches, run.level));
+        self.batch_levels
+            .get(completed)
+            .copied()
+            .or_else(|| {
+                self.questions_loading
+                    .then_some(self.question_request_level)
+            })
+            .unwrap_or_else(|| self.next_batch_level().max(run_level))
+    }
+
     /// The signal a level-up continues with: back to the quiz when the next
     /// question is ready, otherwise to the Oracle to wait for it.
     fn level_up_signal(&self) -> SceneSignal {
@@ -1797,15 +1840,26 @@ impl GameState {
 
     /// The current question's place in its batch and the batch's length,
     /// which grows as misses insert their review copies. An open (short) last
-    /// batch counts toward the full `QUESTION_BATCH_SIZE` it will be topped up
-    /// to, so the header never promises a batch end that is not coming. Both
-    /// cap at 99.
+    /// batch counts toward the full `QUESTION_BATCH_SIZE` new questions it
+    /// will be topped up to, plus the review copies it already holds, so the
+    /// header never promises a batch end that is not coming and a miss grows
+    /// it at once. Both cap at 99.
     fn batch_progress(&self) -> Option<(usize, usize)> {
         let run = self.quiz.as_ref()?;
         let batch = run.completed_batches;
         let start = self.batch_start(batch);
         let end = *self.batch_ends.get(batch)?;
-        let length = (end - start).max(QUESTION_BATCH_SIZE);
+        let questions = self
+            .cartridge
+            .as_ref()
+            .map_or(&[][..], |cartridge| cartridge.questions.as_slice());
+        let reviews = questions
+            .iter()
+            .take(end)
+            .skip(start)
+            .filter(|question| question.review.is_review())
+            .count();
+        let length = reviews + (end - start - reviews).max(QUESTION_BATCH_SIZE);
         (start..end)
             .contains(&run.question)
             .then(|| ((run.question - start + 1).min(99), length.min(99)))
@@ -1873,36 +1927,72 @@ impl GameState {
     }
 
     /// Journal lessons in the order the waiting Oracle recalls them:
-    /// outstanding misses first, then cleared lessons, each newest first.
+    /// outstanding misses first, then cleared lessons, each newest first. An
+    /// outstanding miss whose question is still queued (a retry copy ahead
+    /// in this run, or a review the next run opens with) is left out: its
+    /// answer on the Oracle line would turn that review into a reading check.
     fn recall_order(&self) -> Vec<&Lesson> {
         let lessons = self.lessons();
-        let outstanding = lessons.iter().rev().filter(|lesson| lesson.outstanding);
+        let ahead = self
+            .quiz
+            .as_ref()
+            .filter(|_| self.run_is_live())
+            .map_or(0, |run| run.question);
+        let queued: HashSet<String> = self
+            .cartridge
+            .as_ref()
+            .map_or(&[][..], |cartridge| cartridge.questions.as_slice())
+            .iter()
+            .skip(ahead)
+            .map(|question| question_identity(&question.question))
+            .collect();
+        let outstanding = lessons.iter().rev().filter(|lesson| {
+            lesson.outstanding && !queued.contains(&question_identity(&lesson.question))
+        });
         let cleared = lessons.iter().rev().filter(|lesson| !lesson.outstanding);
         outstanding.chain(cleared).collect()
     }
 
-    /// The lesson the Oracle recalls now. Each wait starts from the top of
+    /// Ticks the Oracle line has been a recall, counted from the tick it last
+    /// took the line over (or from the screen's start).
+    fn oracle_recall_ticks(&self) -> u64 {
+        self.screen_ticks.saturating_sub(self.oracle_recall_since)
+    }
+
+    /// The lesson the Oracle recalls now. Each recall starts from the top of
     /// the recall order and moves on every `ORACLE_RECALL_TICKS`.
     fn recalled_lesson(&self) -> Option<&Lesson> {
         let order = self.recall_order();
-        let slot = (self.screen_ticks / ORACLE_RECALL_TICKS) as usize;
+        let slot = (self.oracle_recall_ticks() / ORACLE_RECALL_TICKS) as usize;
         order.get(slot.checked_rem(order.len())?).copied()
     }
 
     /// The waiting Oracle's second status line. While a failed request waits
-    /// out its retry delay the line says why; otherwise it recalls a journal
-    /// lesson, and with no journal it keeps naming the last failure while
-    /// the retry is in flight. A ready question has no failure to explain.
+    /// out its retry delay the line says why, and it keeps saying so for the
+    /// first `ORACLE_RETRY_HOLD_TICKS` of the retry, so a retry that fails
+    /// again at once never flashes a lesson between two failure lines.
+    /// Otherwise it recalls a journal lesson, and with no journal it keeps
+    /// naming the last failure while the retry is in flight. A ready question
+    /// has no failure to explain.
     fn oracle_line(&self) -> Option<OracleLine> {
         let failure = self
             .question_failure
             .as_ref()
             .filter(|_| !self.has_unanswered_question());
-        if let Some(reason) = failure.filter(|_| self.question_retry_ticks > 0) {
-            return Some(OracleLine::Failure {
-                reason: reason.clone(),
-                retry_in: Some(u64::from(self.question_retry_ticks).div_ceil(60)),
-            });
+        if let Some(reason) = failure {
+            if self.question_retry_ticks > 0 {
+                return Some(OracleLine::Failure {
+                    reason: reason.clone(),
+                    retry_in: Some(u64::from(self.question_retry_ticks).div_ceil(60)),
+                });
+            }
+            // The retry is about to be sent, or has only just been sent.
+            if !self.questions_loading || self.question_request_ticks < ORACLE_RETRY_HOLD_TICKS {
+                return Some(OracleLine::Failure {
+                    reason: reason.clone(),
+                    retry_in: None,
+                });
+            }
         }
         if let Some(lesson) = self.recalled_lesson() {
             return Some(OracleLine::Recall {
@@ -1923,7 +2013,7 @@ impl GameState {
     fn oracle_line_reveal(&self, line: &OracleLine) -> usize {
         match line {
             OracleLine::Recall { .. } if !self.reduced_motion => {
-                ((self.screen_ticks % ORACLE_RECALL_TICKS) as usize + 1)
+                ((self.oracle_recall_ticks() % ORACLE_RECALL_TICKS) as usize + 1)
                     * ORACLE_RECALL_REVEAL_PER_TICK
             }
             _ => usize::MAX,
@@ -1952,6 +2042,9 @@ enum OracleLine {
 const ORACLE_RECALL_TICKS: u64 = 240;
 /// Characters a newly recalled lesson reveals per tick.
 const ORACLE_RECALL_REVEAL_PER_TICK: usize = 2;
+/// Ticks a retry after a failure keeps the failure on the Oracle line before
+/// a recall may take it over: one second.
+const ORACLE_RETRY_HOLD_TICKS: u16 = 60;
 /// Longest failure reason the Oracle line carries.
 const ORACLE_FAILURE_CHARS: usize = 24;
 
@@ -2014,6 +2107,7 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
         seq: state.question_request_seq,
     });
     state.questions_loading = true;
+    state.question_request_ticks = 0;
 }
 
 /// New (non-review) questions in `questions[start..end]`.
@@ -2058,41 +2152,76 @@ fn rebatch(ends: &[usize], levels: &[u32], questions: &[QuizQuestion]) -> (Vec<u
 /// a full batch was survived, then forms new batches from the rest. Questions
 /// already in the deck (queued, or answered this session) or waiting as a
 /// deferred review copy are skipped, so a regenerated stem is never queued
-/// beside its own review copy. Review copies deferred for their retry gap
-/// are then placed in the grown deck.
+/// beside its own review copy, and so are stems the journal holds as
+/// answered correctly: a retired (or relearned) question does not replay in
+/// this launch even when a delivery parked across runs brings it back.
+/// Review copies deferred for their retry gap are then placed in the grown
+/// deck.
 fn append_question_batch(state: &mut GameState, questions: Vec<QuizQuestion>, level: u32) {
     let Some(cartridge) = state.cartridge.as_mut() else {
         return;
     };
+    let (missed, cleared): (Vec<&Lesson>, Vec<&Lesson>) = cartridge
+        .lessons
+        .iter()
+        .partition(|lesson| lesson.outstanding);
+    let missed: HashSet<String> = missed
+        .into_iter()
+        .map(|lesson| question_identity(&lesson.question))
+        .collect();
     let mut queued: HashSet<String> = cartridge
         .questions
         .iter()
         .chain(state.deferred_retries.iter().map(|(_, review)| review))
         .map(|question| question_identity(&question.question))
+        .chain(
+            cleared
+                .into_iter()
+                .map(|lesson| question_identity(&lesson.question)),
+        )
         .collect();
     let mut incoming = questions
         .into_iter()
         .filter(|question| queued.insert(question_identity(&question.question)))
-        .peekable();
+        .map(|mut question| {
+            // A stem the journal holds as missed is a same-launch review,
+            // whatever the delivery's (possibly stale) flag says.
+            if question.review == Review::Fresh
+                && missed.contains(&question_identity(&question.question))
+            {
+                question.review = Review::InSession;
+            }
+            question
+        });
+    // Moves incoming questions onto the deck until `fresh` reaches a full
+    // batch of new questions; review items ride along without counting,
+    // the same rule `rebatch` and `batch_is_full` use.
+    let mut fill = |questions: &mut Vec<QuizQuestion>, mut fresh: usize| {
+        while fresh < QUESTION_BATCH_SIZE {
+            let Some(question) = incoming.next() else {
+                break;
+            };
+            fresh += usize::from(!question.review.is_review());
+            questions.push(question);
+        }
+    };
     if let Some(last) = state.batch_ends.len().checked_sub(1) {
         let start = last
             .checked_sub(1)
             .map_or(0, |previous| state.batch_ends[previous]);
         let end = state.batch_ends[last];
         if end == cartridge.questions.len() {
-            let room = QUESTION_BATCH_SIZE.saturating_sub(new_question_count(
-                &cartridge.questions,
-                start,
-                end,
-            ));
-            cartridge.questions.extend(incoming.by_ref().take(room));
+            let fresh = new_question_count(&cartridge.questions, start, end);
+            fill(&mut cartridge.questions, fresh);
             state.batch_ends[last] = cartridge.questions.len();
         }
     }
-    while incoming.peek().is_some() {
-        cartridge
-            .questions
-            .extend(incoming.by_ref().take(QUESTION_BATCH_SIZE));
+    loop {
+        let before = cartridge.questions.len();
+        fill(&mut cartridge.questions, 0);
+        if cartridge.questions.len() == before {
+            break;
+        }
         state.batch_ends.push(cartridge.questions.len());
         state.batch_levels.push(level);
     }
@@ -2776,8 +2905,12 @@ fn apply_commands(
                     state.held.remove(&button);
                 }
             }
-            EngineCommand::QuestOutput { line, stderr } => {
-                if state.screen == Screen::Battle {
+            EngineCommand::QuestOutput {
+                line,
+                stderr,
+                quest,
+            } => {
+                if state.screen == Screen::Battle && quest == state.quest_generation {
                     for wrapped in wrap_text(&line, 37).into_iter().take(3) {
                         state.logs.push_back((wrapped, stderr));
                     }
@@ -2786,8 +2919,8 @@ fn apply_commands(
                     }
                 }
             }
-            EngineCommand::QuestDone { success } => {
-                if state.screen == Screen::Battle {
+            EngineCommand::QuestDone { success, quest } => {
+                if state.screen == Screen::Battle && quest == state.quest_generation {
                     state.signal(if success {
                         SceneSignal::Victory
                     } else {
@@ -2952,7 +3085,11 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                     state.logs.clear();
                     state.logs.push_back((format!("> {}", quest.name), false));
                     if state.signal(SceneSignal::QuestSelected) && state.screen == Screen::Battle {
-                        effects.0.push_back(EngineEffect::RunQuest(quest.command));
+                        state.quest_generation = state.quest_generation.wrapping_add(1);
+                        effects.0.push_back(EngineEffect::RunQuest {
+                            command: quest.command,
+                            quest: state.quest_generation,
+                        });
                     }
                 }
                 _ => {}
@@ -3076,6 +3213,15 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
         present_current_question(&mut state);
     }
     state.question_retry_ticks = state.question_retry_ticks.saturating_sub(1);
+    if state.questions_loading {
+        state.question_request_ticks = state.question_request_ticks.saturating_add(1);
+    }
+    // Until the line is a recall, the next recall starts at the next tick.
+    if state.screen != Screen::Oracle
+        || !matches!(state.oracle_line(), Some(OracleLine::Recall { .. }))
+    {
+        state.oracle_recall_since = state.screen_ticks.saturating_add(1);
+    }
 }
 
 fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
@@ -4324,6 +4470,15 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
         frame.rect(panel.x, panel.y, panel.width, panel.height, VOID);
         frame.outline(panel.x, panel.y, panel.width, panel.height, SKY);
         draw_lesson_lines(frame, &lesson);
+        // The lesson footer sits on an INK strip, like the header: a woken
+        // rune III banner is MAGENTA, which NAVY cannot carry at 4.5:1.
+        frame.rect(
+            0,
+            QUIZ_LESSON_FOOTER_STRIP_Y,
+            WIDTH as i32,
+            HEIGHT as i32 - QUIZ_LESSON_FOOTER_STRIP_Y,
+            INK,
+        );
         let banner = quiz_feedback_banner(run);
         frame.text(5, 151, &banner, quiz_feedback_color(run), 1);
         if let Some(note) = run.retry_note.map(RetryNote::label) {
@@ -4541,7 +4696,12 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
     if state.level_up_can_continue() {
         frame.centered_text(LEVEL_UP_FOOTER_Y, "A / START:CONTINUE", MIST, 1);
     } else {
-        frame.centered_text(LEVEL_UP_FOOTER_Y, &next_focus_label(level), MIST, 1);
+        frame.centered_text(
+            LEVEL_UP_FOOTER_Y,
+            &next_focus_label(state.upcoming_batch_level()),
+            MIST,
+            1,
+        );
     }
 }
 
@@ -4667,7 +4827,12 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
     if state.level_up_can_continue() {
         frame.centered_text_box(MENU_FOOTER_BOX, "A / START:CONTINUE", PARCH, 1);
     } else {
-        frame.centered_text_box(MENU_FOOTER_BOX, &next_focus_label(level), CYAN, 1);
+        frame.centered_text_box(
+            MENU_FOOTER_BOX,
+            &next_focus_label(state.upcoming_batch_level()),
+            CYAN,
+            1,
+        );
     }
 }
 
@@ -5347,7 +5512,9 @@ fn handle_effect(
     answered_question_recorder: &AnsweredQuestionRecorder,
 ) {
     match effect {
-        EngineEffect::RunQuest(command) => run_quest(command, sender.clone(), Arc::clone(child)),
+        EngineEffect::RunQuest { command, quest } => {
+            run_quest(command, quest, sender.clone(), Arc::clone(child))
+        }
         EngineEffect::AbortQuest => {
             if let Ok(mut guard) = child.lock() {
                 if let Some(process) = guard.as_mut() {
@@ -5387,27 +5554,31 @@ fn handle_effect(
 
 fn run_quest(
     command: String,
+    quest: u64,
     sender: mpsc::Sender<EngineCommand>,
     slot: Arc<Mutex<Option<Child>>>,
 ) {
+    let refuse = |line: String| {
+        let _ = sender.send(EngineCommand::QuestOutput {
+            line,
+            stderr: true,
+            quest,
+        });
+        let _ = sender.send(EngineCommand::QuestDone {
+            success: false,
+            quest,
+        });
+    };
     let mut guard = match slot.lock() {
         Ok(guard) => guard,
         Err(_) => return,
     };
     if guard.is_some() {
-        let _ = sender.send(EngineCommand::QuestOutput {
-            line: "A QUEST IS ALREADY RUNNING".into(),
-            stderr: true,
-        });
-        let _ = sender.send(EngineCommand::QuestDone { success: false });
+        refuse("A QUEST IS ALREADY RUNNING".into());
         return;
     }
     let Some(mut shell) = external_tools::quest_shell_command() else {
-        let _ = sender.send(EngineCommand::QuestOutput {
-            line: "FAILED TO START: INSTALL GIT FOR WINDOWS OR SET CQA_SHELL".into(),
-            stderr: true,
-        });
-        let _ = sender.send(EngineCommand::QuestDone { success: false });
+        refuse("FAILED TO START: INSTALL GIT FOR WINDOWS OR SET CQA_SHELL".into());
         return;
     };
     shell
@@ -5419,11 +5590,7 @@ fn run_quest(
     let mut child = match shell.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let _ = sender.send(EngineCommand::QuestOutput {
-                line: format!("FAILED TO START: {error}"),
-                stderr: true,
-            });
-            let _ = sender.send(EngineCommand::QuestDone { success: false });
+            refuse(format!("FAILED TO START: {error}"));
             return;
         }
     };
@@ -5432,34 +5599,42 @@ fn run_quest(
     *guard = Some(child);
     drop(guard);
 
+    // Cleared once the quest is reported done: a reader a surviving helper
+    // keeps alive forwards nothing after that and exits on its next line.
+    let forwarding = Arc::new(AtomicBool::new(true));
     let (drained_sender, drained) = mpsc::channel();
-    let out_sender = sender.clone();
-    let out_drained = drained_sender.clone();
-    thread::spawn(move || {
-        if let Some(stdout) = stdout {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let _ = out_sender.send(EngineCommand::QuestOutput {
-                    line,
-                    stderr: false,
-                });
+    let spawn_reader = |pipe: Option<Box<dyn std::io::Read + Send>>, stderr: bool| {
+        let sender = sender.clone();
+        let drained = drained_sender.clone();
+        let forwarding = Arc::clone(&forwarding);
+        thread::spawn(move || {
+            if let Some(pipe) = pipe {
+                for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                    if !forwarding.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let _ = sender.send(EngineCommand::QuestOutput {
+                        line,
+                        stderr,
+                        quest,
+                    });
+                }
             }
-        }
-        let _ = out_drained.send(());
-    });
-    let err_sender = sender.clone();
-    thread::spawn(move || {
-        if let Some(stderr) = stderr {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let _ = err_sender.send(EngineCommand::QuestOutput { line, stderr: true });
-            }
-        }
-        let _ = drained_sender.send(());
-    });
+            let _ = drained.send(());
+        });
+    };
+    spawn_reader(stdout.map(|pipe| Box::new(pipe) as _), false);
+    spawn_reader(stderr.map(|pipe| Box::new(pipe) as _), true);
+    drop(drained_sender);
     thread::spawn(move || {
         let (status, mut process) = wait_for_quest_shell(&slot);
         // Output still in flight gets a short grace period. A helper the
         // finished quest left running could hold the pipes open forever, so
-        // it is stopped and its readers abandoned instead of joined.
+        // the quest's tree is stopped and its readers abandoned instead of
+        // joined. On Windows `taskkill /T` cannot find the tree of a shell
+        // that has already exited, so such a helper can outlive the quest;
+        // `forwarding` and the quest generation keep its output out of any
+        // later battle either way.
         let deadline = Instant::now() + QUEST_OUTPUT_GRACE;
         let drained_all = (0..2).all(|_| {
             drained
@@ -5469,8 +5644,9 @@ fn run_quest(
         if let (false, Some(process)) = (drained_all, process.as_mut()) {
             external_tools::kill_process_tree(process);
         }
+        forwarding.store(false, Ordering::SeqCst);
         let success = status.is_some_and(|status| status.success());
-        let _ = sender.send(EngineCommand::QuestDone { success });
+        let _ = sender.send(EngineCommand::QuestDone { success, quest });
     });
 }
 
@@ -8954,8 +9130,14 @@ mod tests {
         assert_eq!(next_batch.batch_progress(), Some((1, 6)));
 
         // An open short batch (two carried questions awaiting their top-up,
-        // one miss already inserted) counts toward the full batch, not 3/3.
-        let open_batch = GameState {
+        // one miss already inserted) counts toward the full batch of new
+        // questions plus that review copy, not 3/3 and not 3/6.
+        let mut cartridge = oracle_template_cartridge();
+        let mut retry = concept_question(0);
+        retry.review = Review::InSession;
+        cartridge.questions = vec![concept_question(0), concept_question(1), retry];
+        let mut open_batch = GameState {
+            cartridge: Some(cartridge),
             batch_ends: vec![3],
             quiz: Some(QuizRun {
                 question: 2,
@@ -8963,7 +9145,187 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(open_batch.batch_progress(), Some((3, QUESTION_BATCH_SIZE)));
+        assert_eq!(
+            open_batch.batch_progress(),
+            Some((3, QUESTION_BATCH_SIZE + 1))
+        );
+        // The top-up then fills the batch to exactly that length, so the
+        // counter's end never jumps without a miss.
+        append_question_batch(&mut open_batch, (2..6).map(concept_question).collect(), 1);
+        assert_eq!(open_batch.batch_ends, [QUESTION_BATCH_SIZE + 1]);
+        assert_eq!(
+            open_batch.batch_progress(),
+            Some((3, QUESTION_BATCH_SIZE + 1))
+        );
+    }
+
+    #[test]
+    fn a_delivery_tops_batches_up_by_new_questions_while_reviews_ride_along() {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions = (0..4).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            batch_ends: vec![4],
+            batch_levels: vec![1],
+            ..Default::default()
+        };
+        let mut review = concept_question(20);
+        review.review = Review::InSession;
+        let delivery = std::iter::once(review)
+            .chain((4..9).map(concept_question))
+            .collect();
+        append_question_batch(&mut state, delivery, 2);
+        // The open batch takes the review plus two new questions, so it
+        // holds a full six new ones; the other three open the next batch.
+        assert_eq!(state.batch_ends, [QUESTION_BATCH_SIZE + 1, 10]);
+        assert_eq!(state.batch_levels, [1, 2]);
+        assert!(state.batch_is_full(0));
+        assert!(!state.batch_is_full(1));
+    }
+
+    #[test]
+    fn a_parked_delivery_cannot_requeue_a_stem_the_journal_retired() {
+        let answered = concept_question(0);
+        let missed = concept_question(1);
+        let fresh = concept_question(2);
+        let mut cartridge = oracle_template_cartridge();
+        // The run that answered both has ended, so the deck is drained.
+        cartridge.questions.clear();
+        record_lesson(&mut cartridge.lessons, &answered, true, answered.answer);
+        record_lesson(
+            &mut cartridge.lessons,
+            &missed,
+            false,
+            (missed.answer + 1) % 4,
+        );
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            ..Default::default()
+        };
+        let deck = |state: &GameState| {
+            state
+                .cartridge
+                .as_ref()
+                .unwrap()
+                .questions
+                .iter()
+                .map(|question| (question.question.clone(), question.review))
+                .collect::<Vec<_>>()
+        };
+        // The delivery was generated while both were still unanswered, so it
+        // carries them as new questions.
+        append_question_batch(
+            &mut state,
+            vec![answered.clone(), missed.clone(), fresh.clone()],
+            1,
+        );
+        assert_eq!(
+            deck(&state),
+            [
+                (missed.question.clone(), Review::InSession),
+                (fresh.question.clone(), Review::Fresh)
+            ],
+            "a retired stem is skipped and an outstanding one is a review"
+        );
+
+        // Once the miss is redeemed, a stale copy of it is retired too.
+        let mut state = GameState {
+            cartridge: state.cartridge.take().map(|mut cartridge| {
+                cartridge.questions.clear();
+                record_lesson(&mut cartridge.lessons, &missed, true, missed.answer);
+                cartridge
+            }),
+            ..Default::default()
+        };
+        let mut stale_review = missed.clone();
+        stale_review.review = Review::InSession;
+        append_question_batch(&mut state, vec![stale_review], 1);
+        assert!(deck(&state).is_empty());
+    }
+
+    #[test]
+    fn the_ascension_names_the_lenses_of_the_batch_generated_next() {
+        // A saved level-3 batch was just cleared at run level 1, so the batch
+        // coming next is generated at level 4, not at the run's level 2.
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            screen: Screen::LevelUp,
+            batch_ends: vec![QUESTION_BATCH_SIZE],
+            batch_levels: vec![3],
+            quiz: Some(QuizRun {
+                level: 2,
+                completed_batches: 1,
+                question: QUESTION_BATCH_SIZE,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(state.upcoming_batch_level(), 4);
+        state.questions_loading = true;
+        state.question_request_level = 4;
+        assert_eq!(state.upcoming_batch_level(), 4);
+        let next = next_focus_label(4);
+        assert_ne!(next, next_focus_label(2));
+
+        let mut void = Framebuffer::default();
+        void.clear(VOID);
+        let mut frame = Framebuffer::default();
+        render_oracle_ascension(&mut frame, &state);
+        assert_text_drawn(
+            &frame,
+            &void,
+            centered_text_box_bounds(MENU_FOOTER_BOX, &next, 1),
+            &next,
+            CYAN,
+        );
+        let mut navy = Framebuffer::default();
+        navy.clear(NAVY);
+        let mut legacy = Framebuffer::default();
+        render_level_up(&mut legacy, &state);
+        assert_text_drawn(
+            &legacy,
+            &navy,
+            centered_text_bounds(LEVEL_UP_FOOTER_Y, &next, 1),
+            &next,
+            MIST,
+        );
+
+        // A batch already queued names its own level.
+        state.batch_ends.push(2 * QUESTION_BATCH_SIZE);
+        state.batch_levels.push(5);
+        assert_eq!(state.upcoming_batch_level(), 5);
+    }
+
+    #[test]
+    fn the_legacy_lesson_footer_carries_a_woken_rune_iii_banner_readably() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        commit(&mut engine, true);
+        state_mut(&mut engine).quiz.as_mut().unwrap().lens_woke = Some((Concept::Invariant, 3));
+        let state = engine_state(&engine);
+        let run = state.quiz.as_ref().unwrap();
+        let banner = quiz_feedback_banner(run);
+        assert_eq!(banner, "INVARIANTS RUNE III");
+        assert_eq!(channels(quiz_feedback_color(run)), channels(MAGENTA));
+        let mut frame = Framebuffer::default();
+        render_quiz(&mut frame, state);
+        maybe_write_preview("quiz-legacy-rune-iii", &frame.pixels);
+        let bounds = text_bounds(5, 151, &banner, 1);
+        let x = bounds.x as usize..(bounds.x + bounds.width) as usize;
+        let y = bounds.y as usize..(bounds.y + bounds.height) as usize;
+        let banner_pixels = color_pixels_in_region(&frame.pixels, MAGENTA, x.clone(), y.clone());
+        let ground_pixels = color_pixels_in_region(&frame.pixels, INK, x.clone(), y.clone());
+        assert!(banner_pixels > 0);
+        assert_eq!(
+            banner_pixels + ground_pixels,
+            x.len() * y.len(),
+            "the banner is drawn on the footer's INK strip"
+        );
+        for stage in 1..=3 {
+            let ratio = contrast_ratio(mastery_rune_color(stage), INK);
+            assert!(ratio >= 4.5, "rune {stage} banner contrast {ratio:.2}:1");
+        }
     }
 
     #[test]
@@ -10088,16 +10450,20 @@ mod tests {
         };
 
         // The shell's child holds the output pipes, as cargo or npm would.
-        effect(EngineEffect::RunQuest(format!(
-            "(sleep 3; touch '{}') & echo started; wait",
-            marker.display()
-        )));
+        effect(EngineEffect::RunQuest {
+            command: format!(
+                "(sleep 3; touch '{}') & echo started; wait",
+                marker.display()
+            ),
+            quest: 1,
+        });
         while !matches!(next(), EngineCommand::QuestOutput { line, .. } if line == "started") {}
         let aborted = Instant::now();
         effect(EngineEffect::AbortQuest);
         loop {
-            if let EngineCommand::QuestDone { success } = next() {
+            if let EngineCommand::QuestDone { success, quest } = next() {
                 assert!(!success);
+                assert_eq!(quest, 1);
                 break;
             }
         }
@@ -10106,12 +10472,18 @@ mod tests {
             "the abort stops the quest's children too, without waiting them out"
         );
 
-        effect(EngineEffect::RunQuest("echo again".into()));
+        effect(EngineEffect::RunQuest {
+            command: "echo again".into(),
+            quest: 2,
+        });
         let mut lines = Vec::new();
         let success = loop {
             match next() {
-                EngineCommand::QuestOutput { line, .. } => lines.push(line),
-                EngineCommand::QuestDone { success } => break success,
+                EngineCommand::QuestOutput { line, quest, .. } => {
+                    assert_eq!(quest, 2);
+                    lines.push(line);
+                }
+                EngineCommand::QuestDone { success, .. } => break success,
                 _ => {}
             }
         };
@@ -10395,14 +10767,18 @@ mod tests {
         state.screen_ticks = 2 * ORACLE_RECALL_TICKS;
         assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
 
-        // A failure waiting out its retry delay takes the line; once the
-        // retry is in flight the journal returns.
+        // A failure waiting out its retry delay takes the line and keeps it
+        // for the retry's first second; a retry still in flight after that
+        // gives the line back to the journal.
         state.question_failure = Some("RATE LIMITED".into());
         state.questions_loading = false;
         state.question_retry_ticks = 61;
         assert_eq!(oracle_line_texts(&state), ["RATE LIMITED", "- RETRY IN 2S"]);
         state.question_retry_ticks = 0;
         state.questions_loading = true;
+        state.question_request_ticks = ORACLE_RETRY_HOLD_TICKS - 1;
+        assert_eq!(oracle_line_texts(&state), ["RATE LIMITED", "- RETRYING"]);
+        state.question_request_ticks = ORACLE_RETRY_HOLD_TICKS;
         assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
 
         // A ready question has no failure to explain, but recall continues.
@@ -10411,6 +10787,128 @@ mod tests {
         assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
 
         assert_eq!(waiting_state_with(Vec::new()).oracle_line(), None);
+    }
+
+    fn recalled_answers(state: &GameState) -> Vec<String> {
+        state
+            .recall_order()
+            .into_iter()
+            .map(|lesson| lesson.answer.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_oracle_never_shows_the_answer_of_a_review_still_queued() {
+        let missed = concept_question(0);
+        let cleared = concept_question(1);
+        let missed_answer = missed.choices[missed.answer].clone();
+        let cleared_answer = cleared.choices[cleared.answer].clone();
+        let mut state = waiting_state_with(Vec::new());
+        {
+            let cartridge = state.cartridge.as_mut().unwrap();
+            record_lesson(&mut cartridge.lessons, &cleared, true, cleared.answer);
+            record_lesson(
+                &mut cartridge.lessons,
+                &missed,
+                false,
+                (missed.answer + 1) % 4,
+            );
+            cartridge.questions = vec![missed.clone(), cleared.clone(), concept_question(2)];
+        }
+        state.batch_ends = vec![3];
+        state.batch_levels = vec![1];
+        state.consumed_questions = 2;
+        state.questions_loading = false;
+
+        // Between runs the whole deck is still ahead of the player.
+        assert_eq!(recalled_answers(&state), [cleared_answer.as_str()]);
+
+        // The next run opens with the miss as a review, after the Oracle's
+        // ready dwell: that dwell must not print the review's answer.
+        state.transition(Screen::Oracle);
+        let deck = &state.cartridge.as_ref().unwrap().questions;
+        assert!(deck[0].review.is_review() && deck[0].question == missed.question);
+        for ticks in 0..75 {
+            state.screen_ticks = ticks;
+            let texts = oracle_line_texts(&state).join(" ");
+            assert!(
+                !texts.contains(&missed_answer),
+                "tick {ticks}: the queued review's answer is shown: {texts}"
+            );
+        }
+        state.screen_ticks = 0;
+        assert_eq!(
+            oracle_line_texts(&state),
+            ["RECALL", "ROLES:", cleared_answer.as_str()],
+            "a cleared lesson is still recalled with its answer"
+        );
+
+        // Once the review is behind the player, its lesson may be recalled.
+        state.quiz.as_mut().unwrap().question = 1;
+        assert_eq!(recalled_answers(&state), [missed_answer, cleared_answer]);
+    }
+
+    #[test]
+    fn a_fast_failing_retry_never_flashes_a_lesson_and_recall_starts_fresh() {
+        let mut engine = waiting_oracle_engine();
+        state_mut(&mut engine).cartridge.as_mut().unwrap().lessons = journal_lessons();
+        fail(&mut engine, "/tmp/engine-test", "AI DISABLED");
+        for cycle in 0..3 {
+            // The countdown runs out, the retry fires, and it fails again
+            // within a few frames, as CQA_NO_AI or a missing CLI does.
+            while engine_state(&engine).question_retry_ticks > 0 || cycle_start(&engine) {
+                engine.update();
+                assert!(
+                    matches!(
+                        engine_state(&engine).oracle_line(),
+                        Some(OracleLine::Failure { .. })
+                    ),
+                    "cycle {cycle}: the countdown keeps the failure"
+                );
+            }
+            for _ in 0..4 {
+                engine.update();
+                assert_eq!(
+                    oracle_line_texts(engine_state(&engine)),
+                    ["AI DISABLED", "- RETRYING"],
+                    "cycle {cycle}: a retry in flight keeps the failure"
+                );
+            }
+            fail(&mut engine, "/tmp/engine-test", "AI DISABLED");
+        }
+
+        // A slow retry hands the line to the journal after the hold, from the
+        // top of the recall order and written in from its first character.
+        while engine_state(&engine).question_retry_ticks > 0 || cycle_start(&engine) {
+            engine.update();
+        }
+        let mut held = 0;
+        while matches!(
+            engine_state(&engine).oracle_line(),
+            Some(OracleLine::Failure { .. })
+        ) {
+            engine.update();
+            held += 1;
+            assert!(held <= ORACLE_RETRY_HOLD_TICKS + 1, "the hold ends");
+        }
+        let state = engine_state(&engine);
+        assert!(state.questions_loading);
+        let line = state.oracle_line().unwrap();
+        let top = state.recall_order()[0].answer.clone();
+        assert!(
+            matches!(&line, OracleLine::Recall { answer, .. } if *answer == top),
+            "{line:?} does not start at {top}"
+        );
+        assert_eq!(
+            state.oracle_line_reveal(&line),
+            ORACLE_RECALL_REVEAL_PER_TICK
+        );
+    }
+
+    /// True while a failed request waits for the tick that sends its retry.
+    fn cycle_start(engine: &GameEngine) -> bool {
+        let state = engine_state(engine);
+        !state.questions_loading && state.question_failure.is_some()
     }
 
     #[test]
@@ -11118,6 +11616,155 @@ mod tests {
 
         assert_eq!(engine.screen(), Screen::Title);
         assert!(engine.take_effects().is_empty());
+    }
+
+    #[test]
+    fn an_earlier_quests_output_never_lands_in_a_later_battle() {
+        let machine = SceneMachineDefinition::compile(
+            "quest-select",
+            vec![
+                SceneSpec {
+                    id: "quest-select".into(),
+                    handler: SceneHandler::QuestSelect,
+                    transitions: vec![SceneTransition {
+                        signal: SceneSignal::QuestSelected,
+                        target: "battle".into(),
+                        after_ticks: None,
+                    }],
+                },
+                SceneSpec {
+                    id: "battle".into(),
+                    handler: SceneHandler::Battle,
+                    transitions: vec![
+                        SceneTransition {
+                            signal: SceneSignal::Victory,
+                            target: "quest-select".into(),
+                            after_ticks: None,
+                        },
+                        SceneTransition {
+                            signal: SceneSignal::Defeat,
+                            target: "quest-select".into(),
+                            after_ticks: None,
+                        },
+                    ],
+                },
+            ],
+        )
+        .unwrap();
+        let mut cartridge = quiz_cartridge();
+        cartridge.mode = CartridgeMode::Custom;
+        cartridge.machine = Box::new(machine);
+        cartridge.quests = vec![QuestSpec {
+            name: "BUILD".into(),
+            boss: "NONE".into(),
+            command: "true".into(),
+        }];
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        engine.take_effects();
+        let start_quest = |engine: &mut GameEngine| {
+            press(engine, Button::A);
+            assert_eq!(engine.screen(), Screen::Battle);
+            match engine.take_effects().as_slice() {
+                [EngineEffect::RunQuest { quest, .. }] => *quest,
+                effects => panic!("expected one RunQuest, got {effects:?}"),
+            }
+        };
+        let output = |line: &str, quest| EngineCommand::QuestOutput {
+            line: line.into(),
+            stderr: false,
+            quest,
+        };
+        let logged = |engine: &GameEngine, line: &str| {
+            engine_state(engine)
+                .logs
+                .iter()
+                .any(|(logged, _)| logged == line)
+        };
+
+        let first = start_quest(&mut engine);
+        issue(&mut engine, output("FIRST", first));
+        assert!(logged(&engine, "FIRST"));
+        issue(
+            &mut engine,
+            EngineCommand::QuestDone {
+                success: true,
+                quest: first,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::QuestSelect);
+
+        let second = start_quest(&mut engine);
+        assert_ne!(first, second);
+        // A helper the first quest left running writes after the second began.
+        issue(&mut engine, output("LEFTOVER", first));
+        assert!(!logged(&engine, "LEFTOVER"), "a stale line is dropped");
+        issue(
+            &mut engine,
+            EngineCommand::QuestDone {
+                success: false,
+                quest: first,
+            },
+        );
+        assert_eq!(
+            engine.screen(),
+            Screen::Battle,
+            "a stale completion cannot end the current battle"
+        );
+        issue(&mut engine, output("SECOND", second));
+        assert!(logged(&engine, "SECOND"));
+    }
+
+    /// A helper that escapes the quest's process group keeps the output pipe
+    /// open past the grace period, as a Windows helper does once its shell
+    /// has exited. Nothing it writes after the quest is done is forwarded.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_surviving_quest_helper_forwards_nothing_after_the_quest_is_done() {
+        let (sender, receiver) = mpsc::channel();
+        let slot = Arc::new(Mutex::new(None));
+        let loader: QuestionLoader = Arc::new(|_, _, _| Ok(Vec::new()));
+        let recorder: AnsweredQuestionRecorder = Arc::new(|_, _| {});
+        handle_effect(
+            EngineEffect::RunQuest {
+                command: "setsid sh -c 'sleep 2; echo LEFTOVER; sleep 2' & echo done".into(),
+                quest: 7,
+            },
+            &sender,
+            &slot,
+            &loader,
+            &recorder,
+        );
+        let started = Instant::now();
+        let mut lines = Vec::new();
+        loop {
+            match receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the quest should report")
+            {
+                EngineCommand::QuestOutput { line, quest, .. } => {
+                    assert_eq!(quest, 7);
+                    lines.push(line);
+                }
+                EngineCommand::QuestDone { quest, .. } => {
+                    assert_eq!(quest, 7);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "done before the helper writes"
+        );
+        while let Ok(command) = receiver.recv_timeout(Duration::from_millis(3_000)) {
+            if let EngineCommand::QuestOutput { line, .. } = command {
+                lines.push(line);
+            }
+        }
+        assert_eq!(lines, ["done"], "the helper's late line is not forwarded");
     }
 
     #[test]
