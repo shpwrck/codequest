@@ -4,7 +4,7 @@
 //! [`live_question_generation_quality`] follows the app's generation path
 //! exactly: the anonymized [`repo_context::project_brief`], the bounded prompt
 //! from [`questions::bounded_ai_question_prompt`], the stdin provider call
-//! behind [`crate::ask_provider`], and [`questions::parse_generated_questions`].
+//! behind [`crate::ask_provider`], and [`questions::parse_generated_batch`].
 //! It prints every candidate the provider returned as ACCEPT or REJECT with the
 //! limits it violated, then answer-position, lens, focus, and PREDICT tallies
 //! and the acceptance rate. The test is ignored by default because it spends
@@ -25,7 +25,7 @@
 //! `CQA_CODEX`, `CQA_CLAUDE_MODEL`, and `CQA_CODEX_MODEL`.
 //!
 //! The acceptance verdict for each candidate is the app's own: the candidate is
-//! parsed alone by [`questions::parse_generated_questions`]. Only the reasons
+//! parsed alone by [`questions::parse_generated_batch`]. Only the reasons
 //! are diagnosed here, so a policy change cannot change which candidates this
 //! tool accepts; at worst it leaves a rejection unexplained or faults an
 //! accepted candidate, and the report flags both. Batch assembly (each
@@ -145,14 +145,13 @@ fn reference_question() -> QQuestion {
 
 /// The app's verdict on `question` alone.
 fn policy_accepts(question: &QQuestion) -> bool {
-    serde_json::to_string(&[question])
-        .is_ok_and(|json| questions::parse_generated_questions(&json, 1).is_ok())
+    serde_json::to_string(&[question]).is_ok_and(|json| parse_generated_questions(&json, 1).is_ok())
 }
 
 /// The app's verdict on one raw candidate alone.
 fn policy_accepts_value(value: &serde_json::Value) -> bool {
     let single = serde_json::Value::Array(vec![value.clone()]).to_string();
-    questions::parse_generated_questions(&single, 1).is_ok()
+    parse_generated_questions(&single, 1).is_ok()
 }
 
 /// Reads the complete values of an array that starts right after its opening
@@ -610,7 +609,7 @@ fn live_question_generation_quality() {
     let repo = std::fs::canonicalize(&repo)
         .unwrap_or_else(|error| panic!("CQ_EVAL_REPO {}: {error}", repo.display()));
     assert!(
-        crate::is_git_repo(&repo),
+        crate::git_repo_check_within(&repo, crate::GIT_TIMEOUT).unwrap_or(false),
         "CQ_EVAL_REPO {} is not a git repository",
         repo.display()
     );
@@ -689,7 +688,7 @@ fn live_question_generation_quality() {
             };
             tally.seconds.push(seconds);
             let judged = judge_reply(&reply, count);
-            let app_kept = questions::parse_generated_questions(&reply, count)
+            let app_kept = parse_generated_questions(&reply, count)
                 .map(|batch| batch.len())
                 .unwrap_or(0);
             let kept = judged.iter().filter(|item| item.kept).count();
@@ -767,6 +766,20 @@ fn live_question_generation_quality() {
 }
 
 #[cfg(test)]
+/// The app's acceptance of one provider reply: the accepted questions, or an
+/// error when none survive (as `ai_questions` reports it before any repair).
+fn parse_generated_questions(
+    response: &str,
+    count: usize,
+) -> Result<Vec<questions::QQuestion>, String> {
+    let batch = questions::parse_generated_batch(response, count)?;
+    if batch.accepted.is_empty() {
+        Err("INCOMPLETE OR INVALID QUESTIONS".to_string())
+    } else {
+        Ok(batch.accepted)
+    }
+}
+
 mod tests {
     use super::*;
 
@@ -911,9 +924,7 @@ mod tests {
         assert!(details.contains(&"TRIVIA \"2024\" IN CHOICE 4"));
         assert!(judged.iter().all(|item| !item.disputed));
 
-        let app_kept = questions::parse_generated_questions(&reply, 6)
-            .unwrap()
-            .len();
+        let app_kept = parse_generated_questions(&reply, 6).unwrap().len();
         assert_eq!(judged.iter().filter(|item| item.kept).count(), app_kept);
     }
 
@@ -951,12 +962,7 @@ mod tests {
         assert!(judged[0].kept);
         assert_eq!(kinds(&judged[1]), ["REPEATED QUESTION"]);
         assert_eq!(kinds(&judged[2]), ["BEYOND COUNT"]);
-        assert_eq!(
-            questions::parse_generated_questions(&reply, 1)
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(parse_generated_questions(&reply, 1).unwrap().len(), 1);
         assert!(judge_reply("no questions here", 6).is_empty());
     }
 
