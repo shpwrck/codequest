@@ -1028,8 +1028,33 @@ struct QuizRun {
     attempts: HashMap<String, u32>,
     /// True when the committed answer redeemed a previously missed question.
     redeemed: bool,
+    /// When the committed miss returns, told on its lesson card.
+    retry_note: Option<RetryNote>,
+    /// The lens and mastery stage the committed answer woke, if it crossed
+    /// a lens threshold.
+    lens_woke: Option<(Concept, usize)>,
     /// Ticks left in which a second B leaves the run.
     leave_armed: u16,
+}
+
+/// When a missed question comes back, as its lesson card tells it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetryNote {
+    /// After this many intervening questions in the current batch.
+    In(usize),
+    /// The ward broke: the miss waits in the deck for the next run.
+    NextRun,
+}
+
+impl RetryNote {
+    fn label(self) -> String {
+        match self {
+            Self::In(0) => "UP NEXT".into(),
+            Self::In(gap @ 1..=9) => format!("BACK IN {gap}"),
+            Self::In(_) => "LATER".into(),
+            Self::NextRun => "NEXT RUN".into(),
+        }
+    }
 }
 
 impl QuizRun {
@@ -1049,6 +1074,8 @@ impl QuizRun {
             attempt: 0,
             attempts: HashMap::new(),
             redeemed: false,
+            retry_note: None,
+            lens_woke: None,
             leave_armed: 0,
         }
     }
@@ -1110,6 +1137,12 @@ fn schedule_retry(
         *end += 1;
     }
     Some(index)
+}
+
+/// Lit mastery runes (0-3) for `concept`: the one stage rule the footer, the
+/// Codex, and the lens-wake check share.
+fn lens_stage(mastery: &Mastery, concept: Concept) -> usize {
+    mastery.get(&concept).map_or(0, LensRecord::stage)
 }
 
 /// Upserts the journal entry for a committed question, keyed by identity. A
@@ -1543,8 +1576,19 @@ impl GameState {
     fn mastery_stage(&self, concept: Concept) -> usize {
         self.cartridge
             .as_ref()
-            .and_then(|cartridge| cartridge.mastery.get(&concept))
-            .map_or(0, LensRecord::stage)
+            .map_or(0, |cartridge| lens_stage(&cartridge.mastery, concept))
+    }
+
+    /// The current question's place in its batch and the batch's length,
+    /// which grows as misses insert their review copies. Both cap at 99.
+    fn batch_progress(&self) -> Option<(usize, usize)> {
+        let run = self.quiz.as_ref()?;
+        let batch = run.completed_batches;
+        let start = self.batch_start(batch);
+        let end = *self.batch_ends.get(batch)?;
+        (start..end)
+            .contains(&run.question)
+            .then(|| ((run.question - start + 1).min(99), (end - start).min(99)))
     }
 
     fn codex_page_count(&self) -> usize {
@@ -1909,14 +1953,26 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
         correct,
         review: question.review,
     };
+    let stage_before = question
+        .concept
+        .map(|concept| lens_stage(&cartridge.mastery, concept));
     learning::record_evidence(&mut cartridge.mastery, &evidence);
+    run.lens_woke = question
+        .concept
+        .zip(stage_before)
+        .and_then(|(concept, before)| {
+            let after = lens_stage(&cartridge.mastery, concept);
+            (after > before).then_some((concept, after))
+        });
     record_lesson(&mut cartridge.lessons, &question, correct);
+    run.retry_note = (!correct).then_some(RetryNote::NextRun);
     if !correct && run.hearts > 0 {
-        schedule_retry(
+        let index = schedule_retry(
             &mut cartridge.questions,
             &mut state.batch_ends,
             run.question,
         );
+        run.retry_note = index.map(|index| RetryNote::In(index - run.question - 1));
     }
     state.consumed_questions = state.consumed_questions.max(run.question + 1);
     effects.0.push_back(EngineEffect::RecordAnsweredQuestion {
@@ -1940,6 +1996,8 @@ fn continue_after_lesson(state: &mut GameState) {
     };
     run.feedback = None;
     run.redeemed = false;
+    run.retry_note = None;
+    run.lens_woke = None;
     let mut next_signal = None;
     if run.hearts == 0 {
         next_signal = Some(SceneSignal::HeartsEmpty);
@@ -2242,6 +2300,7 @@ fn audio_snapshot(state: &GameState) -> AudioSnapshot {
             level: run.level,
             completed_batches: run.completed_batches,
             redeemed: run.redeemed,
+            lens_woke: run.lens_woke.map(|(_, stage)| stage.min(3) as u8),
             leave_armed: run.leave_armed > 0,
         }),
         data: state.oracle_data,
@@ -3518,6 +3577,9 @@ fn draw_oracle_rune(frame: &mut Framebuffer, x: i32, y: i32, lit: bool, color: C
     }
 }
 
+/// Width of a three-rune meter: three 5px runes at a 7px pitch.
+const RUNE_METER_WIDTH: i32 = 19;
+
 fn draw_oracle_rune_meter(frame: &mut Framebuffer, x: i32, y: i32, lit_runes: usize, color: Color) {
     for index in 0..3 {
         draw_oracle_rune(frame, x + index as i32 * 7, y, index < lit_runes, color);
@@ -3548,17 +3610,30 @@ fn crossed_insight_stage(run: &QuizRun) -> Option<InsightStage> {
     (current > previous).then_some(current)
 }
 
+/// Roman numeral for a lit mastery stage (1-3).
+fn mastery_numeral(stage: usize) -> &'static str {
+    match stage {
+        0 | 1 => "I",
+        2 => "II",
+        _ => "III",
+    }
+}
+
+/// The lesson-card banner. A woken lens rune outranks everything: it is the
+/// run's pedagogical reward, while INSIGHT names the score marks.
 fn quiz_feedback_banner(run: &QuizRun) -> String {
     match run.feedback {
         Some((true, _)) => {
-            if let Some(stage) = crossed_insight_stage(run) {
-                format!("RUNE {} AWAKENS", stage.label())
+            if let Some((concept, stage)) = run.lens_woke {
+                format!("{} RUNE {}", concept.label(), mastery_numeral(stage))
+            } else if let Some(stage) = crossed_insight_stage(run) {
+                format!("INSIGHT {} RISES", stage.label())
             } else if run.redeemed {
                 "REDEEMED".into()
             } else if streak_multiplier(run.streak) > 1 {
                 format!("FLOW X{}", streak_multiplier(run.streak))
             } else {
-                "REVIEW ANSWER".into()
+                "CLEAR SIGHT".into()
             }
         }
         Some((false, _)) => match run.hearts {
@@ -3572,6 +3647,9 @@ fn quiz_feedback_banner(run: &QuizRun) -> String {
 }
 
 fn quiz_feedback_color(run: &QuizRun) -> Color {
+    if let (Some((true, _)), Some((_, stage))) = (run.feedback, run.lens_woke) {
+        return mastery_rune_color(stage);
+    }
     match run.feedback {
         Some((true, _)) if crossed_insight_stage(run).is_some() => AMBER,
         Some((true, _)) if run.redeemed => GREEN,
@@ -3580,6 +3658,64 @@ fn quiz_feedback_color(run: &QuizRun) -> Color {
         None if run.leave_armed > 0 => AMBER,
         None => MIST,
     }
+}
+
+/// Left edge of the trial header's banner row: beside the tier label, pulled
+/// left just enough that the longest lens banner stays inside the header.
+const TRIAL_BANNER_X: i32 = 126;
+
+fn trial_banner_x(banner: &str) -> i32 {
+    TRIAL_BANNER_X.min(236 - text_width(banner, 1))
+}
+
+/// Whether the question on screen is a returning review copy.
+fn current_question_is_review(state: &GameState) -> bool {
+    state
+        .quiz
+        .as_ref()
+        .zip(state.cartridge.as_ref())
+        .and_then(|(run, cartridge)| cartridge.questions.get(run.question))
+        .is_some_and(|question| question.review)
+}
+
+/// The header counter: `trial` (or `retry` in amber while a review copy is on
+/// screen) with batch progress `P/N`, or the run's question number when no
+/// batch is known.
+fn question_counter(
+    state: &GameState,
+    (trial, retry): (&str, &str),
+    trial_color: Color,
+) -> (String, Color) {
+    let (label, color) = if current_question_is_review(state) {
+        (retry, AMBER)
+    } else {
+        (trial, trial_color)
+    };
+    let text = match state.batch_progress() {
+        Some((place, length)) => format!("{label}{place}/{length}"),
+        None => {
+            let question = state.quiz.as_ref().map_or(0, |run| run.question);
+            format!("{label}{:02}", (question + 1).min(99))
+        }
+    };
+    (text, color)
+}
+
+/// Where the trial lesson footer centers `note`: in the free span between the
+/// lens runes (or the column start without a lens) and `A:CONTINUE`.
+fn trial_retry_note_x(column_x: i32, column_end: i32, concept: Option<Concept>, note: &str) -> i32 {
+    let left = concept.map_or(column_x, |concept| {
+        column_x + text_width(concept.label(), 1) + 4 + RUNE_METER_WIDTH
+    });
+    let right = column_end - text_width(LESSON_CONTINUE, 1);
+    left + (right - left - text_width(note, 1)) / 2
+}
+
+/// Where the legacy footer puts `note` after `banner`, when it fits before
+/// `A:CONTINUE` with a 4px gap.
+fn quiz_retry_note_x(banner: &str, note: &str) -> Option<i32> {
+    let x = 5 + text_width(banner, 1) + 8;
+    (x + text_width(note, 1) + 4 <= 235 - text_width(LESSON_CONTINUE, 1)).then_some(x)
 }
 
 /// True once the lesson card's input hold has elapsed and A or Start will
@@ -3731,7 +3867,8 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
         return;
     };
     frame.rect(0, 0, WIDTH as i32, 16, INK);
-    frame.text(5, 4, &format!("Q{:02}", run.question + 1), SKY, 1);
+    let (counter, counter_color) = question_counter(state, ("Q", "R"), SKY);
+    frame.text(5, 4, &counter, counter_color, 1);
     draw_hero(frame, 47, 1, 1, state);
     draw_oracle_ward_meter(frame, 84, 4, run.hearts);
     frame.text(
@@ -3771,13 +3908,13 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
         frame.rect(panel.x, panel.y, panel.width, panel.height, VOID);
         frame.outline(panel.x, panel.y, panel.width, panel.height, SKY);
         draw_lesson_lines(frame, &lesson);
-        frame.text(
-            5,
-            151,
-            &quiz_feedback_banner(run),
-            quiz_feedback_color(run),
-            1,
-        );
+        let banner = quiz_feedback_banner(run);
+        frame.text(5, 151, &banner, quiz_feedback_color(run), 1);
+        if let Some(note) = run.retry_note.map(RetryNote::label) {
+            if let Some(x) = quiz_retry_note_x(&banner, &note) {
+                frame.text(x, 151, &note, AMBER, 1);
+            }
+        }
         if lesson_is_live(run) {
             frame.text(
                 235 - text_width(LESSON_CONTINUE, 1),
@@ -3839,13 +3976,8 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
     );
     frame.rect(37, 2, 203, 28, VOID);
     frame.outline(37, 2, 203, 28, CYAN_DIM);
-    frame.text(
-        44,
-        7,
-        &format!("TRIAL {:02}", (run.question + 1).min(99)),
-        CYAN,
-        1,
-    );
+    let (counter, counter_color) = question_counter(state, ("TRIAL ", "RETRY "), CYAN);
+    frame.text(44, 7, &counter, counter_color, 1);
     draw_oracle_ward_meter(frame, TRIAL_WARD_X, 7, run.hearts);
     frame.text(
         TRIAL_STREAK_X,
@@ -3880,10 +4012,11 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         },
         1,
     );
+    let banner = quiz_feedback_banner(run);
     frame.text(
-        126,
+        trial_banner_x(&banner),
         20,
-        &quiz_feedback_banner(run),
+        &banner,
         quiz_feedback_color(run),
         1,
     );
@@ -3913,17 +4046,32 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         let footer_y = trial_lesson_footer_y();
         frame.rect(column_x, footer_y - 3, column_end - column_x, 1, INDIGO);
         if let Some(concept) = question.concept {
-            let stage = cart
-                .mastery
-                .get(&concept)
-                .map_or(0, |record| record.stage());
+            let stage = lens_stage(&cart.mastery, concept);
+            // The rune this answer woke blinks through the input hold, then
+            // settles lit; reduced motion keeps it lit throughout.
+            let waking =
+                run.lens_woke.is_some_and(|(woke, _)| woke == concept) && !lesson_is_live(run);
+            let lit = if waking && !state.blink_lit(8) {
+                stage.saturating_sub(1)
+            } else {
+                stage
+            };
             frame.text(column_x, footer_y, concept.label(), CYAN_DIM, 1);
             draw_oracle_rune_meter(
                 frame,
                 column_x + text_width(concept.label(), 1) + 4,
                 footer_y,
-                stage,
+                lit,
                 CYAN,
+            );
+        }
+        if let Some(note) = run.retry_note.map(RetryNote::label) {
+            frame.text(
+                trial_retry_note_x(column_x, column_end, question.concept, &note),
+                footer_y,
+                &note,
+                AMBER,
+                1,
             );
         }
         if lesson_is_live(run) {
@@ -4172,7 +4320,7 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
             AFTERMATH_CONTENT_BOX.x,
             114,
             AFTERMATH_CONTENT_BOX.width,
-            &format!("RUNE {}", insight.label()),
+            &format!("INSIGHT {}", insight.label()),
             insight.color(),
             1,
         );
@@ -5545,6 +5693,31 @@ mod tests {
                 trial_header,
                 text_bounds(44, 7, "TRIAL 99", 1),
             ),
+            (
+                "trial batch progress",
+                trial_header,
+                text_bounds(44, 7, "RETRY 12/13", 1),
+            ),
+            (
+                "trial lens banner",
+                trial_header,
+                text_bounds(
+                    trial_banner_x("INVARIANTS RUNE III"),
+                    20,
+                    "INVARIANTS RUNE III",
+                    1,
+                ),
+            ),
+            (
+                "trial insight banner",
+                trial_header,
+                text_bounds(
+                    trial_banner_x("INSIGHT III RISES"),
+                    20,
+                    "INSIGHT III RISES",
+                    1,
+                ),
+            ),
             ("trial ward", trial_header, trial_ward),
             ("trial streak multiplier", trial_header, trial_streak),
             ("trial score runes", trial_header, trial_score_runes),
@@ -5607,7 +5780,7 @@ mod tests {
             (
                 "aftermath insight rune",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 114, "RUNE III", 1),
+                centered_text_in_bounds(aftermath_panel, 114, "INSIGHT UNLIT", 1),
             ),
         ] {
             assert!(
@@ -5772,6 +5945,21 @@ mod tests {
                 text_bounds(44, 20, "ORACLE-BOUND", 1),
                 text_bounds(126, 20, "A:ANSWER B:LEAVE", 1),
             ),
+            (
+                "trial batch progress and ward",
+                text_bounds(44, 7, "RETRY 12/13", 1),
+                trial_ward,
+            ),
+            (
+                "trial tier and lens banner",
+                text_bounds(44, 20, "ORACLE-BOUND", 1),
+                text_bounds(
+                    trial_banner_x("INVARIANTS RUNE III"),
+                    20,
+                    "INVARIANTS RUNE III",
+                    1,
+                ),
+            ),
             ("trial ward and streak", trial_ward, trial_streak),
             (
                 "trial streak and score runes",
@@ -5808,6 +5996,41 @@ mod tests {
                 bounds_are_disjoint(left, right),
                 "{name} overlap: {left:?} and {right:?}"
             );
+        }
+
+        // The widest batch counter clears the ward meter, and the widest lens
+        // banner is pulled left inside the header outline while keeping a
+        // 4px gap after the widest tier label.
+        let progress = text_bounds(44, 7, "RETRY 12/13", 1);
+        assert!(trial_ward.x - (progress.x + progress.width) >= 4);
+        let tier = text_bounds(44, 20, "ORACLE-BOUND", 1);
+        for banner in [
+            "INVARIANTS RUNE III",
+            "TRADEOFFS RUNE III",
+            "INSIGHT III RISES",
+        ] {
+            let bounds = text_bounds(trial_banner_x(banner), 20, banner, 1);
+            assert!(
+                bounds.x - (tier.x + tier.width) >= 4,
+                "{banner} crowds the tier"
+            );
+            assert!(
+                bounds.x + bounds.width < trial_header.x + trial_header.width - 1,
+                "{banner} touches the header outline"
+            );
+        }
+        assert_eq!(trial_banner_x("A:ANSWER B:LEAVE"), TRIAL_BANNER_X);
+        // The legacy counter ends before the hero token at x=47.
+        assert!(text_bounds(5, 4, "R12/13", 1).width + 5 < 47);
+        for (name, color, fill) in [
+            ("trial retry counter", AMBER, VOID),
+            ("legacy retry counter", AMBER, INK),
+            ("lens banner I", mastery_rune_color(1), VOID),
+            ("lens banner II", mastery_rune_color(2), VOID),
+            ("lens banner III", mastery_rune_color(3), VOID),
+        ] {
+            let ratio = contrast_ratio(color, fill);
+            assert!(ratio >= 4.5, "{name} contrast {ratio:.2}:1");
         }
 
         for (name, foreground) in [
@@ -5936,7 +6159,16 @@ mod tests {
             feedback: Some((true, QUIZ_FEEDBACK_TICKS)),
             ..QuizRun::new()
         };
-        assert_eq!(quiz_feedback_banner(&run), "RUNE I AWAKENS");
+        assert_eq!(quiz_feedback_banner(&run), "INSIGHT I RISES");
+
+        // A woken lens rune outranks the Insight crossing.
+        run.lens_woke = Some((Concept::Responsibility, 1));
+        assert_eq!(quiz_feedback_banner(&run), "ROLES RUNE I");
+        assert_eq!(quiz_feedback_color(&run).1, mastery_rune_color(1).1);
+        run.lens_woke = Some((Concept::Invariant, 3));
+        assert_eq!(quiz_feedback_banner(&run), "INVARIANTS RUNE III");
+        assert_eq!(quiz_feedback_color(&run).1, MAGENTA.1);
+        run.lens_woke = None;
 
         run.score = 600;
         run.streak = 4;
@@ -7222,12 +7454,204 @@ mod tests {
             feedback: Some((true, QUIZ_FEEDBACK_TICKS)),
             ..QuizRun::new()
         };
-        assert_eq!(quiz_feedback_banner(&run), "RUNE I AWAKENS");
+        assert_eq!(quiz_feedback_banner(&run), "INSIGHT I RISES");
         run.score = 400;
         assert_eq!(quiz_feedback_banner(&run), "REDEEMED");
         assert_eq!(quiz_feedback_color(&run).1, GREEN.1);
         run.redeemed = false;
-        assert_eq!(quiz_feedback_banner(&run), "REVIEW ANSWER");
+        // `REVIEW` only ever names retries; a plain success is CLEAR SIGHT.
+        assert_eq!(quiz_feedback_banner(&run), "CLEAR SIGHT");
+    }
+
+    fn channels(color: Color) -> (u8, u8, u8) {
+        (color.0, color.1, color.2)
+    }
+
+    fn trial_counter(engine: &GameEngine) -> (String, (u8, u8, u8)) {
+        let (text, color) = question_counter(engine_state(engine), ("TRIAL ", "RETRY "), CYAN);
+        (text, channels(color))
+    }
+
+    fn state_mut(engine: &mut GameEngine) -> Mut<'_, GameState> {
+        engine.app.world_mut().resource_mut::<GameState>()
+    }
+
+    fn retry_note(engine: &GameEngine) -> Option<RetryNote> {
+        engine_state(engine).quiz.as_ref().unwrap().retry_note
+    }
+
+    #[test]
+    fn the_header_counts_the_batch_and_labels_the_returning_retry() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        assert_eq!(engine_state(&engine).batch_progress(), Some((1, 6)));
+        assert_eq!(trial_counter(&engine), ("TRIAL 1/6".into(), channels(CYAN)));
+
+        commit(&mut engine, false);
+        let note = retry_note(&engine).unwrap();
+        assert_eq!(note, RetryNote::In(RETRY_GAP));
+        assert_eq!(note.label(), "BACK IN 3");
+        {
+            // The note tells the real insertion distance.
+            let state = engine_state(&engine);
+            let run = state.quiz.as_ref().unwrap();
+            let questions = &state.cartridge.as_ref().unwrap().questions;
+            let returns = (run.question + 1..questions.len())
+                .find(|index| questions[*index].review)
+                .unwrap();
+            assert_eq!(RetryNote::In(returns - run.question - 1), note);
+        }
+        assert_eq!(
+            trial_counter(&engine).0,
+            "TRIAL 1/7",
+            "the miss grows its batch"
+        );
+        let mut missed = Framebuffer::default();
+        render_oracle_trial(&mut missed, engine_state(&engine));
+        maybe_write_preview("07e-trial-miss-returns", &missed.pixels);
+        finish_lesson(&mut engine);
+        assert_eq!(retry_note(&engine), None);
+        assert_eq!(trial_counter(&engine).0, "TRIAL 2/7");
+
+        for place in 2..=RETRY_GAP + 1 {
+            assert_eq!(trial_counter(&engine).0, format!("TRIAL {place}/7"));
+            commit(&mut engine, true);
+            assert_eq!(retry_note(&engine), None, "successes carry no note");
+            finish_lesson(&mut engine);
+        }
+        assert!(current_question(&engine).review);
+        assert_eq!(
+            trial_counter(&engine),
+            ("RETRY 5/7".into(), channels(AMBER))
+        );
+        assert_eq!(
+            question_counter(engine_state(&engine), ("Q", "R"), SKY).0,
+            "R5/7"
+        );
+        let mut retry = Framebuffer::default();
+        render_oracle_trial(&mut retry, engine_state(&engine));
+        maybe_write_preview("07f-trial-retry", &retry.pixels);
+        let mut legacy_retry = Framebuffer::default();
+        render_quiz(&mut legacy_retry, engine_state(&engine));
+        maybe_write_preview("quiz-legacy-retry", &legacy_retry.pixels);
+        commit(&mut engine, true);
+        assert_eq!(
+            trial_counter(&engine).0,
+            "RETRY 5/7",
+            "the label holds through the retry's own lesson card"
+        );
+        finish_lesson(&mut engine);
+        assert!(!current_question(&engine).review);
+        assert_eq!(trial_counter(&engine), ("TRIAL 6/7".into(), channels(CYAN)));
+
+        // The next batch counts from one again.
+        let next_batch = GameState {
+            batch_ends: vec![7, 13],
+            quiz: Some(QuizRun {
+                completed_batches: 1,
+                question: 7,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(next_batch.batch_progress(), Some((1, 6)));
+    }
+
+    #[test]
+    fn a_broken_ward_sends_the_miss_to_the_next_run() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        for hearts in [2, 1] {
+            commit(&mut engine, false);
+            assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().hearts, hearts);
+            assert!(matches!(retry_note(&engine), Some(RetryNote::In(_))));
+            finish_lesson(&mut engine);
+        }
+        commit(&mut engine, false);
+        assert_eq!(retry_note(&engine), Some(RetryNote::NextRun));
+        assert_eq!(RetryNote::NextRun.label(), "NEXT RUN");
+        assert_eq!(RetryNote::In(0).label(), "UP NEXT");
+        assert_eq!(RetryNote::In(9).label(), "BACK IN 9");
+        assert_eq!(RetryNote::In(12).label(), "LATER");
+    }
+
+    #[test]
+    fn waking_a_lens_rune_banners_blinks_and_sounds_above_insight() {
+        use audio::Cue;
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let banner =
+            |engine: &GameEngine| quiz_feedback_banner(engine_state(engine).quiz.as_ref().unwrap());
+
+        // 0 -> 1 evidence wakes rune I.
+        focus_choice(&mut engine, true);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::LensWake(1)));
+        assert_eq!(
+            engine_state(&engine).quiz.as_ref().unwrap().lens_woke,
+            Some((Concept::Responsibility, 1))
+        );
+        assert_eq!(banner(&engine), "ROLES RUNE I");
+
+        // The newest footer rune blinks through the hold, then settles lit.
+        let rune_x = (TRIAL_LESSON_BOX.x
+            + 1
+            + (TRIAL_LESSON_BOX.width - 2 - text_width(&"W".repeat(RATIONALE_COLUMNS), 1)) / 2
+            + text_width(Concept::Responsibility.label(), 1)
+            + 4) as usize;
+        let footer_y = trial_lesson_footer_y() as usize;
+        let rune_centers = |engine: &mut GameEngine| {
+            let screen_ticks = engine_state(engine).screen_ticks;
+            let samples = (0..16u64)
+                .map(|tick| {
+                    state_mut(engine).screen_ticks = tick;
+                    let mut frame = Framebuffer::default();
+                    render_oracle_trial(&mut frame, engine_state(engine));
+                    frame_region(
+                        &frame.pixels,
+                        rune_x + 2..rune_x + 3,
+                        footer_y + 3..footer_y + 4,
+                    )
+                })
+                .collect::<HashSet<_>>();
+            state_mut(engine).screen_ticks = screen_ticks;
+            samples
+        };
+        assert_eq!(
+            rune_centers(&mut engine).len(),
+            2,
+            "the woken rune blinks during the hold"
+        );
+        state_mut(&mut engine).reduced_motion = true;
+        let still = rune_centers(&mut engine);
+        assert_eq!(still.len(), 1, "reduced motion keeps the rune lit");
+        state_mut(&mut engine).reduced_motion = false;
+        for _ in 0..QUIZ_FEEDBACK_TICKS {
+            engine.update();
+        }
+        assert_eq!(
+            rune_centers(&mut engine),
+            still,
+            "the rune settles lit once the card is live"
+        );
+        press(&mut engine, Button::A);
+
+        // 1 -> 2 evidence crosses nothing.
+        commit(&mut engine, true);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().lens_woke, None);
+        assert_eq!(banner(&engine), "CLEAR SIGHT");
+        finish_lesson(&mut engine);
+
+        // 2 -> 3 evidence wakes rune II on the same commit that crosses
+        // Insight I and flow x2: the lens rune takes the banner and the cue.
+        focus_choice(&mut engine, true);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::LensWake(2)));
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert!(crossed_insight_stage(run).is_some());
+        assert_eq!(banner(&engine), "ROLES RUNE II");
+        state_mut(&mut engine).reduced_motion = true;
+        let mut woke = Framebuffer::default();
+        render_oracle_trial(&mut woke, engine_state(&engine));
+        maybe_write_preview("07g-trial-lens-rune", &woke.pixels);
+        state_mut(&mut engine).reduced_motion = false;
+        finish_lesson(&mut engine);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().lens_woke, None);
     }
 
     #[test]
@@ -7332,6 +7756,7 @@ mod tests {
                 streak: if correct { 2 } else { 0 },
                 selected: if correct { 0 } else { 1 },
                 feedback: Some((correct, if live { 0 } else { QUIZ_FEEDBACK_TICKS })),
+                retry_note: (!correct).then_some(RetryNote::In(RETRY_GAP)),
                 ..QuizRun::new()
             }),
             ..Default::default()
@@ -7410,6 +7835,43 @@ mod tests {
                 ("continue prompt".to_string(), prompt),
                 ("footer rule".to_string(), rule),
             ]);
+            // Every retry note fits between the widest lens's runes and the
+            // continue prompt with at least 4px on each side.
+            // The notes are alternatives, so only the widest joins the
+            // pairwise sibling check.
+            for note in [
+                RetryNote::In(0),
+                RetryNote::In(12),
+                RetryNote::NextRun,
+                RetryNote::In(RETRY_GAP),
+            ] {
+                let text = note.label();
+                let bounds = text_bounds(
+                    trial_retry_note_x(column_x, column_end, Some(Concept::Invariant), &text),
+                    footer_y,
+                    &text,
+                    1,
+                );
+                assert!(
+                    bounds.x - (runes.x + runes.width) >= 4
+                        && prompt.x - (bounds.x + bounds.width) >= 4,
+                    "{name} {text} {bounds:?} crowds the lens runes {runes:?} or {prompt:?}"
+                );
+                assert!(bounds_contains(interior, bounds), "{name} {text}");
+                if note == RetryNote::In(RETRY_GAP) {
+                    assert_eq!(text, "BACK IN 3");
+                    children.push((format!("retry note {text}"), bounds));
+                }
+            }
+            // Without a lens the note still clears the prompt.
+            let lensless = text_bounds(
+                trial_retry_note_x(column_x, column_end, None, "BACK IN 9"),
+                footer_y,
+                "BACK IN 9",
+                1,
+            );
+            assert!(bounds_contains(interior, lensless));
+            assert!(prompt.x - (lensless.x + lensless.width) >= 4);
             for (child_name, child) in &children {
                 assert!(
                     bounds_contains(interior, *child),
@@ -7460,7 +7922,7 @@ mod tests {
                 ));
             }
         }
-        let legacy_banner = text_bounds(5, 151, "RUNE III AWAKENS", 1);
+        let legacy_banner = text_bounds(5, 151, "INVARIANTS RUNE III", 1);
         let legacy_prompt = text_bounds(
             235 - text_width(LESSON_CONTINUE, 1),
             151,
@@ -7469,6 +7931,22 @@ mod tests {
         );
         assert!(bounds_are_disjoint(legacy_banner, legacy_prompt));
         assert!(bounds_are_disjoint(legacy_panel, legacy_banner));
+        // The legacy footer adds the retry note only where it clears both the
+        // banner and A:CONTINUE; the widest banners drop it.
+        for banner in ["WARD STRAINED", "WARD FRACTURES", "INVARIANTS RUNE III"] {
+            let banner_bounds = text_bounds(5, 151, banner, 1);
+            for note in ["BACK IN 3", "NEXT RUN"] {
+                if let Some(x) = quiz_retry_note_x(banner, note) {
+                    let note_bounds = text_bounds(x, 151, note, 1);
+                    assert!(note_bounds.x - (banner_bounds.x + banner_bounds.width) >= 4);
+                    assert!(legacy_prompt.x - (note_bounds.x + note_bounds.width) >= 4);
+                }
+            }
+        }
+        assert!(quiz_retry_note_x("WARD STRAINED", "BACK IN 3").is_some());
+        assert!(quiz_retry_note_x("INVARIANTS RUNE III", "BACK IN 3").is_none());
+        let ratio = contrast_ratio(AMBER, NAVY);
+        assert!(ratio >= 4.5, "legacy retry note contrast {ratio:.2}:1");
         assert!(bounds_contains(screen, legacy_prompt));
         let legacy_leave = text_bounds(
             235 - text_width("B AGAIN:LEAVE", 1),
@@ -7494,7 +7972,11 @@ mod tests {
                 "{tone:?} contrast {ratio:.2}:1 on the lesson panel"
             );
         }
-        for (name, color) in [("lens", CYAN_DIM), ("continue", CYAN)] {
+        for (name, color) in [
+            ("lens", CYAN_DIM),
+            ("continue", CYAN),
+            ("retry note", AMBER),
+        ] {
             let ratio = contrast_ratio(color, VOID);
             assert!(
                 ratio >= 4.5,
@@ -7614,6 +8096,32 @@ mod tests {
         let mut worst_frame = Framebuffer::default();
         render_oracle_trial(&mut worst_frame, &worst);
         maybe_write_preview("oracle-lesson-worst-case", &worst_frame.pixels);
+
+        // The widest lens banner beside the widest tier label.
+        let mut woke = lesson_state(worst_case_lesson_question(), true, true);
+        let run = woke.quiz.as_mut().unwrap();
+        run.level = 4;
+        run.lens_woke = Some((Concept::Invariant, 3));
+        woke.cartridge.as_mut().unwrap().mastery.insert(
+            Concept::Invariant,
+            learning::LensRecord {
+                first_try: 5,
+                ..Default::default()
+            },
+        );
+        let mut woke_frame = Framebuffer::default();
+        render_oracle_trial(&mut woke_frame, &woke);
+        maybe_write_preview("oracle-lesson-lens-worst-case", &woke_frame.pixels);
+        let banner_x = trial_banner_x("INVARIANTS RUNE III") as usize;
+        assert!(
+            color_pixels_in_region(
+                &woke_frame.pixels,
+                MAGENTA,
+                banner_x..banner_x + text_width("INVARIANTS RUNE III", 1) as usize,
+                20..27,
+            ) > 0,
+            "the rune III banner is drawn in the stage's magenta"
+        );
     }
 
     fn request_seqs(effects: &[EngineEffect]) -> Vec<(u32, u64)> {
@@ -9143,11 +9651,13 @@ mod tests {
 
         state.quiz.as_mut().unwrap().selected = 1;
         state.quiz.as_mut().unwrap().feedback = Some((false, QUIZ_FEEDBACK_TICKS));
+        state.quiz.as_mut().unwrap().retry_note = Some(RetryNote::In(RETRY_GAP));
         let mut review = Framebuffer::default();
         render_oracle_trial(&mut review, &state);
         maybe_write_preview("07b-trial-review", &review.pixels);
 
         state.quiz.as_mut().unwrap().feedback = None;
+        state.quiz.as_mut().unwrap().retry_note = None;
         for (name, score, streak) in [
             ("07c-trial-rune-two", 900, 6),
             ("07d-trial-rune-three", 1_800, 9),
@@ -9518,6 +10028,7 @@ mod tests {
             streak: 3,
             leveled_up: false,
             feedback: Some((false, 10)),
+            lens_woke: Some((Concept::Tradeoff, 2)),
             ..QuizRun::new()
         });
         let snapshot = audio_snapshot(&state);
@@ -9538,6 +10049,7 @@ mod tests {
                 level: 4,
                 completed_batches: 1,
                 redeemed: false,
+                lens_woke: Some(2),
                 leave_armed: false,
             })
         );

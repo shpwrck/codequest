@@ -56,16 +56,21 @@ score. Every question assesses one of five concept lenses: **purpose**,
   batch cannot close until its misses are retried. Answering it correctly is a
   *redemption*, recorded separately from a first-try success. Missed questions
   also survive across launches until you redeem them; correct answers retire
-  their questions for good.
+  their questions for good. The rule is on screen: the header shows batch
+  progress (`TRIAL 2/7`, the batch growing with each miss), a returning
+  question is labeled `RETRY` before you answer it, and the miss's lesson card
+  says when it comes back (`BACK IN 3`, or `NEXT RUN` when the ward breaks).
 - **Difficulty deepens the concepts, not the pressure.** Initiate batches
   (level 1) focus on purpose and roles, Adept batches (2–3) on flows and
   tradeoffs, and Oracle-bound batches (4+) on invariants, including **PREDICT**
   questions that describe an undocumented change or failure and ask what the
   design implies. There are no timers.
 - **Mastery is visible.** Each lens has three mastery runes that wake at 1, 3,
-  and 5 pieces of evidence (first-try successes plus redemptions). The Codex
-  shows them with pending reviews, and pages through the lesson journal:
-  question, answer, and rationale.
+  and 5 pieces of evidence (first-try successes plus redemptions). Waking one
+  is the loudest moment of a run: its own banner (`ROLES RUNE I`) outranks
+  every score banner, the new rune blinks on the lesson card, and it has its
+  own chime. The Codex shows the runes with pending reviews, and pages through
+  the lesson journal: question, answer, and rationale.
 - **Generation adapts to you.** Each request names your weakest lens and the
   questions you have already been asked, so new batches target your gaps
   without repeating themselves.
@@ -73,7 +78,9 @@ score. Every question assesses one of five concept lenses: **purpose**,
 The current progression model is visible as well as numeric:
 
 - Correct-answer flow awards x1 at streaks 0–2, x2 at 3–5, and x3 at 6+.
-- Cumulative scores of 300, 900, and 1800 awaken Insight Runes I, II, and III.
+- Cumulative scores of 300, 900, and 1800 awaken Insight Runes I, II, and III,
+  shown on screen as `INSIGHT I`, `II`, and `III` so the word RUNE on a banner
+  always means a lens.
 - Datafall charge lights at 3, 6, and 9 collected shards; corruption breaks
   containment seals at 1, 3, and 5 hits. These are expressive Datafall goals
   and do not alter quiz score, wards, or question generation.
