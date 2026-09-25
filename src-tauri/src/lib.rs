@@ -6,13 +6,14 @@ mod external_tools;
 mod font5x7;
 mod learning;
 mod provenance;
+mod questions;
+mod repo_context;
 mod save;
 pub mod scene_machine;
 
-use std::collections::HashSet;
 use std::io::Read;
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -23,6 +24,7 @@ use wait_timeout::ChildExt;
 
 use codequest::{CodeQuestConfig, GameType};
 use provenance::sanitized_metadata;
+use questions::QQuestion;
 use scene_machine::{SceneMachineDefinition, SceneMachineTemplate};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -390,15 +392,6 @@ fn cartridge_branch(path: String) -> Result<String, String> {
     Ok(repository_branch(&canon))
 }
 
-struct QuizFile {
-    path: String,
-    size: u64,
-}
-
-struct QuizData {
-    files: Vec<QuizFile>,
-}
-
 fn git_out(path: &std::path::Path, args: &[&str]) -> String {
     git_repo_command(path)
         .args(args)
@@ -409,228 +402,17 @@ fn git_out(path: &std::path::Path, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn quiz_data(path: String) -> Result<QuizData, String> {
-    let repo = std::path::Path::new(&path);
-    if !is_git_repo(repo) {
-        return Err("NOT A GIT REPOSITORY".to_string());
-    }
-    let mut files: Vec<QuizFile> = git_out(repo, &["ls-files"])
-        .lines()
-        .take(400)
-        .map(|f| QuizFile {
-            path: f.to_string(),
-            size: std::fs::metadata(repo.join(f))
-                .map(|m| m.len())
-                .unwrap_or(0),
-        })
-        .collect();
-    files.retain(|f| !f.path.is_empty());
-    Ok(QuizData { files })
-}
+/// Upper bound on tracked paths considered for the generation brief.
+const MAX_TRACKED_FILES: usize = 20_000;
 
-#[derive(Serialize, Deserialize, Clone)]
-struct QQuestion {
-    q: String,
-    choices: Vec<String>,
-    answer: usize,
-}
-
-const AI_QUESTION_BATCHES_KEY: &str = "ai.question_batches";
-const LEGACY_CLAUDE_QUESTION_BATCHES_KEY: &str = "claude.question_batches";
-const QUIZ_PROGRESS_KEY: &str = "quiz.progress";
-
-#[derive(Serialize, Deserialize, Clone)]
-struct SavedQuestionBatch {
-    level: u32,
-    questions: Vec<QQuestion>,
-}
-
-#[derive(Default, Serialize, Deserialize)]
-struct SavedQuizProgress {
-    #[serde(default)]
-    answered_questions: Vec<String>,
-}
-
-fn question_identity(question: &str) -> String {
-    question
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_uppercase()
-}
-
-fn question_is_acceptable(question: &QQuestion) -> bool {
-    const FACT_TRIVIA_MARKERS: [&str; 27] = [
-        "WHICH FILE",
-        "WHAT FILE",
-        "WHERE DOES",
-        "HOW MANY",
-        "FILE NAME",
-        "FILENAME",
-        "FILE",
-        "FILES",
-        "DIRECTORY",
-        "DIRECTORIES",
-        "FOLDER",
-        "FOLDERS",
-        "PATH",
-        "PATHS",
-        "EXTENSION",
-        "EXTENSIONS",
-        "README",
-        "COMMIT",
-        "COMMITS",
-        "BRANCH",
-        "AUTHOR",
-        "AUTHORS",
-        "CONTRIBUTOR",
-        "CONTRIBUTORS",
-        "LATEST",
-        "MOST RECENT",
-        "BYTES",
-    ];
-    const FILE_EXTENSIONS: [&str; 14] = [
-        ".RS", ".JS", ".MJS", ".TS", ".TSX", ".PY", ".GO", ".RB", ".JAVA", ".C", ".CPP", ".SH",
-        ".CSS", ".HTML",
-    ];
-
-    if !engine::quiz_question_fits(&question.q, &question.choices, question.answer) {
-        return false;
-    }
-    let content = std::iter::once(question.q.as_str())
-        .chain(question.choices.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_uppercase();
-    let normalized = content
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let padded = format!(" {normalized} ");
-    !FACT_TRIVIA_MARKERS
-        .iter()
-        .any(|marker| padded.contains(&format!(" {marker} ")))
-        && !FILE_EXTENSIONS
-            .iter()
-            .any(|extension| content.contains(extension))
-        && !content.contains('/')
-        && !content.contains('\\')
-}
-
-fn retain_acceptable_questions(questions: Vec<QQuestion>) -> Vec<QQuestion> {
-    questions
-        .into_iter()
-        .filter(question_is_acceptable)
+/// Tracked paths, `/`-separated and relative to the repository root.
+fn tracked_files(path: &std::path::Path) -> Vec<String> {
+    git_out(path, &["ls-files", "-z"])
+        .split('\0')
+        .filter(|file| !file.is_empty())
+        .take(MAX_TRACKED_FILES)
+        .map(str::to_string)
         .collect()
-}
-
-fn accepted_question_batch(
-    questions: Vec<QQuestion>,
-    expected_count: usize,
-) -> Option<Vec<QQuestion>> {
-    let valid = retain_acceptable_questions(questions)
-        .into_iter()
-        .take(expected_count)
-        .collect::<Vec<_>>();
-    (!valid.is_empty()).then_some(valid)
-}
-
-fn load_saved_question_batches(path: &std::path::Path) -> Result<Vec<SavedQuestionBatch>, String> {
-    let save = save::SaveFile::open_or_create(path)?;
-    let mut batches = save
-        .get::<Vec<SavedQuestionBatch>>(AI_QUESTION_BATCHES_KEY)
-        .unwrap_or_default();
-    batches.extend(
-        save.get::<Vec<SavedQuestionBatch>>(LEGACY_CLAUDE_QUESTION_BATCHES_KEY)
-            .unwrap_or_default(),
-    );
-    Ok(batches
-        .into_iter()
-        .filter(|batch| {
-            batch.level > 0
-                && !batch.questions.is_empty()
-                && batch.questions.iter().all(question_is_acceptable)
-        })
-        .collect())
-}
-
-fn load_answered_questions(path: &std::path::Path) -> Result<HashSet<String>, String> {
-    let save = save::SaveFile::open_or_create(path)?;
-    Ok(save
-        .get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
-        .unwrap_or_default()
-        .answered_questions
-        .into_iter()
-        .map(|question| question_identity(&question))
-        .collect())
-}
-
-fn persist_answered_question(path: &std::path::Path, question: &str) -> Result<(), String> {
-    let mut save = save::SaveFile::open_or_create(path)?;
-    let mut progress = save
-        .get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
-        .unwrap_or_default();
-    let identity = question_identity(question);
-    if identity.is_empty()
-        || progress
-            .answered_questions
-            .iter()
-            .any(|answered| question_identity(answered) == identity)
-    {
-        return Ok(());
-    }
-    progress.answered_questions.push(question.to_string());
-    save.set(QUIZ_PROGRESS_KEY, &progress)
-}
-
-fn persist_ai_question_batch(
-    path: &std::path::Path,
-    level: u32,
-    questions: &[QQuestion],
-) -> Result<(), String> {
-    if level == 0 || questions.is_empty() || !questions.iter().all(question_is_acceptable) {
-        return Err("INVALID AI QUESTION BATCH".to_string());
-    }
-    let mut save = save::SaveFile::open_or_create(path)?;
-    let mut batches = save
-        .get::<Vec<SavedQuestionBatch>>(AI_QUESTION_BATCHES_KEY)
-        .unwrap_or_default();
-    batches.push(SavedQuestionBatch {
-        level,
-        questions: questions.to_vec(),
-    });
-    save.set(AI_QUESTION_BATCHES_KEY, &batches)
-}
-
-fn gather_quiz_data(path: &std::path::Path) -> Result<QuizData, String> {
-    quiz_data(path.to_string_lossy().to_string())
-}
-
-fn text_excerpt(path: &std::path::Path, max_lines: usize) -> String {
-    std::fs::read_to_string(path)
-        .map(|t| t.lines().take(max_lines).collect::<Vec<_>>().join("\n"))
-        .unwrap_or_default()
-}
-
-fn ai_question_prompt(
-    project_name: &str,
-    level: u32,
-    count: usize,
-    documentation: &str,
-    implementation_excerpts: &str,
-) -> String {
-    format!(
-        "You write questions for a retro handheld quiz game about a software project. Generate exactly {count} multiple-choice questions at difficulty level {level} (1=purpose and responsibilities, 3=component interactions and tradeoffs, 5=subtle invariants and design rationale).\n\nCONCEPTS ONLY: test the project's architecture, purpose, domain model, component responsibilities, interactions, invariants, tradeoffs, design rationale, or enduring behavior. Every question must still make sense if the project were reorganized and all implementation locations changed.\n\nNEVER ask about file names, paths, directories, or extensions; where code lives; repository structure; counts, sizes, or lines; dates or times; branches or commits; authors or contributors; ordering or recency; or any other state-in-time fact. Never use those facts as choices.\n\nDISPLAY LIMITS: each question must wrap into at most 4 lines of 31 characters. Each choice must be at most 31 characters. Return exactly 4 non-empty, distinct choices and exactly one correct answer. Wrong choices must be plausible concepts. Do not truncate words or sentences. Do not repeat questions.\n\nRespond with ONLY a JSON array, no prose and no code fences: [{{\"q\":\"...\",\"choices\":[\"a\",\"b\",\"c\",\"d\"],\"answer\":0}}]\n\nPROJECT: {project_name}\nPROJECT DOCUMENTATION:\n{documentation}\nANONYMIZED IMPLEMENTATION EXCERPTS:\n{implementation_excerpts}",
-    )
 }
 
 const AI_PROBE_PROMPT: &str =
@@ -751,47 +533,27 @@ fn ai_questions(
     count: usize,
     active_provider: Option<AiProvider>,
 ) -> Result<Vec<QQuestion>, String> {
-    let d = gather_quiz_data(path)?;
+    if !is_git_repo(path) {
+        return Err("NOT A GIT REPOSITORY".to_string());
+    }
+    let provider = active_provider.ok_or_else(|| "AI BATTERIES NOT VERIFIED".to_string())?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    // The file inventory is used only to select representative source excerpts.
-    // Paths and repository metadata are deliberately withheld from the provider so the
-    // resulting questions focus on enduring concepts rather than file trivia.
-    let mut files: Vec<&QuizFile> = d.files.iter().collect();
-    files.sort_by_key(|file| std::cmp::Reverse(file.size));
-    let readme = text_excerpt(&path.join("README.md"), 40);
-    let src_exts = [
-        ".rs", ".js", ".ts", ".py", ".go", ".java", ".c", ".cpp", ".rb", ".sh", ".css", ".html",
-    ];
-    let mut excerpts = String::new();
-    let mut used = 0;
-    for f in files.iter() {
-        if used >= 2 || f.size > 200_000 {
-            continue;
-        }
-        if src_exts.iter().any(|e| f.path.ends_with(e)) {
-            excerpts.push_str("\n--- IMPLEMENTATION EXCERPT ---\n");
-            excerpts.push_str(&text_excerpt(&path.join(&f.path), 50));
-            excerpts.push('\n');
-            used += 1;
-        }
-    }
-    let prompt = ai_question_prompt(&name, level, count, &readme, &excerpts);
-    let provider = active_provider.ok_or_else(|| "AI BATTERIES NOT VERIFIED".to_string())?;
+    // The brief describes the project through anonymized documentation and
+    // component skeletons. Paths and repository metadata are withheld from the
+    // provider so questions focus on enduring concepts rather than file trivia.
+    let brief = repo_context::project_brief(path, &tracked_files(path));
+    let learner = questions::load_learner_state(path).unwrap_or_default();
+    let prompt = questions::bounded_ai_question_prompt(&name, level, count, &brief, &learner);
     let cmd = ai_prompt_command(provider, &prompt);
     let out = command_output_with_timeout(cmd, Duration::from_secs(120), provider.name())?;
     if !out.status.success() {
         return Err(format!("{} CALL FAILED", provider.name()));
     }
     let result = ai_response_text(provider, &out.stdout)?;
-    let start = result.find('[').ok_or("NO JSON IN RESPONSE")?;
-    let end = result.rfind(']').ok_or("NO JSON IN RESPONSE")?;
-    let parsed: Vec<QQuestion> = serde_json::from_str(&result[start..=end])
-        .map_err(|_| "UNPARSEABLE QUESTIONS".to_string())?;
-    accepted_question_batch(parsed, count)
-        .ok_or_else(|| "INCOMPLETE OR INVALID QUESTIONS".to_string())
+    questions::parse_generated_questions(&result, count)
 }
 
 fn generate_and_save_questions(
@@ -801,7 +563,7 @@ fn generate_and_save_questions(
     provider: AiProvider,
 ) -> Result<Vec<QQuestion>, String> {
     let questions = ai_questions(path, level, count, Some(provider))?;
-    persist_ai_question_batch(path, level, &questions)?;
+    questions::persist_ai_question_batch(path, level, &questions)?;
     Ok(questions)
 }
 
@@ -821,6 +583,46 @@ where
     generate(path, level, count, provider).unwrap_or_default()
 }
 
+/// The engine's question loader: a fresh verified batch, without questions
+/// the player has already retired. Missed questions stay playable.
+fn load_new_questions_with<F>(
+    path: &std::path::Path,
+    level: u32,
+    count: usize,
+    provider_state: &AiProviderState,
+    generate: &F,
+) -> Vec<engine::QuizQuestion>
+where
+    F: Fn(&std::path::Path, u32, usize, AiProvider) -> Result<Vec<QQuestion>, String>,
+{
+    let generated = load_verified_question_batch_with(path, level, count, provider_state, generate);
+    let retired = questions::load_retired_questions(path).unwrap_or_default();
+    questions::playable_new_questions(generated, &retired)
+}
+
+/// Builds the answer recorder the engine calls when a player commits an
+/// answer. The engine calls it from its fixed-rate loop, and a durable save
+/// write would stall frames there, so one writer thread applies evidence in
+/// commit order. The writer stops once the returned recorder is dropped.
+fn answer_recorder_with<F>(persist: F) -> (engine::AnsweredQuestionRecorder, thread::JoinHandle<()>)
+where
+    F: Fn(&std::path::Path, &learning::AnswerEvidence) + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel::<(String, learning::AnswerEvidence)>();
+    let writer = thread::Builder::new()
+        .name("cqa-save-writer".into())
+        .spawn(move || {
+            for (path, evidence) in receiver {
+                persist(std::path::Path::new(&path), &evidence);
+            }
+        })
+        .expect("failed to start save writer thread");
+    let recorder: engine::AnsweredQuestionRecorder = Arc::new(move |path, evidence| {
+        let _ = sender.send((path, evidence));
+    });
+    (recorder, writer)
+}
+
 fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, String> {
     let mode = if cartridge.mode == "custom" {
         engine::CartridgeMode::Custom
@@ -838,28 +640,7 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
         .transpose()?
         .flatten()
         .unwrap_or_else(|| SceneMachineDefinition::template(template));
-    let saved_batches = load_saved_question_batches(std::path::Path::new(&cartridge.path))?;
-    let answered_questions = load_answered_questions(std::path::Path::new(&cartridge.path))?;
-    let mut questions = Vec::new();
-    let mut question_batch_ends = Vec::with_capacity(saved_batches.len());
-    for batch in saved_batches {
-        let batch_start = questions.len();
-        questions.extend(
-            batch
-                .questions
-                .into_iter()
-                .filter(|question| !answered_questions.contains(&question_identity(&question.q)))
-                .map(|question| engine::QuizQuestion {
-                    question: question.q,
-                    choices: question.choices,
-                    answer: question.answer,
-                    ..Default::default()
-                }),
-        );
-        if questions.len() > batch_start {
-            question_batch_ends.push(questions.len());
-        }
-    }
+    let saved = questions::load_cartridge_questions(std::path::Path::new(&cartridge.path))?;
 
     Ok(engine::CartridgeSpec {
         id: cartridge.path,
@@ -877,10 +658,10 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
                 command: quest.command,
             })
             .collect(),
-        questions,
-        question_batch_ends,
-        lessons: Vec::new(),
-        mastery: learning::Mastery::new(),
+        questions: saved.questions,
+        question_batch_ends: saved.batch_ends,
+        lessons: saved.lessons,
+        mastery: saved.mastery,
     })
 }
 
@@ -1002,30 +783,17 @@ pub fn run() {
         if environment_flag_enabled(std::env::var("CQA_NO_AI").ok().as_deref()) {
             return Vec::new();
         }
-        let cartridge_path = std::path::Path::new(&path);
-        let questions = load_verified_question_batch_with(
-            cartridge_path,
+        load_new_questions_with(
+            std::path::Path::new(&path),
             level,
             count,
             &question_provider_state,
             &generate_and_save_questions,
-        );
-        let answered_questions = load_answered_questions(cartridge_path).unwrap_or_default();
-        questions
-            .into_iter()
-            .filter(|question| !answered_questions.contains(&question_identity(&question.q)))
-            .map(|question| engine::QuizQuestion {
-                question: question.q,
-                choices: question.choices,
-                answer: question.answer,
-                ..Default::default()
-            })
-            .collect()
+        )
     });
-    let answered_question_recorder: engine::AnsweredQuestionRecorder =
-        Arc::new(|path, evidence: learning::AnswerEvidence| {
-            let _ = persist_answered_question(std::path::Path::new(&path), &evidence.question);
-        });
+    let (answered_question_recorder, _save_writer) = answer_recorder_with(|path, evidence| {
+        let _ = questions::persist_answer_evidence(path, evidence);
+    });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1055,6 +823,8 @@ pub fn run() {
 #[cfg(test)]
 mod question_policy_tests {
     use super::*;
+    use learning::{AnswerEvidence, Concept};
+    use questions::tests::question;
 
     #[test]
     fn no_ai_flag_requires_an_explicit_truthy_value() {
@@ -1118,7 +888,7 @@ mod question_policy_tests {
                     "NO QUESTIONS",
                 ],
             )];
-            persist_ai_question_batch(path, level, &generated)?;
+            questions::persist_ai_question_batch(path, level, &generated)?;
             Ok(generated)
         };
 
@@ -1140,7 +910,7 @@ mod question_policy_tests {
             *calls.lock().unwrap(),
             [AiProvider::Codex, AiProvider::Claude]
         );
-        let batches = load_saved_question_batches(&repo).unwrap();
+        let batches = questions::load_saved_question_batches(&repo).unwrap();
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].questions[0].q, "WHAT DOES CODEX GENERATE?");
         assert_eq!(batches[1].questions[0].q, "WHAT DOES CLAUDE GENERATE?");
@@ -1241,14 +1011,6 @@ mod question_policy_tests {
             .status()
             .unwrap();
         assert!(commit.success());
-    }
-
-    fn question(text: &str, choices: &[&str]) -> QQuestion {
-        QQuestion {
-            q: text.to_string(),
-            choices: choices.iter().map(|choice| (*choice).to_string()).collect(),
-            answer: 0,
-        }
     }
 
     #[test]
@@ -1535,88 +1297,11 @@ mod question_policy_tests {
     }
 
     #[test]
-    fn accepted_ai_questions_are_conceptual_and_fit_the_quiz_layout() {
-        let conceptual = question(
-            "WHY SEPARATE GAME STATE FROM THE UI?",
-            &[
-                "TO KEEP RESPONSIBILITIES CLEAR",
-                "TO HIDE FAILURES",
-                "TO COUPLE COMPONENTS",
-                "TO DUPLICATE STATE",
-            ],
-        );
-        assert!(question_is_acceptable(&conceptual));
-
-        let file_trivia = question(
-            "WHICH FILE OWNS GAME STATE?",
-            &["engine.rs", "main.js", "styles.css", "README.md"],
-        );
-        assert!(!question_is_acceptable(&file_trivia));
-
-        let state_trivia = question(
-            "HOW MANY FILES ARE IN THE REPOSITORY?",
-            &["ONE", "TWO", "THREE", "FOUR"],
-        );
-        assert!(!question_is_acceptable(&state_trivia));
-
-        let overflowing = question(
-            &"CONCEPTUAL WORD ".repeat(40),
-            &[
-                "THIS CHOICE IS LONGER THAN THE DISPLAY CAN POSSIBLY SHOW",
-                "SECOND",
-                "THIRD",
-                "FOURTH",
-            ],
-        );
-        assert!(!question_is_acceptable(&overflowing));
-    }
-
-    #[test]
     fn quiz_cartridges_have_no_preloaded_questions() {
         let repo = temporary_git_repo();
         let spec = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
 
         assert!(spec.questions.is_empty());
-        remove_temporary_repo(repo);
-    }
-
-    #[test]
-    fn cartridge_reload_combines_current_and_legacy_ai_batches() {
-        let repo = temporary_git_repo();
-        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
-        let current = SavedQuestionBatch {
-            level: 2,
-            questions: vec![question(
-                "WHY KEEP THE DEVICE SHELL THIN?",
-                &[
-                    "TO CENTRALIZE GAME RULES",
-                    "TO DUPLICATE GAME STATE",
-                    "TO HIDE ENGINE OUTPUT",
-                    "TO BYPASS THE ENGINE",
-                ],
-            )],
-        };
-        let legacy = SavedQuestionBatch {
-            level: 1,
-            questions: vec![question(
-                "WHAT SHOULD OWN GAMEPLAY STATE?",
-                &[
-                    "THE GAME ENGINE",
-                    "THE DEVICE SHELL",
-                    "THE STYLES",
-                    "THE VIEW",
-                ],
-            )],
-        };
-        save.set(AI_QUESTION_BATCHES_KEY, &[current]).unwrap();
-        save.set(LEGACY_CLAUDE_QUESTION_BATCHES_KEY, &[legacy])
-            .unwrap();
-
-        let batches = load_saved_question_batches(&repo).unwrap();
-
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].level, 2);
-        assert_eq!(batches[1].level, 1);
         remove_temporary_repo(repo);
     }
 
@@ -1731,151 +1416,219 @@ mod question_policy_tests {
         remove_temporary_repo(repo);
     }
 
+    fn answer(question: &str, concept: Option<Concept>, correct: bool) -> AnswerEvidence {
+        AnswerEvidence {
+            question: question.to_string(),
+            concept,
+            correct,
+            review: false,
+        }
+    }
+
     #[test]
-    fn answered_question_progress_is_namespaced_and_idempotent() {
+    fn cartridge_reload_brings_missed_questions_back_for_review_with_lessons() {
         let repo = temporary_git_repo();
-        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
-        save.set(
-            AI_QUESTION_BATCHES_KEY,
-            &serde_json::json!([{ "level": 1, "questions": [] }]),
+        let explained = question(
+            "WHY DOES THE ENGINE OWN STATE?",
+            &[
+                "ONE OWNER KEEPS RULES FIXED",
+                "THE SHELL IS TOO SLOW",
+                "STYLES CANNOT HOLD STATE",
+                "THE VIEW IS REPLACEABLE",
+            ],
+        );
+        let retired = question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &[
+                "THE GAME ENGINE",
+                "THE DEVICE SHELL",
+                "THE STYLES",
+                "THE VIEW",
+            ],
+        );
+        questions::persist_ai_question_batch(&repo, 1, &[retired.clone(), explained.clone()])
+            .unwrap();
+        questions::persist_answer_evidence(
+            &repo,
+            &answer(&retired.q, Some(Concept::Responsibility), true),
+        )
+        .unwrap();
+        questions::persist_answer_evidence(
+            &repo,
+            &answer(&explained.q, Some(Concept::Responsibility), false),
         )
         .unwrap();
 
-        persist_answered_question(&repo, "WHAT OWNS GAMEPLAY STATE?").unwrap();
-        persist_answered_question(&repo, "  what owns gameplay state?  ").unwrap();
+        let spec = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
 
-        let reloaded = save::SaveFile::open_or_create(&repo).unwrap();
-        let progress = reloaded
-            .get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
-            .unwrap();
-        assert_eq!(progress.answered_questions, ["WHAT OWNS GAMEPLAY STATE?"]);
-        assert!(reloaded
-            .get::<serde_json::Value>(AI_QUESTION_BATCHES_KEY)
-            .is_some());
-
-        remove_temporary_repo(repo);
-    }
-
-    #[test]
-    fn duplicate_choices_are_rejected() {
-        let ambiguous = question(
-            "WHAT SHOULD OWN GAMEPLAY STATE?",
-            &[
-                "THE GAME ENGINE",
-                "THE GAME ENGINE",
-                "THE VIEW",
-                "THE DEVICE SHELL",
-            ],
-        );
-
-        assert!(!question_is_acceptable(&ambiguous));
-    }
-
-    #[test]
-    fn invalid_ai_results_are_rejected_instead_of_truncated() {
-        let valid = question(
-            "WHAT SHOULD OWN GAMEPLAY STATE?",
-            &[
-                "THE GAME ENGINE",
-                "THE DEVICE SHELL",
-                "THE STYLES",
-                "THE VIEW",
-            ],
-        );
-        let file_trivia = question(
-            "WHICH FILE DEFINES THE ENGINE?",
-            &["engine.rs", "main.js", "styles.css", "README.md"],
-        );
-        let overflowing = question(
-            "WHY KEEP OUTPUT WITHIN A FIXED PRESENTATION BOUNDARY?",
-            &[
-                "THIS RESPONSE CANNOT FIT IN THE AVAILABLE CHOICE ROW",
-                "SECOND",
-                "THIRD",
-                "FOURTH",
-            ],
-        );
-
-        let accepted = retain_acceptable_questions(vec![valid.clone(), file_trivia, overflowing]);
-        assert_eq!(accepted.len(), 1);
-        assert_eq!(accepted[0].q, valid.q);
-        assert_eq!(accepted[0].choices, valid.choices);
-    }
-
-    #[test]
-    fn valid_questions_survive_a_mixed_ai_batch() {
-        let valid = question(
-            "WHAT SHOULD OWN GAMEPLAY STATE?",
-            &[
-                "THE GAME ENGINE",
-                "THE DEVICE SHELL",
-                "THE STYLES",
-                "THE VIEW",
-            ],
-        );
-        let file_trivia = question(
-            "WHICH FILE DEFINES THE ENGINE?",
-            &["engine.rs", "main.js", "styles.css", "README.md"],
-        );
-
-        let accepted = accepted_question_batch(vec![valid.clone(), file_trivia.clone()], 2)
-            .expect("the valid question should remain playable");
-        assert_eq!(accepted.len(), 1);
-        assert_eq!(accepted[0].q, valid.q);
-        assert!(accepted_question_batch(vec![file_trivia], 1).is_none());
-    }
-
-    #[test]
-    fn generated_ai_batch_is_saved_without_replacing_other_game_data() {
-        let repo = temporary_git_repo();
-        let save_path = save::path_for(&repo);
-        let mut save = save::SaveFile::open_or_create(&repo).unwrap();
-        save.set("quest.progress", &serde_json::json!({ "bosses": 2 }))
-            .unwrap();
-        let generated = vec![question(
-            "WHAT SHOULD OWN GAMEPLAY STATE?",
-            &[
-                "THE GAME ENGINE",
-                "THE DEVICE SHELL",
-                "THE STYLES",
-                "THE VIEW",
-            ],
-        )];
-
-        persist_ai_question_batch(&repo, 3, &generated).unwrap();
-
-        let reloaded = save::SaveFile::open_or_create(&repo).unwrap();
         assert_eq!(
-            reloaded.get::<serde_json::Value>("quest.progress"),
-            Some(serde_json::json!({ "bosses": 2 }))
+            spec.questions.len(),
+            1,
+            "correct answers retire, misses return"
         );
-        let batches = reloaded
-            .get::<Vec<SavedQuestionBatch>>(AI_QUESTION_BATCHES_KEY)
-            .unwrap();
-        assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].level, 3);
-        assert_eq!(batches[0].questions[0].q, generated[0].q);
+        let review = &spec.questions[0];
+        assert_eq!(review.question, explained.q);
+        assert!(review.review);
+        assert_eq!(review.concept, Some(Concept::Responsibility));
+        assert_eq!(review.rationales, explained.rationales());
+        assert_eq!(review.choices, explained.choice_texts());
+        assert_eq!(spec.question_batch_ends, vec![1]);
+        assert_eq!(
+            spec.lessons
+                .iter()
+                .map(|lesson| (lesson.question.as_str(), lesson.outstanding))
+                .collect::<Vec<_>>(),
+            [(retired.q.as_str(), false), (explained.q.as_str(), true)]
+        );
+        assert_eq!(spec.lessons[1].answer, "ONE OWNER KEEPS RULES FIXED");
+        assert!(!spec.lessons[1].rationale.is_empty());
+        let lens = spec.mastery[&Concept::Responsibility];
+        assert_eq!((lens.first_try, lens.missed), (1, 1));
 
-        std::fs::remove_file(save_path).unwrap();
         remove_temporary_repo(repo);
     }
 
     #[test]
-    fn ai_prompt_requests_only_concepts_that_fit_the_display() {
-        let prompt = ai_question_prompt(
-            "DEMO PROJECT",
-            3,
-            12,
-            "A project that separates its engine from its device shell.",
-            "The engine owns state. The adapter translates platform operations.",
-        );
+    fn a_wrong_answer_no_longer_retires_a_question() {
+        let repo = temporary_git_repo();
+        save::SaveFile::open_or_create(&repo)
+            .unwrap()
+            .set("claude.question_batches", &serde_json::json!([{
+                "level": 1,
+                "questions": [{
+                    "q": "WHAT SHOULD OWN GAMEPLAY STATE?",
+                    "choices": ["THE GAME ENGINE", "THE DEVICE SHELL", "THE STYLES", "THE VIEW"],
+                    "answer": 0
+                }]
+            }]))
+            .unwrap();
 
-        assert!(prompt.contains("CONCEPTS ONLY"));
-        assert!(prompt.contains("NEVER ask about file names, paths, directories, or extensions"));
-        assert!(prompt.contains("still make sense if the project were reorganized"));
-        assert!(prompt.contains("at most 4 lines of 31 characters"));
-        assert!(prompt.contains("at most 31 characters"));
-        assert!(!prompt.contains("FILES:"));
-        assert!(!prompt.contains("COMMIT MESSAGES"));
+        questions::persist_answer_evidence(
+            &repo,
+            &answer("WHAT SHOULD OWN GAMEPLAY STATE?", None, false),
+        )
+        .unwrap();
+        let missed = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
+        assert_eq!(missed.questions.len(), 1);
+        assert!(missed.questions[0].review);
+        assert!(
+            missed.questions[0].rationales.is_empty(),
+            "legacy questions have no rationales"
+        );
+        assert!(missed.lessons[0].outstanding);
+
+        questions::persist_answer_evidence(
+            &repo,
+            &answer("WHAT SHOULD OWN GAMEPLAY STATE?", None, true),
+        )
+        .unwrap();
+        let redeemed = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
+        assert!(redeemed.questions.is_empty());
+        assert!(!redeemed.lessons[0].outstanding);
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn the_question_loader_maps_new_batches_and_skips_only_retired_questions() {
+        let repo = temporary_git_repo();
+        let providers = AiProviderState::default();
+        providers.select(Some(AiProvider::Claude)).unwrap();
+        providers.mark_verified(AiProvider::Claude).unwrap();
+        let retired = question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &[
+                "THE GAME ENGINE",
+                "THE DEVICE SHELL",
+                "THE STYLES",
+                "THE VIEW",
+            ],
+        );
+        let missed = question(
+            "WHY KEEP THE DEVICE SHELL THIN?",
+            &[
+                "TO CENTRALIZE GAME RULES",
+                "TO DUPLICATE GAME STATE",
+                "TO HIDE ENGINE OUTPUT",
+                "TO BYPASS THE ENGINE",
+            ],
+        );
+        questions::persist_answer_evidence(&repo, &answer(&retired.q, None, true)).unwrap();
+        questions::persist_answer_evidence(&repo, &answer(&missed.q, None, false)).unwrap();
+        let batch = vec![retired, missed.clone()];
+        let generate = |_: &std::path::Path, _: u32, _: usize, _: AiProvider| Ok(batch.clone());
+
+        let loaded = load_new_questions_with(&repo, 2, 6, &providers, &generate);
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].question, missed.q);
+        assert_eq!(loaded[0].concept, missed.lens());
+        assert_eq!(loaded[0].rationales, missed.rationales());
+        assert!(!loaded[0].review);
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn the_answer_recorder_persists_evidence_in_commit_order_off_the_engine_thread() {
+        let repo = temporary_git_repo();
+        let engine_thread = thread::current().id();
+        let writer_threads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&writer_threads);
+        let (recorder, writer) = answer_recorder_with(move |path, evidence| {
+            seen.lock().unwrap().push(thread::current().id());
+            questions::persist_answer_evidence(path, evidence).unwrap();
+        });
+        let cartridge = repo.to_string_lossy().to_string();
+        let evidence = |correct| AnswerEvidence {
+            review: correct,
+            ..answer(
+                "WHY WRITE SAVES ATOMICALLY?",
+                Some(Concept::Invariant),
+                correct,
+            )
+        };
+
+        recorder(cartridge.clone(), evidence(false));
+        recorder(cartridge, evidence(true));
+        drop(recorder);
+        writer.join().unwrap();
+
+        let progress = questions::load_quiz_progress(&repo).unwrap();
+        assert_eq!(progress.answered_questions, ["WHY WRITE SAVES ATOMICALLY?"]);
+        assert!(
+            progress.missed_questions.is_empty(),
+            "the redemption was applied last"
+        );
+        let lens = progress.mastery[&Concept::Invariant];
+        assert_eq!((lens.redeemed, lens.missed), (1, 1));
+        assert!(writer_threads
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|thread| *thread != engine_thread));
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn generation_briefs_come_from_tracked_files() {
+        let repo = temporary_git_repo();
+        std::fs::write(repo.join("README.md"), "# Demo\n\nA tracked overview.\n").unwrap();
+        std::fs::write(repo.join("untracked.md"), "# Untracked\n").unwrap();
+        let add = external_tools::git_command()
+            .arg("-C")
+            .arg(&repo)
+            .args(["add", "README.md"])
+            .status()
+            .unwrap();
+        assert!(add.success());
+
+        let canon = std::fs::canonicalize(&repo).unwrap();
+        assert_eq!(tracked_files(&canon), ["README.md"]);
+        let brief = repo_context::project_brief(&canon, &tracked_files(&canon));
+        assert!(brief.contains("A tracked overview."));
+
+        remove_temporary_repo(repo);
     }
 }
