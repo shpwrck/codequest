@@ -5,7 +5,8 @@
 //! choice can carry a short rationale, so feedback explains why the correct
 //! answer holds and which misconception a wrong answer reveals. Committed
 //! answers become evidence, and evidence fills per-lens mastery runes at
-//! explicit thresholds. Nothing here depends on Tauri or Bevy.
+//! explicit thresholds, gated by recent accuracy and open misses. Nothing here
+//! depends on Tauri or Bevy.
 
 use std::collections::BTreeMap;
 
@@ -79,6 +80,37 @@ impl Concept {
     }
 }
 
+/// Graded outcomes a lens remembers for its accuracy gates.
+pub const RECENT_CAPACITY: u8 = 8;
+/// Newest graded outcomes the rune II and rune III gates read.
+pub const MASTERY_GATE_WINDOW: u8 = 5;
+
+/// Why a question is being asked, which decides what a correct answer proves.
+///
+/// Only a success that cannot lean on a lesson read moments ago is mastery
+/// evidence: a first attempt (`Fresh`), or a missed question checked again in
+/// a later launch (`Spaced`). A retry of a miss inside the same launch
+/// (`InSession`), later in the run or in another run, follows a lesson card
+/// the player has just read, so its success is *relearning*: it clears the
+/// pending review but lights no rune.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Review {
+    /// The first time the player meets this question.
+    #[default]
+    Fresh,
+    /// A retry of a miss made earlier in this launch.
+    InSession,
+    /// A question missed or relearned in an earlier launch, checked again.
+    Spaced,
+}
+
+impl Review {
+    /// Whether this attempt re-asks a question the player previously missed.
+    pub fn is_review(self) -> bool {
+        self != Self::Fresh
+    }
+}
+
 /// What the engine learned when the player committed an answer.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AnswerEvidence {
@@ -86,40 +118,111 @@ pub struct AnswerEvidence {
     pub question: String,
     pub concept: Option<Concept>,
     pub correct: bool,
-    /// True when this attempt re-asked a question the player previously missed.
-    pub review: bool,
+    /// Why the question was asked; see [`Review`].
+    pub review: Review,
 }
 
 /// Accumulated evidence for one lens on one cartridge.
+///
+/// Every field defaults, so records saved by earlier builds load unchanged.
+/// Such a record has no recent outcomes, so its accuracy gates pass until new
+/// answers arrive.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LensRecord {
     /// Correct answers on a question's first attempt.
     #[serde(default)]
     pub first_try: u32,
-    /// Correct answers to a question the player had previously missed.
+    /// Correct answers, in a later launch, to a question previously missed.
     #[serde(default)]
     pub redeemed: u32,
     /// Wrong answers, counting every attempt.
     #[serde(default)]
     pub missed: u32,
+    /// Correct same-launch retries of a miss: relearning, not evidence.
+    #[serde(default)]
+    pub relearned: u32,
+    /// The newest graded outcomes as a shift register: bit 0 is the newest,
+    /// and a set bit is a correct answer. Same-launch retry successes are not
+    /// graded here, because they follow the lesson card that gave the answer.
+    #[serde(default)]
+    pub recent: u8,
+    /// How many bits of `recent` hold outcomes (0 to [`RECENT_CAPACITY`]).
+    #[serde(default)]
+    pub recent_len: u8,
 }
 
 impl LensRecord {
-    /// Evidence of understanding: first-try successes plus redemptions.
+    /// Evidence of understanding: first-try successes plus redemptions in a
+    /// later launch. Same-launch relearning is excluded.
     pub fn evidence(&self) -> u32 {
         self.first_try.saturating_add(self.redeemed)
     }
 
-    /// Number of mastery runes lit (0-3) at the declared thresholds.
-    pub fn stage(&self) -> usize {
+    /// Runes the evidence volume alone would light (0-3) at the declared
+    /// thresholds, before the accuracy and open-miss gates.
+    pub fn volume_stage(&self) -> usize {
         MASTERY_THRESHOLDS.partition_point(|threshold| self.evidence() >= *threshold)
     }
 
+    /// Correct answers among the newest `window` graded outcomes, and how many
+    /// outcomes that window actually holds: `(right, of)`.
+    pub fn recent_accuracy(&self, window: u8) -> (u8, u8) {
+        let of = window.min(self.recent_len).min(RECENT_CAPACITY);
+        let mask = if of >= 8 { u8::MAX } else { (1u8 << of) - 1 };
+        ((self.recent & mask).count_ones() as u8, of)
+    }
+
+    /// Lit mastery runes (0-3) for a lens with `outstanding` open misses.
+    ///
+    /// Volume sets the ceiling, then two gates read the newest
+    /// [`MASTERY_GATE_WINDOW`] graded outcomes:
+    /// - rune II stays lit only while recent accuracy is at least 60%;
+    /// - rune III also needs at least 80% and no open miss on the lens.
+    ///
+    /// A record with no recent outcomes (a save from an earlier build) passes
+    /// both accuracy gates; only the open-miss gate applies to it.
+    pub fn stage_with(&self, outstanding: usize) -> usize {
+        let mut stage = self.volume_stage();
+        let (right, of) = self.recent_accuracy(MASTERY_GATE_WINDOW);
+        let (right, of) = (u32::from(right), u32::from(of));
+        if stage >= 2 && of > 0 && right * 5 < of * 3 {
+            stage = 1;
+        }
+        if stage == 3 && (outstanding > 0 || (of > 0 && right * 5 < of * 4)) {
+            stage = 2;
+        }
+        stage
+    }
+
+    /// Runes the volume earned that the gates hold back. They show cracked:
+    /// a review is due, not progress lost.
+    pub fn cracks_with(&self, outstanding: usize) -> usize {
+        self.volume_stage() - self.stage_with(outstanding)
+    }
+
+    fn push_recent(&mut self, correct: bool) {
+        self.recent = (self.recent << 1) | u8::from(correct);
+        self.recent_len = self.recent_len.saturating_add(1).min(RECENT_CAPACITY);
+    }
+
+    /// Routes one committed answer. A first-try success and a later-launch
+    /// redemption are evidence; a same-launch retry success is relearning.
+    /// Every graded outcome except that relearning enters the recent window.
     pub fn record(&mut self, evidence: &AnswerEvidence) {
         match (evidence.correct, evidence.review) {
-            (true, false) => self.first_try = self.first_try.saturating_add(1),
-            (true, true) => self.redeemed = self.redeemed.saturating_add(1),
-            (false, _) => self.missed = self.missed.saturating_add(1),
+            (true, Review::Fresh) => {
+                self.first_try = self.first_try.saturating_add(1);
+                self.push_recent(true);
+            }
+            (true, Review::InSession) => self.relearned = self.relearned.saturating_add(1),
+            (true, Review::Spaced) => {
+                self.redeemed = self.redeemed.saturating_add(1);
+                self.push_recent(true);
+            }
+            (false, _) => {
+                self.missed = self.missed.saturating_add(1);
+                self.push_recent(false);
+            }
         }
     }
 }
@@ -217,19 +320,21 @@ mod tests {
     }
 
     #[test]
-    fn lens_records_separate_first_try_success_redemption_and_misses() {
+    fn lens_records_separate_first_try_success_redemption_relearning_and_misses() {
         let mut mastery = Mastery::new();
         let mut evidence = AnswerEvidence {
             question: "WHY?".into(),
             concept: Some(Concept::Invariant),
             correct: false,
-            review: false,
+            review: Review::Fresh,
         };
         record_evidence(&mut mastery, &evidence);
         evidence.correct = true;
-        evidence.review = true;
+        evidence.review = Review::InSession;
         record_evidence(&mut mastery, &evidence);
-        evidence.review = false;
+        evidence.review = Review::Spaced;
+        record_evidence(&mut mastery, &evidence);
+        evidence.review = Review::Fresh;
         record_evidence(&mut mastery, &evidence);
         record_evidence(
             &mut mastery,
@@ -246,11 +351,127 @@ mod tests {
             LensRecord {
                 first_try: 1,
                 redeemed: 1,
-                missed: 1
+                missed: 1,
+                relearned: 1,
+                // Newest first: Fresh success, Spaced success, then the miss.
+                // The same-launch relearning is not graded.
+                recent: 0b011,
+                recent_len: 3,
             }
         );
-        assert_eq!(record.evidence(), 2);
+        assert_eq!(record.evidence(), 2, "relearning is not evidence");
         assert_eq!(mastery.len(), 1);
+    }
+
+    fn answer(review: Review, correct: bool) -> AnswerEvidence {
+        AnswerEvidence {
+            question: "WHY?".into(),
+            concept: Some(Concept::Purpose),
+            correct,
+            review,
+        }
+    }
+
+    #[test]
+    fn same_launch_relearning_never_moves_a_rune_but_a_spaced_redemption_does() {
+        let mut record = LensRecord {
+            first_try: 2,
+            ..LensRecord::default()
+        };
+        assert_eq!(record.stage_with(0), 1);
+        record.record(&answer(Review::InSession, true));
+        assert_eq!(
+            record.stage_with(0),
+            1,
+            "an in-session retry lights nothing"
+        );
+        assert_eq!(record.relearned, 1);
+        assert_eq!(record.recent_len, 0, "an in-session success is not graded");
+        record.record(&answer(Review::Spaced, true));
+        assert_eq!(record.redeemed, 1);
+        assert_eq!(
+            record.stage_with(0),
+            2,
+            "a later-launch redemption is evidence"
+        );
+    }
+
+    fn record_with(first_try: u32, outcomes_oldest_first: &[bool]) -> LensRecord {
+        let mut record = LensRecord {
+            first_try,
+            ..LensRecord::default()
+        };
+        for correct in outcomes_oldest_first {
+            record.push_recent(*correct);
+        }
+        record
+    }
+
+    #[test]
+    fn misses_crack_runes_that_volume_alone_would_light() {
+        let mut record = LensRecord::default();
+        for _ in 0..5 {
+            record.record(&answer(Review::Fresh, true));
+        }
+        for _ in 0..12 {
+            record.record(&answer(Review::Fresh, false));
+        }
+        assert_eq!(record.volume_stage(), 3);
+        assert!(record.stage_with(0) <= 1, "{record:?}");
+        assert!(record.cracks_with(0) >= 2);
+        assert_eq!(record.recent_len, RECENT_CAPACITY, "the window is bounded");
+        assert_eq!(record.recent_accuracy(u8::MAX), (0, RECENT_CAPACITY));
+    }
+
+    #[test]
+    fn an_open_miss_cracks_only_the_third_rune() {
+        let record = record_with(5, &[true; 5]);
+        assert_eq!(record.stage_with(0), 3);
+        assert_eq!(record.cracks_with(0), 0);
+        assert_eq!(record.stage_with(1), 2);
+        assert_eq!(record.cracks_with(1), 1);
+    }
+
+    #[test]
+    fn accuracy_gates_hold_at_their_exact_breakpoints() {
+        // The newest five outcomes decide; older ones fall out of the window.
+        let stage = |newest_five: [bool; 5]| {
+            let mut outcomes = vec![false, false, false];
+            outcomes.extend(newest_five);
+            record_with(9, &outcomes).stage_with(0)
+        };
+        assert_eq!(stage([true, true, true, true, false]), 3, "4/5 keeps III");
+        assert_eq!(stage([true, true, true, false, false]), 2, "3/5 caps at II");
+        assert_eq!(stage([true, true, false, false, false]), 1, "2/5 caps at I");
+        assert_eq!(stage([false; 5]), 1, "rune I is never gated");
+        assert_eq!(record_with(2, &[false, false]).stage_with(0), 1);
+    }
+
+    #[test]
+    fn recent_window_never_holds_more_than_its_capacity() {
+        let mut record = LensRecord::default();
+        for index in 0..40 {
+            record.record(&answer(Review::Fresh, index % 3 == 0));
+            assert!(record.recent_len <= RECENT_CAPACITY);
+        }
+        assert_eq!(record.recent_len, RECENT_CAPACITY);
+        let (right, of) = record.recent_accuracy(MASTERY_GATE_WINDOW);
+        assert_eq!(of, MASTERY_GATE_WINDOW);
+        assert!(right <= of);
+    }
+
+    #[test]
+    fn legacy_lens_records_load_and_keep_their_runes() {
+        let record: LensRecord =
+            serde_json::from_str(r#"{"first_try":4,"redeemed":1,"missed":7}"#).unwrap();
+        assert_eq!(record.relearned, 0);
+        assert_eq!(record.recent_len, 0);
+        assert_eq!(record.stage_with(0), 3, "no recent outcomes: gates pass");
+        assert_eq!(
+            record.stage_with(2),
+            2,
+            "an open miss still cracks rune III"
+        );
     }
 
     #[test]
@@ -260,7 +481,7 @@ mod tests {
                 first_try,
                 ..LensRecord::default()
             }
-            .stage()
+            .stage_with(0)
         };
         assert_eq!(
             [0, 1, 2, 3, 4, 5, 6].map(stage),

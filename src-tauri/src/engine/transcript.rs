@@ -441,6 +441,15 @@ fn run_status(run: &QuizRun) -> String {
     )
 }
 
+/// A lens's rune meter as drawn: lit runes, then any cracked ones.
+fn runes(state: &GameState, concept: Concept) -> String {
+    let lit = state.mastery_stage(concept);
+    match state.mastery_cracks(concept) {
+        0 => format!("{lit} of 3 runes"),
+        cracks => format!("{lit} of 3 runes, {cracks} cracked"),
+    }
+}
+
 fn trial(out: &mut Transcript, state: &GameState) {
     let Some(run) = state.quiz.as_ref() else {
         out.say("Trial. Waiting for a question");
@@ -491,9 +500,9 @@ fn trial(out: &mut Transcript, state: &GameState) {
         question.concept,
     ) {
         out.say(format!(
-            "{} mastery: {} of 3 runes",
+            "{} mastery: {}",
             spoken(concept.label()),
-            state.mastery_stage(concept)
+            runes(state, concept)
         ));
     }
     out.say(run_status(run));
@@ -598,9 +607,9 @@ fn codex(out: &mut Transcript, state: &GameState) {
                 String::new()
             };
             out.say(format!(
-                "{}: {} of 3 runes{review}",
+                "{}: {}{review}",
                 spoken(concept.label()),
-                state.mastery_stage(concept)
+                runes(state, concept)
             ));
         }
         if lessons.is_empty() {
@@ -609,7 +618,11 @@ fn codex(out: &mut Transcript, state: &GameState) {
         } else {
             let pending = lessons.iter().filter(|lesson| lesson.outstanding).count();
             let learned = lessons.len() - pending;
-            out.say(if pending == 0 {
+            // Both Codex layouts fit the legend, so it replaces the counts
+            // whenever a rune is cracked.
+            out.say(if state.mastery_cracked() {
+                "Cracked runes mean a review is due".to_string()
+            } else if pending == 0 {
                 format!("{learned} learned, all clear")
             } else {
                 format!("{learned} learned, {pending} awaiting review")
@@ -625,9 +638,9 @@ fn codex(out: &mut Transcript, state: &GameState) {
     ));
     match lesson.concept {
         Some(concept) => out.say(format!(
-            "{} lens, {} of 3 runes",
+            "{} lens, {}",
             spoken(concept.label()),
-            state.mastery_stage(concept)
+            runes(state, concept)
         )),
         None => out.say("General lesson"),
     }
@@ -744,7 +757,7 @@ mod tests {
                 "STYLES DRAW THE DEVICE CASE, NOT THE GAME.".into(),
                 "THE INSTALLER ONLY PACKAGES THE APP.".into(),
             ],
-            review: false,
+            review: Review::Fresh,
         }
     }
 
@@ -1194,8 +1207,8 @@ mod tests {
         assert_eq!(
             engine.transcript(),
             "Oracle Codex, mastery. Purpose: 1 of 3 runes. Roles: 2 of 3 runes. \
-             Flows: 0 of 3 runes. Invariants: 3 of 3 runes, 1 awaiting review. \
-             Tradeoffs: 0 of 3 runes. 1 learned, 1 awaiting review. \
+             Flows: 0 of 3 runes. Invariants: 2 of 3 runes, 1 cracked, 1 awaiting review. \
+             Tradeoffs: 0 of 3 runes. Cracked runes mean a review is due. \
              Left and Right read lessons, B goes back."
         );
 
@@ -1211,7 +1224,8 @@ mod tests {
         let text = engine.transcript();
         assert!(
             text.starts_with(
-                "Oracle Codex, lesson 2 of 2. Invariants lens, 3 of 3 runes. Review pending."
+                "Oracle Codex, lesson 2 of 2. Invariants lens, 2 of 3 runes, 1 cracked. \
+                 Review pending."
             ),
             "{text}"
         );

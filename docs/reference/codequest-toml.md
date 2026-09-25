@@ -137,8 +137,11 @@ the lesson journal (for example `LESSONS 07  REVIEW 02`).
 
 The `codex` handler is a read-only lesson journal. Its first page shows every
 concept lens with three mastery runes that wake at exactly 1, 3, and 5 pieces
-of evidence (first-try successes plus redeemed misses) and an amber count of
-that lens's lessons awaiting review. Each later page shows one lesson, oldest
+of evidence (first-try successes plus misses redeemed in a later launch) and an
+amber count of that lens's lessons awaiting review. Rune II also needs 60% of
+the lens's newest five graded answers correct, and rune III 80% plus no pending
+review; a rune those gates hold back is drawn cracked, and the totals row then
+reads `CRACKED = REVIEW DUE`. Each later page shows one lesson, oldest
 first: lens, question, correct answer, rationale, and whether a review is
 pending. Left, Up, and L page back; Right, Down, and R page forward; paging
 wraps between the mastery page and the newest lesson. A and Start are
@@ -150,8 +153,9 @@ The `concept-quiz` handler shows each question's choices in a stable shuffled
 order. Committing an answer opens a lesson card with the committed choice's
 rationale and, after a miss, the correct answer's rationale; the card ignores
 input for 45 ticks and then waits for A or Start. A survivable miss returns as a
-review copy inside the current batch, so `batch-complete` is emitted only after
-the batch's misses have been retried. These timings are engine behavior, not
+review copy after exactly three other questions; a copy that would land past
+the batch end joins the next batch instead, so `batch-complete` is emitted on
+time and the retry gap never shrinks. These timings are engine behavior, not
 manifest fields.
 
 ## Mechanics

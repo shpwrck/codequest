@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::learning::{self, AnswerEvidence, Concept, Lesson, Mastery};
+use crate::learning::{self, AnswerEvidence, Concept, Lesson, Mastery, Review};
 use crate::{engine, save};
 
 pub(crate) const AI_QUESTION_BATCHES_KEY: &str = "ai.question_batches";
@@ -103,7 +103,7 @@ impl QQuestion {
             .collect()
     }
 
-    pub(crate) fn quiz_question(&self, review: bool) -> engine::QuizQuestion {
+    pub(crate) fn quiz_question(&self, review: Review) -> engine::QuizQuestion {
         engine::QuizQuestion {
             question: self.q.clone(),
             choices: self.choice_texts(),
@@ -143,27 +143,41 @@ pub(crate) struct SavedQuizProgress {
     #[serde(default)]
     pub(crate) answered_questions: Vec<String>,
     /// Questions whose latest attempt was wrong. They stay playable and return
-    /// for review until the player redeems them.
+    /// for review until the player redeems them in a later launch.
     #[serde(default)]
     pub(crate) missed_questions: Vec<String>,
+    /// Missed questions answered correctly by a same-launch retry. Their
+    /// lesson is learned, but they return once in a later launch as a spaced
+    /// check, and only that check retires them.
+    #[serde(default)]
+    pub(crate) relearned_questions: Vec<String>,
     #[serde(default)]
     pub(crate) mastery: Mastery,
 }
 
 impl SavedQuizProgress {
     /// Applies one committed answer. The latest attempt decides where a
-    /// question lives, so the retired and missed lists never share a question.
+    /// question lives, so the retired, missed, and relearned lists never
+    /// share a question: a first-try or spaced success retires it, a
+    /// same-launch retry success relearns it, and a miss keeps it missed.
     pub(crate) fn record(&mut self, evidence: &AnswerEvidence) {
         let identity = question_identity(&evidence.question);
         if identity.is_empty() {
             return;
         }
-        let (target, other) = if evidence.correct {
-            (&mut self.answered_questions, &mut self.missed_questions)
-        } else {
-            (&mut self.missed_questions, &mut self.answered_questions)
+        let [answered, missed, relearned] = [
+            &mut self.answered_questions,
+            &mut self.missed_questions,
+            &mut self.relearned_questions,
+        ];
+        let (target, others) = match (evidence.correct, evidence.review) {
+            (true, Review::InSession) => (relearned, [answered, missed]),
+            (true, Review::Fresh | Review::Spaced) => (answered, [missed, relearned]),
+            (false, _) => (missed, [answered, relearned]),
         };
-        other.retain(|question| question_identity(question) != identity);
+        for other in others {
+            other.retain(|question| question_identity(question) != identity);
+        }
         if !target
             .iter()
             .any(|question| question_identity(question) == identity)
@@ -177,12 +191,16 @@ impl SavedQuizProgress {
         identities(&self.missed_questions)
     }
 
+    fn relearned(&self) -> HashSet<String> {
+        identities(&self.relearned_questions)
+    }
+
     /// Identities that must not be asked again.
     pub(crate) fn retired(&self) -> HashSet<String> {
-        let missed = self.missed();
+        let (missed, relearned) = (self.missed(), self.relearned());
         identities(&self.answered_questions)
             .into_iter()
-            .filter(|identity| !missed.contains(identity))
+            .filter(|identity| !missed.contains(identity) && !relearned.contains(identity))
             .collect()
     }
 }
@@ -1206,8 +1224,9 @@ pub(crate) struct CartridgeQuestions {
 }
 
 /// Builds the playable queue and lesson journal from saved batches (oldest
-/// first). Retired questions leave the queue; missed questions stay in it as
-/// reviews. Every recorded question becomes one journal lesson, in the order
+/// first). Retired questions leave the queue; missed and relearned questions
+/// stay in it as spaced reviews (a relearned lesson reads as learned). Every
+/// recorded question becomes one journal lesson, in the order
 /// it was generated. A question repeated across batches is queued and
 /// journaled once. The queue plays lower-level batches first (stable within a
 /// level), so a new Initiate run never opens on leftover Oracle-bound questions.
@@ -1217,6 +1236,7 @@ pub(crate) fn cartridge_questions(
 ) -> CartridgeQuestions {
     let retired = progress.retired();
     let missed = progress.missed();
+    let relearned = progress.relearned();
     let mut seen = HashSet::new();
     let mut loaded = CartridgeQuestions {
         mastery: progress.mastery,
@@ -1231,11 +1251,16 @@ pub(crate) fn cartridge_questions(
                 continue;
             }
             let outstanding = missed.contains(&identity);
-            if outstanding || retired.contains(&identity) {
+            let spaced = outstanding || relearned.contains(&identity);
+            if spaced || retired.contains(&identity) {
                 loaded.lessons.push(question.lesson(outstanding));
             }
             if !retired.contains(&identity) {
-                playable.push(question.quiz_question(outstanding));
+                playable.push(question.quiz_question(if spaced {
+                    Review::Spaced
+                } else {
+                    Review::Fresh
+                }));
             }
         }
         if !playable.is_empty() {
@@ -1269,7 +1294,7 @@ pub(crate) fn playable_new_questions(
     questions
         .into_iter()
         .filter(|question| !retired.contains(&question_identity(&question.q)))
-        .map(|question| question.quiz_question(false))
+        .map(|question| question.quiz_question(Review::Fresh))
         .collect()
 }
 
@@ -1573,7 +1598,7 @@ pub(crate) mod tests {
             question: question.to_string(),
             concept,
             correct,
-            review: false,
+            review: Review::Fresh,
         }
     }
 
@@ -1631,7 +1656,7 @@ pub(crate) mod tests {
             "new generations must use payload v2"
         );
 
-        let playable = legacy.quiz_question(false);
+        let playable = legacy.quiz_question(Review::Fresh);
         assert_eq!(playable.question, "WHAT SHOULD OWN GAMEPLAY STATE?");
         assert_eq!(playable.choices[0], "THE GAME ENGINE");
         assert_eq!(playable.concept, None);
@@ -1653,13 +1678,13 @@ pub(crate) mod tests {
         assert_eq!(generated.q, "WHY DOES THE ENGINE OWN EVERY GAME RULE?");
         assert_eq!(generated.concept.as_deref(), Some("responsibility"));
 
-        let playable = generated.quiz_question(true);
+        let playable = generated.quiz_question(Review::Spaced);
         assert_eq!(playable.concept, Some(Concept::Responsibility));
         assert_eq!(playable.choices.len(), 4);
         assert_eq!(playable.rationales.len(), 4);
         assert_eq!(playable.choices[1], "SO THE UI CAN SKIP THE ENGINE");
         assert!(playable.rationales[1].starts_with("MISCONCEPTION: A BYPASS"));
-        assert!(playable.review);
+        assert_eq!(playable.review, Review::Spaced);
 
         let saved = serde_json::to_value(generated).unwrap();
         assert_eq!(saved["concept"], "responsibility");
@@ -1981,23 +2006,64 @@ pub(crate) mod tests {
         assert!(progress.answered_questions.is_empty());
         assert!(progress.retired().is_empty(), "a miss never retires");
 
+        // A same-launch retry relearns the question but does not retire it.
         progress.record(&AnswerEvidence {
-            review: true,
+            review: Review::InSession,
             ..evidence("WHY WRITE SAVES ATOMICALLY?", lens, true)
         });
         assert!(progress.missed_questions.is_empty());
+        assert!(progress.answered_questions.is_empty());
+        assert_eq!(
+            progress.relearned_questions,
+            ["WHY WRITE SAVES ATOMICALLY?"]
+        );
+        assert!(progress.retired().is_empty(), "relearning never retires");
+
+        // The spaced check in a later launch retires it and is evidence.
+        progress.record(&AnswerEvidence {
+            review: Review::Spaced,
+            ..evidence("WHY WRITE SAVES ATOMICALLY?", lens, true)
+        });
+        assert!(progress.missed_questions.is_empty());
+        assert!(progress.relearned_questions.is_empty());
         assert_eq!(progress.answered_questions, ["WHY WRITE SAVES ATOMICALLY?"]);
         assert_eq!(
             progress.mastery[&Concept::Invariant],
             learning::LensRecord {
-                first_try: 0,
                 redeemed: 1,
-                missed: 2
+                missed: 2,
+                relearned: 1,
+                recent: 0b001,
+                recent_len: 3,
+                ..learning::LensRecord::default()
             }
         );
 
+        // A later miss moves a question out of every other list.
+        progress.record(&evidence("WHY WRITE SAVES ATOMICALLY?", lens, false));
+        assert!(progress.answered_questions.is_empty());
+        assert_eq!(progress.missed_questions.len(), 1);
+
         progress.record(&evidence("", lens, true));
-        assert_eq!(progress.answered_questions.len(), 1);
+        assert!(progress.answered_questions.is_empty());
+    }
+
+    #[test]
+    fn legacy_progress_without_relearning_fields_loads() {
+        let progress: SavedQuizProgress = serde_json::from_value(serde_json::json!({
+            "answered_questions": ["WHAT OWNS STATE?"],
+            "missed_questions": ["WHY THIN?"],
+            "mastery": { "invariant": { "first_try": 5, "redeemed": 1, "missed": 2 } }
+        }))
+        .unwrap();
+        assert!(progress.relearned_questions.is_empty());
+        let record = progress.mastery[&Concept::Invariant];
+        assert_eq!(
+            (record.relearned, record.recent, record.recent_len),
+            (0, 0, 0)
+        );
+        assert_eq!(record.volume_stage(), 3);
+        assert_eq!(progress.retired(), identities(&["WHAT OWNS STATE?".into()]));
     }
 
     #[test]
@@ -2059,7 +2125,15 @@ pub(crate) mod tests {
             serde_json::json!({
                 "answered_questions": ["WHAT SHOULD OWN GAMEPLAY STATE?"],
                 "missed_questions": ["WHY KEEP THE SHELL THIN?"],
-                "mastery": { "tradeoff": { "first_try": 0, "redeemed": 0, "missed": 1 } }
+                "relearned_questions": [],
+                "mastery": { "tradeoff": {
+                    "first_try": 0,
+                    "redeemed": 0,
+                    "missed": 1,
+                    "relearned": 0,
+                    "recent": 0,
+                    "recent_len": 1
+                } }
             })
         );
 
@@ -2298,9 +2372,9 @@ pub(crate) mod tests {
         assert_eq!(
             queued,
             [
-                ("WHY KEEP THE DEVICE SHELL THIN?", true),
-                ("WHY DOES THE ENGINE OWN STATE?", true),
-                ("WHY DOES THE SHELL DRAW ONLY?", false),
+                ("WHY KEEP THE DEVICE SHELL THIN?", Review::Spaced),
+                ("WHY DOES THE ENGINE OWN STATE?", Review::Spaced),
+                ("WHY DOES THE SHELL DRAW ONLY?", Review::Fresh),
             ]
         );
         assert_eq!(
@@ -2356,15 +2430,55 @@ pub(crate) mod tests {
 
         assert_eq!(playable.len(), 1);
         assert_eq!(playable[0].question, "WHY DOES THE ENGINE OWN STATE?");
-        assert!(!playable[0].review, "a new question is not a review");
+        assert_eq!(
+            playable[0].review,
+            Review::Fresh,
+            "a new question is not a review"
+        );
+    }
+
+    #[test]
+    fn a_same_launch_redemption_returns_once_as_a_spaced_check_in_the_next_launch() {
+        let mut explained = engine_state_question();
+        explained.q = "WHY DOES THE ENGINE OWN STATE?".into();
+        let batches = vec![SavedQuestionBatch {
+            level: 1,
+            questions: vec![explained.clone()],
+        }];
+        let lens = Some(Concept::Responsibility);
+        let mut progress = SavedQuizProgress::default();
+        progress.record(&evidence(&explained.q, lens, false));
+        progress.record(&AnswerEvidence {
+            review: Review::InSession,
+            ..evidence(&explained.q, lens, true)
+        });
+
+        // Reload: the lesson reads as learned, and the question is queued
+        // once as a spaced check.
+        let loaded = cartridge_questions(batches.clone(), progress.clone());
+        assert_eq!(loaded.questions.len(), 1);
+        assert_eq!(loaded.questions[0].review, Review::Spaced);
+        assert_eq!(loaded.lessons.len(), 1);
+        assert!(!loaded.lessons[0].outstanding);
+        assert_eq!(progress.mastery[&Concept::Responsibility].evidence(), 0);
+
+        // Passing the spaced check retires it and counts as evidence.
+        progress.record(&AnswerEvidence {
+            review: Review::Spaced,
+            ..evidence(&explained.q, lens, true)
+        });
+        let loaded = cartridge_questions(batches, progress.clone());
+        assert!(loaded.questions.is_empty());
+        assert_eq!(loaded.lessons.len(), 1);
+        assert_eq!(progress.mastery[&Concept::Responsibility].redeemed, 1);
     }
 
     #[test]
     fn learner_state_names_the_most_missed_lens_and_recent_stems() {
         let record = |first_try, missed| learning::LensRecord {
             first_try,
-            redeemed: 0,
             missed,
+            ..learning::LensRecord::default()
         };
         let mut progress = SavedQuizProgress::default();
         assert_eq!(weakest_lens(&progress.mastery), None);
