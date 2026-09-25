@@ -8,7 +8,7 @@
 //! questions still load and play, just without explanations. Nothing here
 //! depends on Tauri.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -148,6 +148,11 @@ pub(crate) struct SavedQuizProgress {
     pub(crate) missed_questions: Vec<String>,
     #[serde(default)]
     pub(crate) mastery: Mastery,
+    /// Committed attempts per normalized identity for each missed question,
+    /// so its choice rotation continues across launches. Saves from earlier
+    /// builds have none; their reviews start at attempt 1.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) question_attempts: BTreeMap<String, u32>,
 }
 
 impl SavedQuizProgress {
@@ -169,6 +174,17 @@ impl SavedQuizProgress {
             .any(|question| question_identity(question) == identity)
         {
             target.push(evidence.question.clone());
+        }
+        if evidence.correct {
+            // A retired question is never asked again.
+            self.question_attempts.remove(&identity);
+        } else {
+            // The engine presents a review at attempt 1 or later, even when
+            // an earlier build left no count for it.
+            let attempts = self.question_attempts.entry(identity).or_default();
+            *attempts = (*attempts)
+                .max(u32::from(evidence.review))
+                .saturating_add(1);
         }
         learning::record_evidence(&mut self.mastery, evidence);
     }
@@ -757,10 +773,6 @@ fn quiz_progress(save: &save::SaveFile) -> SavedQuizProgress {
         .unwrap_or_default()
 }
 
-pub(crate) fn load_retired_questions(path: &Path) -> Result<HashSet<String>, String> {
-    Ok(load_quiz_progress(path)?.retired())
-}
-
 /// Records one committed answer: progress lists and lens mastery update in a
 /// single atomic save update.
 pub(crate) fn persist_answer_evidence(
@@ -783,6 +795,8 @@ pub(crate) struct CartridgeQuestions {
     pub(crate) batch_levels: Vec<u32>,
     pub(crate) lessons: Vec<Lesson>,
     pub(crate) mastery: Mastery,
+    /// Committed attempts per normalized identity of each missed question.
+    pub(crate) attempts: HashMap<String, u32>,
 }
 
 /// Builds the playable queue and lesson journal from saved batches (oldest
@@ -800,6 +814,7 @@ pub(crate) fn cartridge_questions(
     let mut seen = HashSet::new();
     let mut loaded = CartridgeQuestions {
         mastery: progress.mastery,
+        attempts: progress.question_attempts.into_iter().collect(),
         ..CartridgeQuestions::default()
     };
     let mut queued = Vec::new();
@@ -841,15 +856,22 @@ pub(crate) fn load_cartridge_questions(path: &Path) -> Result<CartridgeQuestions
 }
 
 /// Maps a freshly generated batch to engine questions, leaving out any the
-/// player already retired.
+/// player already retired. A regenerated stem the player missed arrives as a
+/// review, as [`cartridge_questions`] queues it, so answering it counts as a
+/// redemption.
 pub(crate) fn playable_new_questions(
     questions: Vec<QQuestion>,
-    retired: &HashSet<String>,
+    progress: &SavedQuizProgress,
 ) -> Vec<engine::QuizQuestion> {
+    let retired = progress.retired();
+    let missed = progress.missed();
     questions
         .into_iter()
-        .filter(|question| !retired.contains(&question_identity(&question.q)))
-        .map(|question| question.quiz_question(false))
+        .filter_map(|question| {
+            let identity = question_identity(&question.q);
+            (!retired.contains(&identity))
+                .then(|| question.quiz_question(missed.contains(&identity)))
+        })
         .collect()
 }
 
@@ -1542,9 +1564,13 @@ pub(crate) mod tests {
         let progress = load_quiz_progress(&path).unwrap();
         assert!(progress.missed_questions.is_empty());
         assert!(progress.mastery.is_empty());
-        assert!(load_retired_questions(&path)
-            .unwrap()
+        assert!(progress
+            .retired()
             .contains("WHAT SHOULD OWN GAMEPLAY STATE?"));
+        assert!(
+            progress.question_attempts.is_empty(),
+            "earlier builds kept no attempt counts"
+        );
 
         persist_answer_evidence(
             &path,
@@ -1560,7 +1586,8 @@ pub(crate) mod tests {
             serde_json::json!({
                 "answered_questions": ["WHAT SHOULD OWN GAMEPLAY STATE?"],
                 "missed_questions": ["WHY KEEP THE SHELL THIN?"],
-                "mastery": { "tradeoff": { "first_try": 0, "redeemed": 0, "missed": 1 } }
+                "mastery": { "tradeoff": { "first_try": 0, "redeemed": 0, "missed": 1 } },
+                "question_attempts": { "WHY KEEP THE SHELL THIN?": 1 }
             })
         );
 
@@ -1845,19 +1872,72 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn new_batches_skip_only_retired_questions() {
+    fn new_batches_skip_retired_questions_and_bring_missed_ones_back_as_reviews() {
         let mut progress = SavedQuizProgress::default();
         progress.record(&evidence("WHAT SHOULD OWN GAMEPLAY STATE?", None, true));
         progress.record(&evidence("WHY DOES THE ENGINE OWN STATE?", None, false));
         let mut missed = engine_state_question();
-        missed.q = "WHY DOES THE ENGINE OWN STATE?".into();
+        missed.q = "why does the engine  own state?".into();
+        let mut fresh = engine_state_question();
+        fresh.q = "WHY KEEP THE SHELL THIN?".into();
 
         let playable =
-            playable_new_questions(vec![engine_state_question(), missed], &progress.retired());
+            playable_new_questions(vec![engine_state_question(), missed, fresh], &progress);
 
-        assert_eq!(playable.len(), 1);
-        assert_eq!(playable[0].question, "WHY DOES THE ENGINE OWN STATE?");
-        assert!(!playable[0].review, "a new question is not a review");
+        assert_eq!(
+            playable
+                .iter()
+                .map(|question| (question.question.as_str(), question.review))
+                .collect::<Vec<_>>(),
+            [
+                ("why does the engine  own state?", true),
+                ("WHY KEEP THE SHELL THIN?", false)
+            ],
+            "a regenerated missed stem is a review; a new stem is not"
+        );
+    }
+
+    #[test]
+    fn missed_questions_keep_their_attempt_count_until_redeemed() {
+        let mut progress = SavedQuizProgress::default();
+        let question = "WHY WRITE SAVES ATOMICALLY?";
+        progress.record(&evidence(question, None, false));
+        progress.record(&AnswerEvidence {
+            review: true,
+            ..evidence(" why write saves atomically? ", None, false)
+        });
+        assert_eq!(progress.question_attempts[question], 2);
+
+        // A save from an earlier build lists a miss without a count; its next
+        // miss happened at review attempt 1 at the earliest.
+        progress.question_attempts.clear();
+        progress.record(&AnswerEvidence {
+            review: true,
+            ..evidence(question, None, false)
+        });
+        assert_eq!(progress.question_attempts[question], 2);
+
+        let loaded = cartridge_questions(
+            vec![SavedQuestionBatch {
+                level: 1,
+                questions: vec![QQuestion {
+                    q: question.into(),
+                    ..engine_state_question()
+                }],
+            }],
+            progress.clone(),
+        );
+        assert_eq!(loaded.attempts[question], 2, "the count reaches the engine");
+        assert!(loaded.questions[0].review);
+
+        progress.record(&AnswerEvidence {
+            review: true,
+            ..evidence(question, None, true)
+        });
+        assert!(
+            progress.question_attempts.is_empty(),
+            "a redeemed question retires with its count"
+        );
     }
 
     #[test]

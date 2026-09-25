@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,6 +50,10 @@ const RETRY_GAP: usize = 3;
 const SCORE_RUNE_THRESHOLDS: [u32; 3] = [300, 900, 1_800];
 const DATA_CHARGE_THRESHOLDS: [u32; 3] = [3, 6, 9];
 const BUG_BREACH_THRESHOLDS: [u32; 3] = [1, 3, 5];
+/// How often the quest waiter checks whether the quest shell has exited.
+const QUEST_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// How long a finished quest's remaining output may keep arriving.
+const QUEST_OUTPUT_GRACE: Duration = Duration::from_secs(1);
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -555,6 +559,10 @@ pub struct CartridgeSpec {
     pub lessons: Vec<Lesson>,
     /// Per-lens mastery evidence accumulated across launches.
     pub mastery: Mastery,
+    /// Committed attempts per normalized question identity, kept across runs
+    /// and (for questions still in play) launches, so a question that returns
+    /// always rotates its choices past the layout the player last saw.
+    pub question_attempts: HashMap<String, u32>,
 }
 
 impl CartridgeSpec {
@@ -1019,10 +1027,8 @@ struct QuizRun {
     order: Vec<usize>,
     /// The question index `order` and `attempt` were derived for.
     presented: Option<usize>,
-    /// Earlier attempts at the current question's identity in this run.
+    /// Earlier committed attempts at the current question's identity.
     attempt: u32,
-    /// Committed attempts per normalized question identity in this run.
-    attempts: HashMap<String, u32>,
     /// True when the committed answer redeemed a previously missed question.
     redeemed: bool,
     /// Ticks left in which a second B leaves the run.
@@ -1044,7 +1050,6 @@ impl QuizRun {
             order: Vec::new(),
             presented: None,
             attempt: 0,
-            attempts: HashMap::new(),
             redeemed: false,
             leave_armed: 0,
         }
@@ -1302,9 +1307,12 @@ impl GameState {
             self.menu_selected = 0;
         }
         // Whatever route the scene graph takes into the Oracle or the quiz,
-        // they always run inside a live run.
+        // they always run inside a live run. A run ends as soon as the graph
+        // leaves the run's screens by any route (the next run retires its
+        // answers there), so entering from outside them starts a fresh one.
+        let within_run = matches!(self.screen, Screen::Oracle | Screen::Quiz | Screen::LevelUp);
         if matches!(screen, Screen::Oracle | Screen::Quiz)
-            && self.quiz.as_ref().is_none_or(|run| run.hearts == 0)
+            && (!within_run || self.quiz.as_ref().is_none_or(|run| run.hearts == 0))
         {
             start_quiz_run(self);
         }
@@ -1399,10 +1407,16 @@ impl GameState {
             .unwrap_or(0)
     }
 
+    /// Whether batch `index` holds `QUESTION_BATCH_SIZE` new questions. Review
+    /// copies ride along in their batch but never count toward it.
     fn batch_is_full(&self, index: usize) -> bool {
-        self.batch_ends
-            .get(index)
-            .is_some_and(|end| end.saturating_sub(self.batch_start(index)) >= QUESTION_BATCH_SIZE)
+        let questions = self
+            .cartridge
+            .as_ref()
+            .map_or(&[][..], |cartridge| cartridge.questions.as_slice());
+        self.batch_ends.get(index).is_some_and(|end| {
+            new_question_count(questions, self.batch_start(index), *end) >= QUESTION_BATCH_SIZE
+        })
     }
 
     /// The level the next requested batch should be generated at: never
@@ -1596,10 +1610,21 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
     state.questions_loading = true;
 }
 
-/// Splits a deck of `len` questions into batches of `QUESTION_BATCH_SIZE`,
-/// leaving any remainder as an open last batch. Each new batch takes the
-/// level of the old batch holding its last question.
-fn rebatch(ends: &[usize], levels: &[u32], len: usize) -> (Vec<usize>, Vec<u32>) {
+/// New (non-review) questions in `questions[start..end]`.
+fn new_question_count(questions: &[QuizQuestion], start: usize, end: usize) -> usize {
+    questions
+        .iter()
+        .take(end)
+        .skip(start)
+        .filter(|question| !question.review)
+        .count()
+}
+
+/// Splits `questions` into batches of `QUESTION_BATCH_SIZE` new questions
+/// (review copies ride along without counting), leaving any remainder as an
+/// open last batch. Each new batch takes the level of the old batch holding
+/// its last question.
+fn rebatch(ends: &[usize], levels: &[u32], questions: &[QuizQuestion]) -> (Vec<usize>, Vec<u32>) {
     let level_at = |index: usize| {
         ends.iter()
             .position(|end| index < *end)
@@ -1610,30 +1635,47 @@ fn rebatch(ends: &[usize], levels: &[u32], len: usize) -> (Vec<usize>, Vec<u32>)
     };
     let mut new_ends = Vec::new();
     let mut new_levels = Vec::new();
-    let mut end = 0;
-    while end < len {
-        end = (end + QUESTION_BATCH_SIZE).min(len);
-        new_ends.push(end);
-        new_levels.push(level_at(end - 1));
+    let mut fresh = 0;
+    for (index, question) in questions.iter().enumerate() {
+        fresh += usize::from(!question.review);
+        if fresh == QUESTION_BATCH_SIZE || index + 1 == questions.len() {
+            new_ends.push(index + 1);
+            new_levels.push(level_at(index));
+            fresh = 0;
+        }
     }
     (new_ends, new_levels)
 }
 
 /// Appends a delivery requested at `level`: it first tops the open last
-/// batch up to `QUESTION_BATCH_SIZE` questions, so a level-up always means a
-/// full batch was survived, then forms new batches from the rest.
+/// batch up to `QUESTION_BATCH_SIZE` new questions, so a level-up always means
+/// a full batch was survived, then forms new batches from the rest. Questions
+/// already in the deck (queued, or answered this session) are skipped, so a
+/// regenerated stem is never queued beside its own review copy.
 fn append_question_batch(state: &mut GameState, questions: Vec<QuizQuestion>, level: u32) {
     let Some(cartridge) = state.cartridge.as_mut() else {
         return;
     };
-    let mut incoming = questions.into_iter().peekable();
+    let mut queued: HashSet<String> = cartridge
+        .questions
+        .iter()
+        .map(|question| question_identity(&question.question))
+        .collect();
+    let mut incoming = questions
+        .into_iter()
+        .filter(|question| queued.insert(question_identity(&question.question)))
+        .peekable();
     if let Some(last) = state.batch_ends.len().checked_sub(1) {
         let start = last
             .checked_sub(1)
             .map_or(0, |previous| state.batch_ends[previous]);
         let end = state.batch_ends[last];
         if end == cartridge.questions.len() {
-            let room = QUESTION_BATCH_SIZE.saturating_sub(end.saturating_sub(start));
+            let room = QUESTION_BATCH_SIZE.saturating_sub(new_question_count(
+                &cartridge.questions,
+                start,
+                end,
+            ));
             cartridge.questions.extend(incoming.by_ref().take(room));
             state.batch_ends[last] = cartridge.questions.len();
         }
@@ -1685,7 +1727,6 @@ fn retire_consumed_questions(state: &mut GameState) {
         .collect();
     let requeued = reviews.len();
     cartridge.questions.splice(0..0, reviews);
-    let len = cartridge.questions.len();
 
     let mut ends = Vec::new();
     let mut levels = Vec::new();
@@ -1695,7 +1736,7 @@ fn retire_consumed_questions(state: &mut GameState) {
             levels.push(state.batch_levels.get(index).copied().unwrap_or(1));
         }
     }
-    (state.batch_ends, state.batch_levels) = rebatch(&ends, &levels, len);
+    (state.batch_ends, state.batch_levels) = rebatch(&ends, &levels, &cartridge.questions);
 }
 
 /// Starts a fresh run on a deck without the previous runs' answers.
@@ -1721,9 +1762,10 @@ fn leave_quiz_run(state: &mut GameState) {
 }
 
 /// Derives the display order once for the question that just became current.
-/// The attempt number counts this run's earlier commitments at the same
-/// identity; a question that arrives flagged for review starts at attempt 1,
-/// so it never reappears in the order the player first saw.
+/// The attempt number counts every earlier commitment at the same identity on
+/// this cartridge, across runs and saved launches; a question flagged for
+/// review starts at attempt 1 or later. Either way a returning question never
+/// reappears in the order the player last saw it in.
 fn present_current_question(state: &mut GameState) {
     let Some(run) = state.quiz.as_mut() else {
         return;
@@ -1731,19 +1773,19 @@ fn present_current_question(state: &mut GameState) {
     if run.presented == Some(run.question) {
         return;
     }
-    let Some(question) = state
-        .cartridge
-        .as_ref()
-        .and_then(|cartridge| cartridge.questions.get(run.question))
-    else {
+    let Some(cartridge) = state.cartridge.as_ref() else {
+        return;
+    };
+    let Some(question) = cartridge.questions.get(run.question) else {
         return;
     };
     let identity = question_identity(&question.question);
-    let attempt = run
-        .attempts
+    let attempt = cartridge
+        .question_attempts
         .get(&identity)
         .copied()
-        .unwrap_or(u32::from(question.review));
+        .unwrap_or(0)
+        .max(u32::from(question.review));
     run.order = if question.choices.len() == 4 {
         learning::presentation_order(&identity, attempt).to_vec()
     } else {
@@ -1774,7 +1816,7 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
     }
     run.feedback = Some((correct, QUIZ_FEEDBACK_TICKS));
     run.redeemed = correct && question.review;
-    run.attempts.insert(
+    cartridge.question_attempts.insert(
         question_identity(&question.question),
         run.attempt.saturating_add(1),
     );
@@ -1803,7 +1845,7 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
 
 /// Leaves the lesson card: ends the run on a broken ward, otherwise advances
 /// to the next question and completes the batch exactly at its (possibly
-/// retry-shifted) end once it holds a full `QUESTION_BATCH_SIZE` questions.
+/// retry-shifted) end once it holds a full `QUESTION_BATCH_SIZE` new questions.
 fn continue_after_lesson(state: &mut GameState) {
     let question_count = state.question_count();
     let Some(batch) = state.quiz.as_ref().map(|run| run.completed_batches) else {
@@ -2181,7 +2223,7 @@ fn apply_commands(
                         } else {
                             (1..=ends.len() as u32).collect()
                         };
-                        rebatch(ends, &levels, cartridge.questions.len())
+                        rebatch(ends, &levels, &cartridge.questions)
                     })
                     .unwrap_or_default();
                 state.pending_questions = None;
@@ -4375,7 +4417,9 @@ fn handle_effect(
         EngineEffect::AbortQuest => {
             if let Ok(mut guard) = child.lock() {
                 if let Some(process) = guard.as_mut() {
-                    let _ = process.kill();
+                    // The shell runs the quest's tools as its own children,
+                    // and they hold the output pipes: stop all of them.
+                    external_tools::kill_process_tree(process);
                 }
             }
         }
@@ -4428,13 +4472,13 @@ fn run_quest(
         let _ = sender.send(EngineCommand::QuestDone { success: false });
         return;
     };
-    let mut child = match shell
+    shell
         .arg("-c")
         .arg(command)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    external_tools::isolate_process_tree(&mut shell);
+    let mut child = match shell.spawn() {
         Ok(child) => child,
         Err(error) => {
             let _ = sender.send(EngineCommand::QuestOutput {
@@ -4450,8 +4494,10 @@ fn run_quest(
     *guard = Some(child);
     drop(guard);
 
+    let (drained_sender, drained) = mpsc::channel();
     let out_sender = sender.clone();
-    let out_reader = thread::spawn(move || {
+    let out_drained = drained_sender.clone();
+    thread::spawn(move || {
         if let Some(stdout) = stdout {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let _ = out_sender.send(EngineCommand::QuestOutput {
@@ -4460,24 +4506,53 @@ fn run_quest(
                 });
             }
         }
+        let _ = out_drained.send(());
     });
     let err_sender = sender.clone();
-    let err_reader = thread::spawn(move || {
+    thread::spawn(move || {
         if let Some(stderr) = stderr {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 let _ = err_sender.send(EngineCommand::QuestOutput { line, stderr: true });
             }
         }
+        let _ = drained_sender.send(());
     });
     thread::spawn(move || {
-        let _ = out_reader.join();
-        let _ = err_reader.join();
-        let process = slot.lock().ok().and_then(|mut guard| guard.take());
-        let success = process
-            .and_then(|mut child| child.wait().ok())
-            .is_some_and(|status| status.success());
+        let (status, mut process) = wait_for_quest_shell(&slot);
+        // Output still in flight gets a short grace period. A helper the
+        // finished quest left running could hold the pipes open forever, so
+        // it is stopped and its readers abandoned instead of joined.
+        let deadline = Instant::now() + QUEST_OUTPUT_GRACE;
+        let drained_all = (0..2).all(|_| {
+            drained
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_ok()
+        });
+        if let (false, Some(process)) = (drained_all, process.as_mut()) {
+            external_tools::kill_process_tree(process);
+        }
+        let success = status.is_some_and(|status| status.success());
         let _ = sender.send(EngineCommand::QuestDone { success });
     });
+}
+
+/// Waits for the quest shell itself (not its pipes) to exit and takes it out
+/// of `slot`, so the next quest can start as soon as this one is over. The
+/// slot stays locked only for each poll, so an abort can reach the shell.
+fn wait_for_quest_shell(slot: &Mutex<Option<Child>>) -> (Option<ExitStatus>, Option<Child>) {
+    loop {
+        {
+            let Ok(mut guard) = slot.lock() else {
+                return (None, None);
+            };
+            match guard.as_mut().map(Child::try_wait) {
+                Some(Ok(None)) => {}
+                Some(Ok(Some(status))) => return (Some(status), guard.take()),
+                Some(Err(_)) | None => return (None, guard.take()),
+            }
+        }
+        thread::sleep(QUEST_POLL_INTERVAL);
+    }
 }
 
 pub(crate) fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
@@ -4578,6 +4653,7 @@ mod tests {
             question_batch_levels: Vec::new(),
             lessons: Vec::new(),
             mastery: Mastery::new(),
+            question_attempts: HashMap::new(),
         }
     }
 
@@ -6332,6 +6408,8 @@ mod tests {
                 streak: 1,
                 ..QuizRun::new()
             });
+            // The live run's quiz ran out of questions.
+            state.screen = Screen::Quiz;
             state.transition(Screen::Oracle);
         }
 
@@ -6695,7 +6773,6 @@ mod tests {
     fn losing_the_last_heart_at_a_batch_boundary_does_not_level_up() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
-        let question = cartridge.questions[0].clone();
         cartridge.questions.clear();
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         let _ = engine.take_effects();
@@ -6717,7 +6794,11 @@ mod tests {
                 },
             );
         }
-        deliver(&mut engine, "/tmp/engine-test", vec![question; 3]);
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (0..3).map(concept_question).collect(),
+        );
         for _ in 0..75 {
             engine.update();
         }
@@ -6734,12 +6815,17 @@ mod tests {
         assert_eq!(run.completed_batches, 0);
         // The two survivable misses were scheduled for review; the final,
         // ward-breaking miss was not. Once the run is over, the three
-        // committed questions leave the deck, and the two unplayed review
-        // copies (all one identity) are what the next run starts with.
+        // committed questions leave the deck: the next run starts with the
+        // ward-breaking miss, then the two unplayed review copies.
         let questions = &state.cartridge.as_ref().unwrap().questions;
-        assert_eq!(questions.len(), 2);
-        assert!(questions.iter().all(|question| question.review));
-        assert_eq!(state.batch_ends, vec![2]);
+        assert_eq!(
+            questions
+                .iter()
+                .map(|question| (question.question.clone(), question.review))
+                .collect::<Vec<_>>(),
+            [2, 0, 1].map(|index| (concept_question(index).question, true))
+        );
+        assert_eq!(state.batch_ends, vec![3]);
     }
 
     #[test]
@@ -7591,10 +7677,349 @@ mod tests {
 
     #[test]
     fn rebatching_splits_saved_batches_into_full_batches_with_their_levels() {
-        assert_eq!(rebatch(&[1, 7], &[2, 3], 7), (vec![6, 7], vec![3, 3]));
-        assert_eq!(rebatch(&[], &[], 4), (vec![4], vec![1]));
-        assert_eq!(rebatch(&[6, 12], &[1, 2], 12), (vec![6, 12], vec![1, 2]));
-        assert_eq!(rebatch(&[3], &[1], 0), (vec![], vec![]));
+        let fresh = |count| (0..count).map(concept_question).collect::<Vec<_>>();
+        assert_eq!(
+            rebatch(&[1, 7], &[2, 3], &fresh(7)),
+            (vec![6, 7], vec![3, 3])
+        );
+        assert_eq!(rebatch(&[], &[], &fresh(4)), (vec![4], vec![1]));
+        assert_eq!(
+            rebatch(&[6, 12], &[1, 2], &fresh(12)),
+            (vec![6, 12], vec![1, 2])
+        );
+        assert_eq!(rebatch(&[3], &[1], &[]), (vec![], vec![]));
+        // Review copies ride along in a batch without counting toward it.
+        let mut deck = fresh(9);
+        deck[0].review = true;
+        deck[3].review = true;
+        assert_eq!(rebatch(&[9], &[1], &deck), (vec![8, 9], vec![1, 1]));
+    }
+
+    #[test]
+    fn review_copies_do_not_fill_a_short_batch() {
+        let mut engine = waiting_oracle_engine();
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (0..4).map(concept_question).collect(),
+        );
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (4..8).map(concept_question).collect(),
+        );
+        assert!(engine_state(&engine).pending_questions.is_some());
+
+        // Two misses add two review copies to the short batch: six questions,
+        // but only four of them new.
+        for correct in [false, false, true, true, true, true] {
+            commit(&mut engine, correct);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(
+            engine.screen(),
+            Screen::Oracle,
+            "four new questions and two reviews are not a batch"
+        );
+        engine.update();
+        {
+            let state = engine_state(&engine);
+            let run = state.quiz.as_ref().unwrap();
+            assert_eq!((run.question, run.level, run.completed_batches), (6, 1, 0));
+            assert_eq!(
+                state.batch_ends,
+                vec![8, 10],
+                "the held delivery tops the batch up to six new questions"
+            );
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        for _ in 0..2 {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!((run.question, run.level, run.completed_batches), (8, 2, 1));
+    }
+
+    #[test]
+    fn a_review_that_outlives_its_run_returns_in_a_new_layout() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let missed = concept_question(0).question;
+        let first_slot = answer_slot(&engine);
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        for _ in 0..RETRY_GAP {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(current_question(&engine).question, missed);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().attempt, 1);
+        let review_slot = answer_slot(&engine);
+        assert_ne!(review_slot, first_slot);
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+
+        // Leave before the second review copy comes up, then start again.
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        press(&mut engine, Button::A);
+        press(&mut engine, Button::Start);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        while current_question(&engine).question != missed {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert!(current_question(&engine).review);
+        assert_eq!(
+            engine_state(&engine).quiz.as_ref().unwrap().attempt,
+            2,
+            "the rotation continues from the run that missed it"
+        );
+        assert_ne!(answer_slot(&engine), review_slot);
+    }
+
+    #[test]
+    fn a_saved_review_resumes_its_choice_rotation_after_a_relaunch() {
+        let mut review = concept_question(0);
+        review.review = true;
+        let identity = question_identity(&review.question);
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = vec![review];
+        cartridge.question_attempts.insert(identity.clone(), 2);
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        for button in [Button::Start, Button::A, Button::Start] {
+            press(&mut engine, button);
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(run.attempt, 2);
+        assert_eq!(
+            run.order,
+            learning::presentation_order(&identity, 2).to_vec()
+        );
+
+        commit(&mut engine, false);
+        assert_eq!(
+            engine_state(&engine)
+                .cartridge
+                .as_ref()
+                .unwrap()
+                .question_attempts[&identity],
+            3
+        );
+    }
+
+    #[test]
+    fn a_delivery_never_queues_a_question_already_in_the_deck() {
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..2).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            batch_ends: vec![2],
+            batch_levels: vec![1],
+            ..Default::default()
+        };
+        let mut respelled = concept_question(0);
+        respelled.question = respelled.question.to_ascii_lowercase();
+        append_question_batch(
+            &mut state,
+            vec![
+                concept_question(1),
+                respelled,
+                concept_question(2),
+                concept_question(2),
+            ],
+            1,
+        );
+        assert_eq!(
+            state
+                .cartridge
+                .as_ref()
+                .unwrap()
+                .questions
+                .iter()
+                .map(|question| question.question.clone())
+                .collect::<Vec<_>>(),
+            (0..3)
+                .map(|index| concept_question(index).question)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(state.batch_ends, vec![3]);
+    }
+
+    #[test]
+    fn a_regenerated_missed_question_plays_as_a_review_and_redeems() {
+        let mut engine = waiting_oracle_engine();
+        // The loader marks a regenerated stem the player missed as a review.
+        let mut regenerated = concept_question(0);
+        regenerated.review = true;
+        let identity = question_identity(&regenerated.question);
+        deliver(&mut engine, "/tmp/engine-test", vec![regenerated]);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(run.attempt, 1);
+        assert_eq!(
+            run.order,
+            learning::presentation_order(&identity, 1).to_vec(),
+            "not the order the player missed it in"
+        );
+
+        let _ = engine.take_effects();
+        commit(&mut engine, true);
+        assert!(engine_state(&engine).quiz.as_ref().unwrap().redeemed);
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                if evidence.correct && evidence.review
+        )));
+    }
+
+    #[test]
+    fn leaving_the_run_by_any_manifest_route_ends_it() {
+        use SceneHandler as H;
+        use SceneSignal as S;
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..2 * QUESTION_BATCH_SIZE).map(concept_question).collect();
+        cartridge.machine = Box::new(
+            SceneMachineDefinition::compile(
+                "menu",
+                vec![
+                    scene_spec(
+                        "menu",
+                        H::QuizMenu,
+                        &[(S::NewRun, "oracle", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "oracle",
+                        H::Oracle,
+                        &[(S::QuestionsReady, "quiz", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "quiz",
+                        H::ConceptQuiz,
+                        &[
+                            (S::NeedsQuestion, "oracle", None),
+                            (S::BatchComplete, "menu", None),
+                            (S::HeartsEmpty, "menu", None),
+                            (S::Back, "menu", None),
+                        ],
+                    ),
+                ],
+            )
+            .unwrap(),
+        );
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        press(&mut engine, Button::A);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        for _ in 0..QUESTION_BATCH_SIZE {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        engine.update();
+
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Oracle);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(
+            engine.screen(),
+            Screen::Quiz,
+            "the ready questions are asked"
+        );
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(
+            (run.question, run.level, run.completed_batches, run.score),
+            (0, 1, 0, 0),
+            "a fresh run"
+        );
+        assert_eq!(
+            current_question(&engine).question,
+            concept_question(QUESTION_BATCH_SIZE).question
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aborting_a_quest_stops_its_whole_process_tree_and_frees_the_slot() {
+        let marker = std::env::temp_dir().join(format!("cqa-quest-abort-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let (sender, receiver) = mpsc::channel();
+        let slot = Arc::new(Mutex::new(None));
+        let loader: QuestionLoader = Arc::new(|_, _, _| Vec::new());
+        let recorder: AnsweredQuestionRecorder = Arc::new(|_, _| {});
+        let effect =
+            |effect: EngineEffect| handle_effect(effect, &sender, &slot, &loader, &recorder);
+        let next = || {
+            receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the quest should report")
+        };
+
+        // The shell's child holds the output pipes, as cargo or npm would.
+        effect(EngineEffect::RunQuest(format!(
+            "(sleep 3; touch '{}') & echo started; wait",
+            marker.display()
+        )));
+        while !matches!(next(), EngineCommand::QuestOutput { line, .. } if line == "started") {}
+        let aborted = Instant::now();
+        effect(EngineEffect::AbortQuest);
+        loop {
+            if let EngineCommand::QuestDone { success } = next() {
+                assert!(!success);
+                break;
+            }
+        }
+        assert!(
+            aborted.elapsed() < Duration::from_secs(2),
+            "the abort does not wait for the quest's children"
+        );
+
+        effect(EngineEffect::RunQuest("echo again".into()));
+        let mut lines = Vec::new();
+        let success = loop {
+            match next() {
+                EngineCommand::QuestOutput { line, .. } => lines.push(line),
+                EngineCommand::QuestDone { success } => break success,
+                _ => {}
+            }
+        };
+        assert_eq!(lines, ["again"], "the next quest is not refused");
+        assert!(success);
+
+        thread::sleep(Duration::from_millis(3_500).saturating_sub(aborted.elapsed()));
+        assert!(
+            !marker.exists(),
+            "the aborted quest's children were stopped"
+        );
     }
 
     #[test]
