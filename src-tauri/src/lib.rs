@@ -965,6 +965,11 @@ fn engine_input(state: State<EngineState>, button: String, pressed: bool) -> Res
 }
 
 #[tauri::command]
+fn engine_set_reduced_motion(state: State<EngineState>, reduced: bool) -> Result<(), String> {
+    state.0.set_reduced_motion(reduced)
+}
+
+#[tauri::command]
 fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
     tauri::ipc::Response::new(state.0.frame())
 }
@@ -1033,6 +1038,7 @@ pub fn run() {
             engine_power,
             engine_finish_boot,
             engine_input,
+            engine_set_reduced_motion,
             engine_frame
         ])
         .run(tauri::generate_context!())

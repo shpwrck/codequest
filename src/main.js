@@ -1185,9 +1185,21 @@ import {
   });
   window.addEventListener("resize", fit);
 
+  // The engine freezes decorative framebuffer motion when the host asks for
+  // reduced motion; the shell only reports the preference.
+  function syncReducedMotion() {
+    const reduced = Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+    invoke("engine_set_reduced_motion", { reduced }).catch((error) => {
+      console.error("CQA: failed to forward reduced-motion preference", error);
+    });
+  }
+
   async function initialize() {
     fit();
     setShellBackVisible(false);
+    syncReducedMotion();
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")
+      .addEventListener?.("change", syncReducedMotion);
     rearSerial.textContent = await invoke("app_revision");
     installedProvider = normalizeProvider(localStorage.getItem(PROVIDER_STORAGE_KEY));
     if (!installedProvider) localStorage.removeItem(PROVIDER_STORAGE_KEY);
@@ -1246,7 +1258,7 @@ import {
     return async (command, args) => {
       if (command === "engine_frame") return frame.buffer;
       if (command === "app_revision") return "0000000";
-      if (["engine_power", "engine_finish_boot", "engine_input", "engine_set_ai_provider"].includes(command)) return null;
+      if (["engine_power", "engine_finish_boot", "engine_input", "engine_set_ai_provider", "engine_set_reduced_motion"].includes(command)) return null;
       if (command === "verify_ai_provider") return { provider: args?.provider, ready: true };
       if (command === "engine_set_cartridge" && args?.path == null) return null;
       if (command === "engine_set_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");

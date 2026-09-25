@@ -638,6 +638,7 @@ impl From<SceneHandler> for Screen {
 #[derive(Clone, Debug)]
 enum EngineCommand {
     Power(bool),
+    ReducedMotion(bool),
     AiProvider(Option<String>),
     BootComplete,
     Cartridge(Option<CartridgeSpec>),
@@ -1161,6 +1162,8 @@ struct OracleDrop {
 #[derive(Resource)]
 struct GameState {
     powered: bool,
+    /// Mirrors the host's reduced-motion preference for decorative motion.
+    reduced_motion: bool,
     ai_provider: Option<String>,
     cartridge: Option<CartridgeSpec>,
     machine: Option<SceneMachine>,
@@ -1193,6 +1196,7 @@ impl Default for GameState {
     fn default() -> Self {
         Self {
             powered: false,
+            reduced_motion: false,
             ai_provider: None,
             cartridge: None,
             machine: None,
@@ -1225,6 +1229,32 @@ impl Default for GameState {
 impl GameState {
     fn ai_provider_name(&self) -> &str {
         self.ai_provider.as_deref().unwrap_or("AI")
+    }
+
+    /// Clock for decorative motion (bobbing, pulsing, twinkling, scrolling).
+    /// Reduced motion freezes it at the resting composition, while scene timing,
+    /// input, and data keep using `screen_ticks`.
+    fn motion_ticks(&self) -> u64 {
+        if self.reduced_motion {
+            0
+        } else {
+            self.screen_ticks
+        }
+    }
+
+    /// Progress of a settling motion capped at `cap` ticks; reduced motion shows
+    /// its settled end state immediately.
+    fn settled_ticks(&self, cap: u64) -> u64 {
+        if self.reduced_motion {
+            cap
+        } else {
+            self.screen_ticks.min(cap)
+        }
+    }
+
+    /// Whether a blinking prompt is lit this tick; reduced motion keeps it lit.
+    fn blink_lit(&self, period: u64) -> bool {
+        self.reduced_motion || (self.screen_ticks / period).is_multiple_of(2)
     }
 
     fn ai_provider_status(&self, status: &str) -> String {
@@ -1700,6 +1730,10 @@ impl EngineRuntime {
         Self { sender, frame }
     }
 
+    pub fn set_reduced_motion(&self, reduced: bool) -> Result<(), String> {
+        self.send(EngineCommand::ReducedMotion(reduced))
+    }
+
     pub fn set_power(&self, powered: bool) -> Result<(), String> {
         self.send(EngineCommand::Power(powered))
     }
@@ -1749,6 +1783,7 @@ fn apply_commands(
                 effects.0.push_back(EngineEffect::AbortQuest);
                 state.transition(if powered { Screen::Boot } else { Screen::Off });
             }
+            EngineCommand::ReducedMotion(reduced) => state.reduced_motion = reduced,
             EngineCommand::AiProvider(provider) => {
                 state.ai_provider = provider.map(|name| name.to_ascii_uppercase());
             }
@@ -2156,7 +2191,7 @@ fn render_boot(frame: &mut Framebuffer, state: &GameState) {
     frame.centered_text_box(GATEWAY_TITLE_TOP_BOX, "CODE QUEST", PARCH, 2);
     frame.centered_text_box(GATEWAY_TITLE_BOTTOM_BOX, "ADVANCE", AMBER, 1);
     frame.centered_text_box(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", CYAN_DIM, 1);
-    if !state.has_game() && state.screen_ticks > 50 && (state.screen_ticks / 30).is_multiple_of(2) {
+    if !state.has_game() && state.screen_ticks > 50 && state.blink_lit(30) {
         frame.centered_text_box(GATEWAY_PROMPT_BOX, "INSERT CARTRIDGE", PARCH, 1);
     }
 }
@@ -2244,7 +2279,7 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
             frame.centered_text_in(42, 126, 156, &truncate(&history, 24), MIST, 1);
         }
     }
-    if state.can_signal(SceneSignal::Continue) && (state.screen_ticks / 20).is_multiple_of(2) {
+    if state.can_signal(SceneSignal::Continue) && state.blink_lit(20) {
         frame.rect(74, 141, 92, 16, VOID);
         frame.outline(74, 141, 92, 16, CYAN_DIM);
         frame.centered_text_in(74, 145, 92, "A / START:SKIP", MIST, 1);
@@ -2282,7 +2317,7 @@ fn render_oracle_title(frame: &mut Framebuffer, state: &GameState) {
         frame.centered_text_box(GATEWAY_TITLE_BOTTOM_BOX, &truncate(line, 19), AMBER, 1);
     }
     frame.centered_text_box(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", CYAN, 1);
-    if state.has_game() && (state.screen_ticks / 30).is_multiple_of(2) {
+    if state.has_game() && state.blink_lit(30) {
         frame.centered_text_box(GATEWAY_PROMPT_BOX, "PRESS START", PARCH, 1);
     }
 }
@@ -2336,7 +2371,7 @@ fn render_copyright(frame: &mut Framebuffer, state: &GameState) {
         };
         frame.centered_text(129, &history, GOLD, 1);
     }
-    if state.can_signal(SceneSignal::Continue) && (state.screen_ticks / 20).is_multiple_of(2) {
+    if state.can_signal(SceneSignal::Continue) && state.blink_lit(20) {
         frame.centered_text(141, "START:SKIP", PARCH, 1);
     }
 }
@@ -2387,27 +2422,33 @@ fn render_opening_fanfare(frame: &mut Framebuffer, state: &GameState) {
         render_oracle_awakening(frame, state);
         return;
     }
+    // Story beats keep their timing; only decorative motion honors reduced motion.
     let ticks = state.screen_ticks;
+    let motion = state.motion_ticks();
     frame.clear(INK);
     for index in 0..24 {
-        let x = ((index * 67 + ticks as usize) % WIDTH) as i32;
+        let x = ((index * 67 + motion as usize) % WIDTH) as i32;
         let y = ((index * 43 + 17) % HEIGHT) as i32;
         frame.pixel(x, y, if index % 4 == 0 { GOLD } else { MIST });
     }
 
     if ticks < 120 {
-        let travel = (ticks.min(110) as i32 * 70) / 110;
+        let travel = (state.settled_ticks(110) as i32 * 70) / 110;
         draw_code_sigil(frame, 24 + travel, 78, false);
         draw_code_sigil(frame, 216 - travel, 78, true);
         if ticks >= 100 {
-            let flare = ((ticks - 100) as i32 / 4).min(8);
+            let flare = if state.reduced_motion {
+                8
+            } else {
+                ((ticks - 100) as i32 / 4).min(8)
+            };
             frame.rect(120 - flare, 78 - 1, flare * 2 + 1, 3, PARCH);
             frame.rect(119, 79 - flare, 3, flare * 2 + 1, GOLD);
         }
         frame.centered_text(132, "TWO PATHS CONVERGE", SKY, 1);
     } else {
-        draw_commit_constellation(frame, ticks);
-        draw_oracle_sigil(frame, 120, 78, ((ticks / 10) % 3) as i32);
+        draw_commit_constellation(frame, motion);
+        draw_oracle_sigil(frame, 120, 78, ((motion / 10) % 3) as i32);
         frame.centered_text(20, "HISTORY BECOMES POWER", GOLD, 1);
         frame.centered_text(135, "THE ORACLE OPENS", PARCH, 1);
     }
@@ -2424,7 +2465,7 @@ fn render_title(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     for index in 0..42 {
-        let x = ((index * 53 + state.screen_ticks as usize / 3) % WIDTH) as i32;
+        let x = ((index * 53 + state.motion_ticks() as usize / 3) % WIDTH) as i32;
         let y = ((index * 37 + 11) % HEIGHT) as i32;
         frame.pixel(x, y, if index % 3 == 0 { SKY } else { MIST });
     }
@@ -2443,7 +2484,7 @@ fn render_title(frame: &mut Framebuffer, state: &GameState) {
         None => "POWER OFF TO LOAD A GAME",
     };
     frame.centered_text(91, subtitle, SKY, 1);
-    if state.has_game() && (state.screen_ticks / 30).is_multiple_of(2) {
+    if state.has_game() && state.blink_lit(30) {
         frame.centered_text(126, "PRESS START", PARCH, 1);
     }
 }
@@ -2530,7 +2571,7 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     frame.centered_text(9, "CREATE YOUR HERO", GOLD, 1);
-    let bob = ((state.screen_ticks / 20) % 2) as i32;
+    let bob = ((state.motion_ticks() / 20) % 2) as i32;
     draw_hero(frame, 26, 64 - bob, 1, state);
 
     let rows = [
@@ -2576,7 +2617,7 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
         CYAN_DIM,
     );
     frame.centered_compact_text_box(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", AMBER);
-    let bob = ((state.screen_ticks / 22) % 2) as i32;
+    let bob = ((state.motion_ticks() / 22) % 2) as i32;
     draw_hero(
         frame,
         ATELIER_HERO_X,
@@ -2641,7 +2682,7 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(INK);
     for index in 0..30 {
-        let x = ((index * 71 + state.screen_ticks as usize * 2) % WIDTH) as i32;
+        let x = ((index * 71 + state.motion_ticks() as usize * 2) % WIDTH) as i32;
         frame.pixel(x, 14 + (index * 29 % 96) as i32, MIST);
     }
     frame.rect(0, 0, WIDTH as i32, 12, NAVY);
@@ -2658,7 +2699,11 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     };
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
     frame.text(211 - status_width, 2, &status, SKY, 1);
-    let phase = (state.screen_ticks % 45) / 15;
+    let phase = if state.reduced_motion {
+        2
+    } else {
+        (state.screen_ticks % 45) / 15
+    };
     frame.text(216, 2, &".".repeat(phase as usize + 1), GOLD, 1);
     for drop in &state.oracle_drops {
         match drop.kind {
@@ -3297,10 +3342,10 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     frame.outline(8, 8, 224, 144, PLUM);
-    let pulse = ((state.screen_ticks / 10) % 3) as i32;
+    let pulse = ((state.motion_ticks() / 10) % 3) as i32;
     draw_oracle_sigil(frame, 120, 72, pulse);
     frame.centered_text(22, "LEVEL UP!", GOLD, 2);
-    let rise = (state.screen_ticks.min(45) / 5) as i32;
+    let rise = (state.settled_ticks(45) / 5) as i32;
     draw_hero(frame, 106, 91 - rise, 1, state);
     if let Some(run) = state.quiz.as_ref() {
         frame.centered_text(116, &format!("LEVEL {}", run.level), PARCH, 1);
@@ -3355,7 +3400,7 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         },
         2,
     );
-    let rise = (state.screen_ticks.min(45) / 5) as i32;
+    let rise = (state.settled_ticks(45) / 5) as i32;
     draw_hero(frame, 108, 105 - rise, 1, state);
     if let Some(run) = state.quiz.as_ref() {
         frame.rect(
@@ -3442,7 +3487,7 @@ fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
     } else {
         frame.centered_text(70, "NO QUESTIONS FOUND", GOLD, 1);
     }
-    if (state.screen_ticks / 30).is_multiple_of(2) {
+    if state.blink_lit(30) {
         frame.centered_text(143, "A/B/START:MENU", PARCH, 1);
     }
 }
@@ -3523,7 +3568,7 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
             1,
         );
     }
-    if (state.screen_ticks / 30).is_multiple_of(2) {
+    if state.blink_lit(30) {
         frame.centered_text_in(
             AFTERMATH_CONTENT_BOX.x,
             126,
@@ -3838,7 +3883,7 @@ fn render_battle(frame: &mut Framebuffer, state: &GameState) {
     frame.rect(0, 0, WIDTH as i32, 69, INK);
     frame.text(6, 5, &truncate(&state.active_boss, 37), RED, 1);
     draw_crab(frame, 34, 45, 1);
-    draw_boss(frame, 183, 29, state.screen_ticks, 1);
+    draw_boss(frame, 183, 29, state.motion_ticks(), 1);
     frame.rect(0, 68, WIDTH as i32, 2, SKY);
     frame.outline(4, 75, 232, 68, MIST);
     for (index, (line, stderr)) in state.logs.iter().rev().take(7).rev().enumerate() {
@@ -8521,6 +8566,68 @@ mod tests {
     fn wrapping_never_splits_into_oversized_lines() {
         let lines = wrap_text("alpha beta supercalifragilistic", 8);
         assert!(lines.iter().all(|line| line.chars().count() <= 8));
+    }
+
+    #[test]
+    fn reduced_motion_freezes_decorative_motion_but_keeps_scene_timing() {
+        fn sampled(engine: &mut GameEngine, samples: usize, spacing: usize) -> Vec<Vec<u8>> {
+            (0..samples)
+                .map(|_| {
+                    for _ in 0..spacing {
+                        engine.update();
+                    }
+                    engine.frame().to_vec()
+                })
+                .collect()
+        }
+        let animates = |frames: &[Vec<u8>]| frames.windows(2).any(|pair| pair[0] != pair[1]);
+
+        for reduced in [false, true] {
+            let mut engine = GameEngine::new();
+            issue(&mut engine, EngineCommand::ReducedMotion(reduced));
+            issue(
+                &mut engine,
+                EngineCommand::Cartridge(Some(oracle_template_cartridge())),
+            );
+            issue(&mut engine, EngineCommand::Power(true));
+            finish_opening(&mut engine);
+            let title = sampled(&mut engine, 4, 17);
+            press(&mut engine, Button::Start);
+            press(&mut engine, Button::A);
+            assert_eq!(engine.screen(), Screen::CharacterCreation);
+            let atelier = sampled(&mut engine, 4, 23);
+
+            assert_eq!(
+                animates(&title),
+                !reduced,
+                "title prompt (reduced={reduced})"
+            );
+            assert_eq!(animates(&atelier), !reduced, "hero bob (reduced={reduced})");
+        }
+
+        let scene_timeline = |reduced: bool| {
+            let mut engine = GameEngine::new();
+            issue(&mut engine, EngineCommand::ReducedMotion(reduced));
+            issue(
+                &mut engine,
+                EngineCommand::Cartridge(Some(oracle_template_cartridge())),
+            );
+            issue(&mut engine, EngineCommand::Power(true));
+            issue(&mut engine, EngineCommand::BootComplete);
+            (0..720)
+                .map(|_| {
+                    engine.update();
+                    engine.screen()
+                })
+                .collect::<Vec<_>>()
+        };
+        let timeline = scene_timeline(true);
+        assert_eq!(
+            timeline,
+            scene_timeline(false),
+            "motion never changes timing"
+        );
+        assert_eq!(timeline.last(), Some(&Screen::Title));
     }
 
     /// The whole learning loop across the quiz and the Codex: a miss is
