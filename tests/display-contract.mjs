@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { engineSource } from "./engine-source.mjs";
 
 const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-const engine = readFileSync(
-  new URL("../src-tauri/src/engine.rs", import.meta.url),
-  "utf8",
-);
+const engine = engineSource();
 const font = readFileSync(
   new URL("../src-tauri/src/font5x7.rs", import.meta.url),
   "utf8",
