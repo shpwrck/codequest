@@ -5,6 +5,8 @@ mod engine;
 mod external_tools;
 mod font5x7;
 mod learning;
+#[cfg(test)]
+mod property_tests;
 mod provenance;
 mod questions;
 mod repo_context;
