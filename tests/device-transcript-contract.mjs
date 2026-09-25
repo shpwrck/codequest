@@ -148,9 +148,10 @@ assert.match(
 );
 assert.match(lib, /generate_handler!\[[\s\S]*?engine_audio,\s*engine_transcript\s*\]/, "engine_transcript is registered beside engine_audio");
 assert.match(engine, /pub fn transcript_since\(&self, seq: u64\) -> Option<TranscriptUpdate>/);
-assert.match(engine, /let text = engine\.transcript\(\);\s*if let Ok\(mut channel\) = shared_transcript\.lock\(\) \{\s*channel\.publish\(text\);/);
+assert.match(engine, /let \(screen, sentences\) = engine\.transcript_sentences\(\);\s*if let Ok\(mut channel\) = shared_transcript\.lock\(\) \{\s*channel\.publish\(screen, sentences\);/);
 assert.match(transcript, /pub\(super\) fn screen_transcript\(state: &GameState\) -> String/);
-assert.match(transcript, /fn publish\(&mut self, text: String\) -> bool \{\s*if text == self\.latest\.text \{\s*return false;/, "Only a changed transcript is published");
+assert.match(transcript, /fn publish\(&mut self, screen: Screen, sentences: Vec<String>\) -> bool \{[\s\S]*?if latest == sentences\.as_slice\(\) \{\s*return false;/, "Only a changed transcript is published");
+assert.match(transcript, /fn announcement\(old: &\[String\], new: &\[String\]\) -> String/, "A change on the same screen is announced on its own");
 assert.match(packageJson.scripts.test, /node tests\/device-transcript-contract\.mjs/, "npm test runs this contract");
 
 console.log("Device transcript contract OK: engine-written screen transcript in a polite live region, change-only polling");

@@ -13,56 +13,159 @@
 //! Decorative motion, blinking prompts, and staged reveals are left out: the
 //! transcript changes only when something the player can act on changes, so
 //! the live region is not re-announced every tick.
+//!
+//! A new screen is announced whole. A small change on the same screen, such
+//! as focus moving to another choice or a counter ticking up, is announced on
+//! its own, so pressing Down reads the newly focused choice instead of the
+//! whole question again.
 
 use serde::Serialize;
 
 use super::*;
 
-/// The `engine_transcript` payload: the latest transcript and the sequence
-/// number it was published under.
+/// How many publications the channel remembers, so a reader that polls a few
+/// ticks late still gets the change relative to what it last presented.
+const TRANSCRIPT_HISTORY: usize = 32;
+
+/// The `engine_transcript` payload: what to announce and the sequence number
+/// of the transcript it brings the reader up to.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct TranscriptUpdate {
     pub seq: u64,
     pub text: String,
 }
 
-/// The latest published transcript. The sequence number advances only when
-/// the text changes, so a reader that remembers it hears each screen once.
+#[derive(Debug)]
+struct Publication {
+    seq: u64,
+    screen: Screen,
+    sentences: Vec<String>,
+}
+
+/// The recent published transcripts, newest last. The sequence number
+/// advances only when the words change, so a reader that remembers it hears
+/// each change once.
 #[derive(Debug, Default)]
 pub(super) struct TranscriptChannel {
-    latest: TranscriptUpdate,
+    seq: u64,
+    history: VecDeque<Publication>,
 }
 
 impl TranscriptChannel {
-    /// Publishes `text` if it differs from the latest transcript and reports
-    /// whether the sequence number advanced.
-    pub(super) fn publish(&mut self, text: String) -> bool {
-        if text == self.latest.text {
+    /// Publishes the screen's sentences if they differ from the latest
+    /// transcript and reports whether the sequence number advanced.
+    pub(super) fn publish(&mut self, screen: Screen, sentences: Vec<String>) -> bool {
+        let latest = self
+            .history
+            .back()
+            .map_or(&[][..], |publication| &publication.sentences[..]);
+        if latest == sentences.as_slice() {
             return false;
         }
-        self.latest = TranscriptUpdate {
-            seq: self.latest.seq + 1,
-            text,
-        };
+        self.seq += 1;
+        self.history.push_back(Publication {
+            seq: self.seq,
+            screen,
+            sentences,
+        });
+        if self.history.len() > TRANSCRIPT_HISTORY {
+            self.history.pop_front();
+        }
         true
     }
 
-    /// The latest transcript when it is newer than `seq`.
+    /// What a reader that last presented `seq` should announce now, if
+    /// anything was published since. A reader that is too far behind, or
+    /// holds a sequence number this channel never issued, hears the whole
+    /// current screen.
     pub(super) fn since(&self, seq: u64) -> Option<TranscriptUpdate> {
-        (self.latest.seq > seq).then(|| self.latest.clone())
+        let latest = self.history.back()?;
+        if latest.seq == seq {
+            return None;
+        }
+        let text = match self
+            .history
+            .iter()
+            .find(|publication| publication.seq == seq)
+        {
+            Some(base) if base.screen == latest.screen => {
+                announcement(&base.sentences, &latest.sentences)
+            }
+            _ => latest.sentences.join(" "),
+        };
+        Some(TranscriptUpdate {
+            seq: latest.seq,
+            text,
+        })
     }
 }
 
+/// What changed between two transcripts of the same screen. Sentences that
+/// appear at the end (a prompt arriving) are read alone; a few sentences that
+/// change in place are read alone, minus the choice that merely lost focus.
+/// A new heading, or a change to most of the screen, reads the whole screen.
+fn announcement(old: &[String], new: &[String]) -> String {
+    let whole = || new.join(" ");
+    if new.len() > old.len() && new.starts_with(old) {
+        return new[old.len()..].join(" ");
+    }
+    if new.len() != old.len() || old.first() != new.first() {
+        return whole();
+    }
+    let changed: Vec<(&String, &String)> = old
+        .iter()
+        .zip(new)
+        .filter(|(before, after)| before != after)
+        .collect();
+    if changed.len() * 2 > new.len() {
+        return whole();
+    }
+    let gained: Vec<&str> = changed
+        .iter()
+        .filter(|(before, after)| !lost_focus(before, after))
+        .map(|(_, after)| after.as_str())
+        .collect();
+    if gained.is_empty() {
+        changed
+            .iter()
+            .map(|(_, after)| after.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        gained.join(" ")
+    }
+}
+
+/// True when `after` is `before` with only its focus marker removed.
+fn lost_focus(before: &str, after: &str) -> bool {
+    before
+        .strip_suffix(", selected.")
+        .is_some_and(|stem| after.strip_suffix('.') == Some(stem))
+}
+
 impl GameEngine {
-    /// The transcript of the screen the engine is showing now.
+    /// The current screen and its transcript's sentences, for publication.
+    pub(super) fn transcript_sentences(&self) -> (Screen, Vec<String>) {
+        let state = self.app.world().resource::<GameState>();
+        (state.screen, screen_sentences(state))
+    }
+
+    /// The whole transcript of the screen the engine is showing now.
+    #[cfg(test)]
     pub(super) fn transcript(&self) -> String {
         screen_transcript(self.app.world().resource::<GameState>())
     }
 }
 
-/// Describes the current screen in plain sentences. The device is silent
-/// while it is off or showing the boot plate.
+/// The whole transcript of `state`'s screen, as a new screen is announced.
+#[cfg(test)]
 pub(super) fn screen_transcript(state: &GameState) -> String {
+    screen_sentences(state).join(" ")
+}
+
+/// Describes the current screen in plain sentences, in reading order. The
+/// device is silent while it is off or showing the boot plate.
+fn screen_sentences(state: &GameState) -> Vec<String> {
     let mut out = Transcript::default();
     match state.screen {
         Screen::Off | Screen::Boot => {}
@@ -110,8 +213,8 @@ impl Transcript {
         }
     }
 
-    fn finish(self) -> String {
-        self.0.join(" ")
+    fn finish(self) -> Vec<String> {
+        self.0
     }
 }
 
@@ -292,27 +395,14 @@ fn hero_creation(out: &mut Transcript, state: &GameState) {
     out.say("Up and Down choose a row, Left and Right change it, Start begins, B goes back");
 }
 
-/// The Oracle's truthful question status, tested in the same order as every
-/// Datafall status line and the audio snapshot.
-fn oracle_question_status(state: &GameState) -> QuestionStatus {
-    if state.has_unanswered_question() {
-        QuestionStatus::Ready
-    } else if state.questions_loading {
-        QuestionStatus::Writing
-    } else if state.question_retry_ticks > 0 {
-        QuestionStatus::Retrying
-    } else {
-        QuestionStatus::Contacting
-    }
-}
-
 fn datafall(out: &mut Transcript, state: &GameState) {
     out.say("Oracle Datafall");
     if state.uses_visual_template(VisualTemplate::Sanctum) {
         out.say(format!("{} bond", spoken(state.visual_tier().label())));
     }
     let provider = state.ai_provider_name();
-    out.say(match oracle_question_status(state) {
+    // The same rule the Datafall status lines and the audio snapshot read.
+    out.say(match state.question_status() {
         QuestionStatus::Ready => "The next question is ready".to_string(),
         QuestionStatus::Writing => format!("{provider} is writing questions"),
         QuestionStatus::Retrying => {
@@ -973,7 +1063,7 @@ mod tests {
             ..GameState::default()
         };
         assert_eq!(
-            oracle_question_status(&counted),
+            counted.question_status(),
             audio_snapshot(&counted).questions
         );
         assert_eq!(
@@ -1161,13 +1251,27 @@ mod tests {
         );
     }
 
+    fn sentences(text: &str) -> Vec<String> {
+        text.split_inclusive(". ")
+            .map(|sentence| sentence.trim().to_string())
+            .collect()
+    }
+
+    fn publish(channel: &mut TranscriptChannel, engine: &GameEngine) -> bool {
+        let (screen, sentences) = engine.transcript_sentences();
+        channel.publish(screen, sentences)
+    }
+
     #[test]
     fn publication_advances_the_sequence_only_when_the_text_changes() {
         let mut channel = TranscriptChannel::default();
-        assert!(!channel.publish(String::new()), "the device starts silent");
+        assert!(
+            !channel.publish(Screen::Off, Vec::new()),
+            "the device starts silent"
+        );
         assert_eq!(channel.since(0), None);
-        assert!(channel.publish("TITLE.".into()));
-        assert!(!channel.publish("TITLE.".into()));
+        assert!(channel.publish(Screen::Title, sentences("TITLE.")));
+        assert!(!channel.publish(Screen::Title, sentences("TITLE.")));
         assert_eq!(
             channel.since(0),
             Some(TranscriptUpdate {
@@ -1177,10 +1281,21 @@ mod tests {
         );
         assert_eq!(channel.since(1), None, "a current reader gets nothing");
         assert!(
-            channel.publish(String::new()),
+            channel.publish(Screen::Off, Vec::new()),
             "powering off clears the region"
         );
-        assert_eq!(channel.since(1).map(|update| update.seq), Some(2));
+        assert_eq!(
+            channel.since(1),
+            Some(TranscriptUpdate {
+                seq: 2,
+                text: String::new()
+            })
+        );
+        assert_eq!(
+            channel.since(99).map(|update| update.seq),
+            Some(2),
+            "a reader holding a sequence number this channel never issued resynchronizes"
+        );
 
         // A live engine republishes only when its screen text changes, even
         // though the title prompt blinks and Datafall drops move every tick.
@@ -1191,7 +1306,7 @@ mod tests {
         let mut channel = TranscriptChannel::default();
         for _ in 0..240 {
             engine.update();
-            channel.publish(engine.transcript());
+            publish(&mut channel, &engine);
         }
         assert_eq!(channel.since(0).map(|update| update.seq), Some(1));
 
@@ -1199,22 +1314,105 @@ mod tests {
         let mut published = 0;
         let mut ticks = 0;
         while state(&engine).oracle_data + state(&engine).oracle_bug_hits == 0 {
-            if channel.publish(engine.transcript()) {
+            if publish(&mut channel, &engine) {
                 published += 1;
             }
             engine.update();
             ticks += 1;
             assert!(ticks < 2_000, "the Datafall should score a drop");
         }
+        let entered = channel.since(0).unwrap().seq;
+        assert!(publish(&mut channel, &engine), "the first catch is news");
+        let catch = channel.since(entered).unwrap().text;
         assert!(
-            channel.publish(engine.transcript()),
-            "the first catch is news"
+            catch.starts_with("Data ") || catch.starts_with("Bugs "),
+            "a catch announces its counter alone, not the whole Datafall: {catch}"
         );
         assert!(ticks > 60, "many ticks passed before the first catch");
         assert_eq!(
             published, 1,
             "only entering the Datafall published before it"
         );
+    }
+
+    #[test]
+    fn a_new_screen_is_read_whole_and_a_focus_move_reads_only_the_new_focus() {
+        let question = question(7);
+        let mut engine = trial_engine(question.clone());
+        let order = display_order(&engine);
+        let mut channel = TranscriptChannel::default();
+        assert!(publish(&mut channel, &engine));
+        let trial = channel.since(0).unwrap();
+        assert_eq!(
+            trial.text,
+            engine.transcript(),
+            "a new screen is read whole"
+        );
+
+        press(&mut engine, Button::Down);
+        assert!(publish(&mut channel, &engine));
+        let moved = channel.since(trial.seq).unwrap();
+        assert_eq!(
+            moved.text,
+            format!("Choice 2: {}, selected.", question.choices[order[1]]),
+            "Down reads the newly focused choice, not the question again"
+        );
+
+        // A reader that polls late hears the change against what it last
+        // presented, not against a publication it never saw.
+        press(&mut engine, Button::Down);
+        publish(&mut channel, &engine);
+        press(&mut engine, Button::Down);
+        publish(&mut channel, &engine);
+        assert_eq!(
+            channel.since(moved.seq).unwrap().text,
+            format!("Choice 4: {}, selected.", question.choices[order[3]])
+        );
+        let armed = channel.since(0).unwrap().seq;
+        press(&mut engine, Button::B);
+        publish(&mut channel, &engine);
+        assert_eq!(
+            channel.since(armed).unwrap().text,
+            "Press B again to leave the run."
+        );
+
+        // Answering changes the heading, so the lesson card is read whole,
+        // even by a reader that missed the focus moves before it.
+        press(&mut engine, Button::A);
+        publish(&mut channel, &engine);
+        assert_eq!(channel.since(trial.seq).unwrap().text, engine.transcript());
+        assert!(engine.transcript().starts_with("Trial 1. "));
+    }
+
+    #[test]
+    fn announcements_read_appended_prompts_and_fall_back_to_the_whole_screen() {
+        let old = sentences("Credits. Archive 2020 to 2024.");
+        let new = sentences("Credits. Archive 2020 to 2024. A or Start skips.");
+        assert_eq!(announcement(&old, &new), "A or Start skips.");
+
+        let menu = sentences("Menu. Option 1: A, selected. Option 2: B. Up and Down move.");
+        let moved = sentences("Menu. Option 1: A. Option 2: B, selected. Up and Down move.");
+        assert_eq!(announcement(&menu, &moved), "Option 2: B, selected.");
+
+        let page = sentences("Codex, lesson 1 of 2. Lens. Question. Answer.");
+        let turned = sentences("Codex, lesson 2 of 2. Lens. Question two. Answer two.");
+        assert_eq!(
+            announcement(&page, &turned),
+            turned.join(" "),
+            "a new heading reads the whole page"
+        );
+        let most = sentences("Heading. A. B. C.");
+        let changed = sentences("Heading. X. Y. C.");
+        assert_eq!(
+            announcement(&most, &changed),
+            "X. Y.",
+            "half the screen changing still reads only the change"
+        );
+        let nearly = sentences("Heading. A. B. C.");
+        let rewritten = sentences("Heading. X. Y. Z.");
+        assert_eq!(announcement(&nearly, &rewritten), rewritten.join(" "));
+        let shorter = sentences("Heading. A.");
+        assert_eq!(announcement(&nearly, &shorter), "Heading. A.");
     }
 
     #[test]

@@ -1375,6 +1375,20 @@ impl GameState {
             .is_some_and(|cartridge| cartridge.questions.get(question).is_some())
     }
 
+    /// The Oracle's truthful question status. Every Datafall status line, the
+    /// audio snapshot, and the screen transcript read this one rule.
+    fn question_status(&self) -> QuestionStatus {
+        if self.has_unanswered_question() {
+            QuestionStatus::Ready
+        } else if self.questions_loading {
+            QuestionStatus::Writing
+        } else if self.question_retry_ticks > 0 {
+            QuestionStatus::Retrying
+        } else {
+            QuestionStatus::Contacting
+        }
+    }
+
     /// True while a run is being played: the Oracle, quiz, and level-up
     /// screens with a run in hand. Every other screen precedes the next run.
     fn run_is_live(&self) -> bool {
@@ -1985,9 +1999,9 @@ impl EngineRuntime {
                     if let Ok(mut queue) = shared_audio.lock() {
                         queue.append(engine.take_audio());
                     }
-                    let text = engine.transcript();
+                    let (screen, sentences) = engine.transcript_sentences();
                     if let Ok(mut channel) = shared_transcript.lock() {
-                        channel.publish(text);
+                        channel.publish(screen, sentences);
                     }
                     next_frame += FRAME_TIME;
                     if let Some(remaining) = next_frame.checked_duration_since(Instant::now()) {
@@ -2104,15 +2118,7 @@ fn audio_snapshot(state: &GameState) -> AudioSnapshot {
         }
     });
     // Mirrors the Oracle's truthful status line.
-    let questions = if state.has_unanswered_question() {
-        QuestionStatus::Ready
-    } else if state.questions_loading {
-        QuestionStatus::Writing
-    } else if state.question_retry_ticks > 0 {
-        QuestionStatus::Retrying
-    } else {
-        QuestionStatus::Contacting
-    };
+    let questions = state.question_status();
     AudioSnapshot {
         powered: state.powered,
         scene,
@@ -3085,14 +3091,11 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     frame.rect(0, 0, WIDTH as i32, 12, NAVY);
     frame.rect(0, 11, WIDTH as i32, 1, PLUM);
     frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
-    let status = if state.has_unanswered_question() {
-        "QUESTION READY".to_string()
-    } else if state.questions_loading {
-        format!("{} THINKING", state.ai_provider_name())
-    } else if state.question_retry_ticks > 0 {
-        format!("{} RETRYING", state.ai_provider_name())
-    } else {
-        format!("CONTACTING {}", state.ai_provider_name())
+    let status = match state.question_status() {
+        QuestionStatus::Ready => "QUESTION READY".to_string(),
+        QuestionStatus::Writing => format!("{} THINKING", state.ai_provider_name()),
+        QuestionStatus::Retrying => format!("{} RETRYING", state.ai_provider_name()),
+        QuestionStatus::Contacting => format!("CONTACTING {}", state.ai_provider_name()),
     };
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
     frame.text(211 - status_width, 2, &status, SKY, 1);
@@ -3171,15 +3174,12 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         },
         1,
     );
-    let status = if state.has_unanswered_question() {
-        state.ai_provider_status("READY")
-    } else if state.questions_loading {
-        state.ai_provider_status("SCRYING")
-    } else if state.question_retry_ticks > 0 {
-        state.ai_provider_status("CLOUDY")
-    } else {
-        state.ai_provider_status("CHANNEL")
-    };
+    let status = state.ai_provider_status(match state.question_status() {
+        QuestionStatus::Ready => "READY",
+        QuestionStatus::Writing => "SCRYING",
+        QuestionStatus::Retrying => "CLOUDY",
+        QuestionStatus::Contacting => "CHANNEL",
+    });
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
     frame.text(235 - status_width, 5, &status, CYAN, 1);
 

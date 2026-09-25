@@ -104,7 +104,9 @@ its choices in display order and which one is focused, the lesson card's
 reasoning, the Codex pages, the Oracle's status, and the controls that work.
 The shell places it in a visually hidden, polite live region. The engine
 republishes the transcript only when its words change, so blinking prompts
-and falling data are never announced.
+and falling data are never announced. A new screen is read whole; a small
+change on the same screen, such as focus moving to another choice, is read
+on its own.
 
 ## Install
 
