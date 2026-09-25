@@ -22,7 +22,13 @@
     {
       "id": 3,
       "prompt": "Our existing quiz storyboard needs an accessibility pass. Add a reduced-motion Oracle state, non-color-only answer feedback, and clearer retry behavior. Preserve existing IDs wherever possible and update both the brief and manifest.",
-      "expected_output": "An incremental, traceable revision that preserves stable IDs, updates mechanics and art requirements, and keeps all manifest references valid.",
+      "expected_output": "An incremental, traceable revision that preserves stable IDs, updates mechanics and art requirements, and keeps all manifest references valid, while recognizing what the engine already provides instead of proposing it again.",
+      "expectations": [
+        "Preserves existing scene, mechanic, and art IDs and keeps the manifest valid under the bundled validator.",
+        "Recognizes that the engine already follows the system reduced-motion preference by freezing decorative motion without changing timing, and specifies the Oracle's resting composition rather than proposing a new setting.",
+        "Recognizes the existing lesson card with -/+ verdict markers and per-choice rationales, and the spaced retry with redemption, and builds on them.",
+        "Classifies any remaining gap, such as an in-game reduced-motion toggle, as proposed engine work rather than a manifest field."
+      ],
       "files": []
     },
     {
@@ -34,6 +40,7 @@
         "Finds possible loading, failure, held-input, back, replay, and terminal open states rather than checking reachability alone.",
         "Defines perceptible beginning, middle, and end progression through at least two feedback channels beyond a level number.",
         "Inventories real template assets and does not claim that manifest metadata dynamically loads them unless the repository contract supports it.",
+        "Treats sound as engine-derived from state: audio art entries remain production requirements, implemented cues cite the audio director and its tests, and no sound field or audio template is invented.",
         "Keeps the brief and CODEQUEST.toml valid, linked, and honest about implemented versus proposed work."
       ],
       "files": []
@@ -61,6 +68,19 @@
         "Inventories score, streak, health, collectible, hazard, and completion tracking with desirable direction, thresholds, staged reward or consequence, cap, and reset.",
         "Makes score or streak thresholds mechanically meaningful instead of merely recoloring the same flat reward.",
         "Adds executable evidence at values immediately below, at, and above the declared breakpoints and inspects the final 240x160 composites."
+      ],
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "Players say the quiz feels like guessing and they forget what they got wrong. Make the Oracle quiz teach better: I want mistakes to explain themselves, missed ideas to come back, and some way to see what I have actually learned. Update the brief and the manifest.",
+      "expected_output": "A pedagogy pass that names the learner, objective, mental model, misconception, evidence, mastery criterion, and transfer task, maps them through a pedagogy map, and builds on the engine's existing learning mechanisms instead of re-proposing them.",
+      "expectations": [
+        "Fills every pedagogy field in the experience frame and a five-stage pedagogy map with evidence and scaffolding per stage.",
+        "Cites the existing lesson card, per-choice rationales, shuffled choices, spaced retry and redemption, lens mastery thresholds, and the Oracle Codex as implemented runtime evidence.",
+        "Routes the menu to the Codex with the codex handler, the open-codex signal, and the oracle-codex template when the manifest lacks that route, and keeps the manifest valid.",
+        "Distinguishes prompt-level requirements such as level focus lenses and PREDICT transfer questions from rules the acceptance policy enforces.",
+        "Proposes any new threshold, retry gap, or mastery state as engine work rather than inventing manifest fields."
       ],
       "files": []
     }

@@ -9,7 +9,8 @@ brief explains intent and implementation status; the manifest supplies stable
 scene, mechanic, and art IDs. Its schema-v2 handlers and transitions compile
 into the engine's scene machine; typed visual templates select trusted built-in
 renderer assets, while mechanics and template-less art remain production
-metadata.
+metadata. Sound is derived by the engine from game state, so the manifest's
+audio entries are production requirements rather than runtime switches.
 
 ## Experience frame
 
@@ -21,9 +22,56 @@ question request runs behind the opening spectacle, and any remaining latency
 becomes Oracle Datafall: a Left/Right falling-object game in which the hero
 dodges bugs and runs into data while the verified battery provider works.
 
-**Player outcome:** Build a durable mental model of a project's purpose,
-responsibilities, interactions, invariants, and tradeoffs—not memorize file
-names or repository trivia.
+**Learner:** A developer who can read code but is new to, or returning to, the
+inserted repository. They may know its language and framework; they do not yet
+know why the project is shaped the way it is.
+
+**Learning objective:** After a run, the learner can explain the project's
+purpose and which component owns each duty, predict how components collaborate
+when a request or event moves through them, and justify the invariants and
+tradeoffs that constrain a change, distinguishing each from a plausible
+misconception.
+
+**Target mental model:** A durable model of the project across five concept
+lenses (`learning::Concept`): purpose, responsibilities (`ROLES`), interactions
+(`FLOWS`), invariants, and tradeoffs. Concretely, a responsibility map (what
+owns which decision), an interaction model (what calls or informs what, and in
+which direction), and the invariants and tradeoffs that explain why the
+boundaries sit where they do—not file names or repository trivia.
+
+**Likely misconception:** Surface models that confuse where code lives or what
+a name suggests with what a component is responsible for, for example
+believing a presentation layer owns state because it displays it. The
+generation prompt asks for every distractor to be a misconception a newcomer
+might really hold, and acceptance requires a rationale for every choice, so a
+wrong answer names the model the player held.
+
+**Evidence of learning:** A correct commitment to a conceptual question on its
+first attempt, or a *redemption*: a correct answer to a previously missed
+question after its lesson card, presented in a different choice order from its
+first showing. Within a batch, the review copy returns after up to three
+intervening questions (`RETRY_GAP`), fewer when the batch end is nearer; a miss
+still outstanding when a run ends or the app closes returns as a review in a
+later run. Score, flow, survival, and Datafall counts are not evidence.
+
+**Mastery criterion:** Per lens, evidence (first-try successes plus
+redemptions) wakes the first, second, and third mastery rune at exactly 1, 3,
+and 5 (`learning::MASTERY_THRESHOLDS`); misses never light or remove a rune.
+The design treats a lens as mastered when its third rune is lit and the Codex
+shows no pending review for it. The runtime displays both signals but does not
+combine them into a separate mastered state.
+
+**Transfer task:** At Oracle-bound levels (4 and above), the generation prompt
+requires at least two PREDICT questions per six-question batch. Each describes
+a plausible change or failure the repository does not document—a removed
+check, a reordered step, a crash mid-operation, a new kind of input—and asks
+what the design implies, answered from invariants and tradeoffs rather than
+recalled wording. The requirement lives in the prompt: acceptance does not
+check the `PREDICT:` prefix, and a PREDICT question counts as evidence for
+whichever lens it names.
+
+**Player goal:** Bind a code-seer to the Oracle, survive trials with three
+wards, deepen the Oracle bond, and fill the Codex with awakened lens runes.
 
 **Design pillars**
 
@@ -54,25 +102,44 @@ creates new renderer code.
   creation → Oracle → questions → level-up or game-over. A run lasts until the
   player's three ward seals break or they return to the menu.
 - **Core loop:** Consult Oracle → receive one valid question → choose an answer
-  → read feedback → continue or return to the Oracle.
-- **Progression loop:** Survive a six-question batch → raise difficulty → mark
-  a level-up → visibly deepen the Oracle bond → begin or await the next batch.
+  → read the lesson card → continue or return to the Oracle.
+- **Progression loop:** Survive a full six-question batch, including any review
+  copies its misses inserted → raise difficulty and deepen the batch's concept
+  lenses → mark a level-up → visibly deepen the Oracle bond → begin or await
+  the next batch.
 - **Success:** Correct answers build flow; streaks 3 and 6 raise the score
   multiplier to x2 and x3, cumulative score awakens Insight Runes at 300, 900,
-  and 1800, and completing a batch raises the level.
-- **Failure/recovery:** A wrong answer costs one ward, resets flow, and reveals
-  the correct choice. At zero wards, show the final score, earned Insight Rune,
-  and a one-button replay path.
-- **Save continuity:** Committing an answer records the question in the
-  cartridge save. Later runs and launches compare normalized text and filter all
-  recorded questions. Wards, score, flow, and presentation remain run-specific;
-  hero identity is not save-backed across app launches.
+  and 1800, and completing a batch raises the level. First-try successes and
+  redemptions also wake per-lens mastery runes at 1, 3, and 5 evidence.
+- **Failure/recovery:** A wrong answer costs one ward, resets flow, and opens a
+  lesson card that explains the chosen misconception before the correct answer
+  and its rationale. A survivable miss returns as a review within the batch.
+  At zero wards, show the final score, earned Insight Rune, and a one-button
+  replay path; the unredeemed miss waits for a later run.
+- **Save continuity:** Committing an answer records it in the cartridge save
+  (`quiz.progress`) on a background writer. A correct answer retires the
+  question for later runs and launches; a miss keeps it queued as a review
+  until it is redeemed. Per-lens mastery (first-try, redeemed, and missed
+  counts) persists per cartridge, and cartridge load rebuilds the lesson
+  journal from the saved batches and that progress. Wards,
+  score, flow, and presentation remain run-specific; hero identity is not
+  save-backed across app launches.
 - **Latency loop:** Request the first batch as soon as the cartridge is
   accepted, then continue behind the copyright, fanfare, title, menu, and hero
   creation. In Oracle Datafall, move into falling data to collect it on contact
   while moving away from magenta corruption glyphs.
   Enter the Oracle only when no valid unanswered question is ready; failed
   batches retry there instead of becoming generic trivia.
+
+## Pedagogy map
+
+| Stage | Player experience | Concept or skill | Evidence/feedback | Scaffolding |
+|---|---|---|---|---|
+| Introduction | Initiate batches (level 1) ask about purpose and responsibilities while the opening, menu, and Datafall wait carry the fiction. | Purpose and responsibilities: the prompt asks for at least four of six questions on the level's focus lenses (`Concept::focus_for_level`). | First-try answers; every commitment opens a lesson card with the answer's rationale. | Choices are shown in a stable per-question shuffle (`learning::presentation_order`) so answer position carries no signal; the prompt asks for plausible distractors of similar length; there are no timers. |
+| Scaffolded practice | A miss shows the committed pick in red with the misconception it represents, then the answer in green with why it holds. The question returns as a review after up to three intervening questions with every choice moved. | The misconception named by the chosen distractor. | A correct review is a redemption, recorded separately from first-try success and bannered `REDEEMED`. | The card ignores input for 45 ticks and then waits for A or Start; review copies join the current batch, so the batch cannot level up until its misses are retried. |
+| Independent practice | Adept batches (levels 2–3) shift to interactions and tradeoffs; flow multipliers reward consecutive correct answers. | Interactions and tradeoffs. | Per-lens first-try, redeemed, and missed counts in the save. | Each request names the weakest lens (most misses relative to evidence) and asks for at least one question on it, and lists up to 24 earlier stems the provider must not repeat. |
+| Assessment | The Codex mastery page shows every lens's three runes and an amber pending-review count; lesson pages reread question, answer, and rationale marked `REVIEW PENDING` or `LEARNED`. The quiz menu summarizes `LESSONS NN  REVIEW NN`. | All five lenses. | Runes at exactly 1, 3, and 5 evidence; pending reviews clear only when a miss is redeemed. | The journal can be reread from the menu before any run; missed questions persist across launches until redeemed. |
+| Transfer | Oracle-bound batches (level 4+) focus on invariants and tradeoffs and include at least two PREDICT questions about undocumented changes or failures. | Invariants and tradeoffs applied to a new situation. | A correct prediction is evidence for the lens the question names. | Rationales explain the implication, so a wrong prediction still teaches the invariant. |
 
 ## Polish direction and felt progression
 
@@ -95,9 +162,9 @@ difficulty:
 
 | Tier | Question focus | Environment and motion | Sound | Carry-forward |
 |---|---|---|---|---|
-| Initiate — level 1 | Purpose and responsibilities | Sparse cyan nodes; the Oracle eye is mostly dormant. | Dry UI ticks, one data pulse, thin ambience. | The chosen hero and first lit node persist through Oracle, quiz, and results. |
-| Adept — levels 2–3 | Component interactions and tradeoffs | Gold branches join the cyan frame; transitions gain one extra anticipation beat. | A second motif voice and stronger correct-answer cadence enter. | The expanded crest remains visible in the next Oracle and quiz frames. |
-| Oracle-bound — level 4+ | Invariants and design rationale | Cyan and gold converge into the complete Oracle crest; reward motion reaches its maximum controlled intensity. | Full constrained arrangement and final reward cadence. | The complete crest holds until game-over or a clearly signaled new-run reset. |
+| Initiate — level 1 | Purpose and responsibilities | Sparse cyan nodes; the Oracle eye is mostly dormant. | Two-voice Datafall loop and two-voice reward cadence; the replay cadence always returns to this thin timbre. | The chosen hero and first lit node persist through Oracle, quiz, and results. |
+| Adept — levels 2–3 | Component interactions and tradeoffs | Gold branches join the cyan frame; transitions gain one extra anticipation beat. | A third voice joins the Datafall loop and the reward cadence. | The expanded crest remains visible in the next Oracle and quiz frames. |
+| Oracle-bound — level 4+ | Invariants and tradeoffs, including PREDICT transfer questions | Cyan and gold converge into the complete Oracle crest; reward motion reaches its maximum controlled intensity. | Four-voice Datafall loop and the full Oracle reward cadence. | The complete crest holds until game-over or a clearly signaled new-run reset. |
 
 Crossing a tier is celebrated on `level-up` and established as the new visual
 baseline afterward. A new run visibly returns to Initiate. Typed template
@@ -112,13 +179,15 @@ runes so the HUD reads as part of the illustrated world rather than debug text.
 
 | Metric | Desired direction | Exact stages | Reward or consequence | Cap and reset |
 |---|---|---|---|---|
-| Wards (health) | Keep high | 3 full → 2 strained → 1 fractured → 0 broken | Three cyan/gold ward runes lose fill and change state; the review banner names strain, fracture, or break. Zero ends the run. | Capped at 3; restored by a new run. |
+| Wards (health) | Keep high | 3 full → 2 strained → 1 fractured → 0 broken | Three cyan/gold ward runes lose fill and change state; the lesson-card banner names strain, fracture, or break, and a heartbeat bed runs on the last ward. Zero ends the run. | Capped at 3; restored by a new run. |
 | Flow (correct-answer streak) | Build high | 0–2 = x1, 3–5 = x2, 6+ = x3 | Each correct answer awards 100 × the active multiplier; the header and review response establish the new flow stage. | Multiplier caps at x3; a wrong answer or new run resets it. |
 | Insight score | Build high | 300 = Rune I, 900 = Rune II, 1800 = Rune III | Three header runes awaken at exact crossings, score color advances, and a crossing banner names the earned rune. | Visual rank caps at Rune III while the readable score continues to 9999; a new run resets both. |
 | Data charge | Build high | 3, 6, and 9 collected shards | One of three bottom-strip charge runes lights at each threshold. This is expressive reward only and never changes question generation or quiz score. | Rune meter caps at 3; count displays to 99; both reset on a new run. |
 | Corruption hits | Keep low | 0 intact; first seal breaks at 1, second at 3, third at 5 | Three containment runes visibly fracture/extinguish in stages, rewarding a clean wait while warning before breach. This remains isolated from quiz health. | Breach display caps after 5; count displays to 99; both reset on a new run. |
-| Questions/batches | Complete six | Every 6 answered questions completes a batch | A batch-complete scene raises level and holds the new bond state before continuation. | Continues while questions are available; new run resets batch and level. |
-| Oracle bond level | Build high | level 1 Initiate; 2–3 Adept; 4+ Oracle-bound | Palette, crest geometry, circuit density, reward frame, and final result change—not just the number. | Visual tier caps at Oracle-bound; new run resets to Initiate. |
+| Questions/batches | Complete six | A batch holds six generated questions; each survivable miss inserts its review copy inside the batch and moves the batch end, so a batch completes at its retry-shifted end and only once it holds a full six | A batch-complete scene raises level and holds the new bond state before continuation. | Continues while questions are available; new run resets batch and level, and unanswered or unredeemed questions carry into it. |
+| Oracle bond level | Build high | level 1 Initiate; 2–3 Adept; 4+ Oracle-bound | Palette, crest geometry, circuit density, reward frame, final result, generation focus lenses, and arrangement voices change—not just the number. | Visual tier caps at Oracle-bound; new run resets to Initiate. |
+| Lens mastery (per lens) | Build high | Evidence (first-try successes plus redemptions) 1 = rune I, 3 = rune II, 5 = rune III | The Codex mastery page lights the lens's three runes in a color that advances with the stage (cyan, amber, magenta), and the templated lesson-card footer shows the same stage beside the lens label. Misses never subtract a rune. | Caps at three runes while evidence keeps counting; persists per cartridge across runs and launches and is never reset by a new run. |
+| Pending reviews | Keep at zero | 0 = `ALL CLEAR`; each outstanding miss adds one | An amber `!N` beside the lens on the Codex mastery page, `REVIEW NN` in the Codex totals and quiz-menu subtitle, and `REVIEW PENDING` on the lesson page; a redemption clears its entry. | Displays to 99; persists across launches until each miss is redeemed. |
 
 ## Scene storyboard
 
@@ -132,11 +201,11 @@ runes so the HUD reads as part of the illustrated world rather than debug text.
 | `oracle-awakening` | Resolve the story in the existing hero image instead of using it as the whole intro. | The complete cyan-and-gold Oracle sigil ignites around the code-seer; the frame reaches the sequence's maximum contrast. | Timed or A/Start exit to `title`. | `play-opening-fanfare` | `opening-fanfare`, `opening-soundscape` |
 | `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; the redrawn Oracle motif and title remain readable without glow. | `quiz-menu` | `begin-from-title` | `title-mark`, `ui-soundscape` |
 | `quiz-menu` | Explain the run, summarize the lesson journal, and offer a new run or the Codex. | D-pad selects; A/Start confirms; B returns to the title; the subtitle reads `LESSONS NN  REVIEW NN` (or `ALL CLEAR`) once lessons exist; focus is visible by shape and color. | `character-creation`, `codex`, or `title` | `navigate-menu` | `menu-frame`, `ui-soundscape` |
-| `codex` | Make learning evidence visible and give every miss an informed-retry path. | Page 0 shows each lens with three mastery runes (1/3/5 evidence) and an amber `!N` pending-review count; later pages reread one lesson each: lens, question, green answer, and rationale, with `REVIEW PENDING` in amber. Left/Up/L and Right/Down/R page with wrap; A/Start are inactive; B returns. | `quiz-menu` | `review-lessons` | `codex-frame`, `ui-soundscape` |
+| `codex` | Make learning evidence visible and give every miss an informed-retry path. | Page 0 shows each lens with three mastery runes (1/3/5 evidence) and an amber `!N` pending-review count; later pages reread one lesson each: lens, question, green answer, and rationale, with `REVIEW PENDING` in amber or `LEARNED` in cyan. Left/Up/L and Right/Down/R page with wrap; A/Start are inactive; B returns. | `quiz-menu` | `review-lessons` | `codex-frame`, `ui-soundscape` |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, path, and aura through disjoint, centered identity rows; the hero's visible feet stay grounded on the atelier stage; aura selects an authored hero colorway without procedural equipment overlays. | `oracle` | `customize-hero` | `hero-set`, `character-frame`, `ui-soundscape` |
 | `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data fills charge runes at 3/6/9 and bug hits break containment runes at 1/3/5. A/Start remain inactive; B abandons the wait safely. The top header holds truthful Oracle context and the bottom strip holds themed instruments plus controls. | Automatically enters `quiz` when a valid question is ready; B returns to `quiz-menu`. | `consult-oracle` | `hero-set`, `oracle-sanctum`, `oracle-soundscape`, `run-progression` |
-| `quiz` | Test one durable project concept. | D-pad selects; A commits; B abandons the run; ward, flow, score-rune, text, shape, animation, and sound states reveal consequence and reward. | `oracle`, `level-up`, `game-over`, or `quiz-menu` | `answer-question` | `hero-set`, `quiz-frame`, `quiz-soundscape`, `run-progression` |
-| `level-up` | Recognize a completed batch and establish a visibly stronger Oracle bond. | A/Start continues after the reward has a readable hold. | `quiz` or `oracle` | `continue-after-reward` | `hero-set`, `reward-frame`, `progression-soundscape`, `run-progression` |
+| `quiz` | Test one durable project concept and explain the answer. | D-pad selects among shuffled choices; A commits; a lesson card then replaces the choices with the misconception and answer rationales and continues on A/Start after its 45-tick hold; B twice within 90 ticks leaves the run; ward, flow, score-rune, lens-rune, text, shape, and sound states reveal consequence and reward. | `oracle`, `level-up`, `game-over`, or `quiz-menu` | `answer-question` | `hero-set`, `quiz-frame`, `quiz-soundscape`, `run-progression` |
+| `level-up` | Recognize a completed batch and establish a visibly stronger Oracle bond. | A/Start continue once the manifest's `after_ticks` gate opens (60 ticks here), when the continue prompt appears; the scene continues on its own at 180 ticks. | `quiz` or `oracle` | `continue-after-reward` | `hero-set`, `reward-frame`, `progression-soundscape`, `run-progression` |
 | `game-over` | Close the run, show what was earned, and make replay obvious. | Show final score, level, and completed crest state; A/B/Start returns to the menu and clearly resets progression. | `quiz-menu` | `replay-run` | `hero-set`, `result-frame`, `progression-soundscape`, `run-progression` |
 
 All scenes are reachable from `copyright`. The opening path is finite, and the
@@ -202,7 +271,9 @@ and the selected provider retries.
   its opening impact.
 - **Inputs:** A or Start.
 - **Rules:** The sequence is finite and deterministic. Completion never implies
-  question readiness. Reduced motion changes transitions, not duration or data.
+  question readiness. Reduced motion freezes decorative motion—blinking
+  prompts stay lit and settling motions show their end state—without changing
+  duration, timing gates, input, or data.
 - **Feedback:** Carry one code-seer through five distinct authored frames:
   source ember, archive answer, memory vault, convergence, and complete Oracle.
   Each cut changes place or causality—not merely brightness—and total luminance
@@ -272,6 +343,9 @@ and the selected provider retries.
   unanswered question exists; empty results retry. No Datafall state affects
   generation, difficulty, quiz score, wards, or wait duration. A B press exits
   on its input edge and clears the active run, so the wait is never inescapable.
+- **Instructional role:** None by design. Datafall keeps the real generation
+  wait active and honest; it never produces learning evidence, and its counts
+  never enter mastery.
 - **Feedback:** Data uses an authored cyan-and-gold crystal silhouette; bugs
   use an asymmetric magenta corruption silhouette. Keep `DATAFALL` and truthful
   loading/retry/ready text in the top header. Compose raw two-digit counts,
@@ -288,18 +362,25 @@ and the selected provider retries.
   four 31-character question lines, and 31 characters per choice. Wrong costs
   one ward and resets flow. Correct builds flow; streaks 0–2, 3–5, and 6+ award
   x1, x2, and x3 score. Score awakens Insight Runes at 300, 900, and 1800.
-  Commitment immediately records the question in the cartridge save; future
-  runs or launches compare normalized text and skip every recorded question.
-  Choices appear in a stable order derived from the normalized question and
-  its attempt number, so the provider's answer position never predicts the
-  answer and every retry moves every choice. After commitment, hold the lesson
-  card for 45 ticks with every input intentionally inactive, then wait for A
-  or Start. A survivable miss inserts a review copy three questions later,
-  never past the current batch end, and shifts later batch ends so a batch
-  cannot complete before its misses are retried. Each commitment updates the
+  Commitment immediately records the answer in the cartridge save: a correct
+  answer retires the question (by normalized text) for later runs and
+  launches, while a miss keeps it in the save's missed list so it returns as a
+  review until redeemed. Choices appear in a stable order derived from the
+  normalized question and its attempt number, so the provider's answer
+  position never predicts the answer and every retry moves every choice. After
+  commitment, hold the lesson card for 45 ticks with every input intentionally
+  inactive, then wait for A or Start. A survivable miss inserts a review copy
+  after up to three intervening questions, never past the current batch end,
+  and shifts later batch ends so a batch cannot complete before its misses are
+  retried. A miss that breaks the last ward schedules no in-run retry; it stays
+  pending for a later run. Each commitment updates the
   lens mastery record and upserts the lesson journal entry. B arms a 90-tick
   in-scene confirmation; a second B inside the window leaves the run, and any
   other button or the timeout disarms it.
+- **Instructional role:** Assesses one lens per question and turns every
+  commitment into explained feedback. A miss names the misconception behind
+  the chosen distractor before the correct reasoning, then schedules an
+  informed retry whose correct answer is recorded as a redemption.
 - **Feedback:** Replace the four choice frames with one lesson panel: a miss
   shows the committed pick in red with its rationale (the misconception) and
   then the answer in green with its rationale; a success shows the answer with
@@ -311,17 +392,21 @@ and the selected provider retries.
   keeping every ornament outside glyph and inter-glyph cells, plus distinct
   cursor, commit, low-ward, and batch-complete cues. Replace generic health
   stars with three Oracle ward runes; compose ward, flow multiplier, three
-  Insight Rune marks, and raw score across the header. During the input lock,
-  replace active controls with the owned review, ward, flow, or exact rune-
-  crossing banner.
+  Insight Rune marks, and raw score across the header. While the lesson card
+  shows, replace active controls with the owned ward, flow, `REDEEMED`, or
+  exact rune-crossing banner, or `REVIEW ANSWER` when none applies.
 
 ### `continue-after-reward`
 
 - **Decision:** Continue after reading the earned level and presentation tier.
 - **Inputs:** A or Start.
-- **Rules:** Keep the first 60 ticks non-interactive, then continue on the input
-  edge. Route to `quiz` when a valid question is ready and to `oracle`
-  otherwise. A held confirmation cannot answer the next question.
+- **Rules:** The scene graph owns the hold: A/Start continue only when the
+  current transition would be accepted, so the manifest's `after_ticks` on the
+  level-up routes (60 ticks here) sets both the non-interactive hold and when
+  the continue prompt appears. After the hold, continue on the input edge; at
+  180 ticks the scene continues on its own. Route to `quiz` when a valid
+  question is ready and to `oracle` otherwise, requesting a missing batch while
+  the reward holds. A held confirmation cannot answer the next question.
 - **Feedback:** Telegraph, celebrate, and hold the new crest state once, then
   use one tier-specific continuation cue.
 
@@ -350,15 +435,17 @@ and the selected provider retries.
 | `character-frame` | UI/scene | `character-creation` | Stage the customizable hero inside the same world with centered name, path, and aura rows plus loading, retry, and ready states. | Heading and rows are pairwise disjoint; labels and actions center in measured usable interiors; the hero's visible-alpha feet meet the stage support line; status is truthful. | `oracle-atelier` implemented with native layout assertions. |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run with authored aura colorways plus idle, dodge, reward, and defeat variants. | Consistent silhouette across palettes/backgrounds; no procedural accessory or weapon overlays. | `oracle-hero` implemented with authored colorways, portrait, and defeat variants. |
 | `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, ready, and B-back as one place: moving hero, authored drops, staged data-charge and corruption-containment instruments, and a tier crest. | Fits 240×160; sprites stay contained and differ by silhouette/value/hue; top status remains distinct; raw counts and themed three-rune meters remain disjoint from centered controls at two digits. | `oracle-sanctum` implemented with authored drop sprites, themed threshold runes, exact breakpoint tests, and three visual tiers. |
-| `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, ward health, flow multiplier, score, Insight Runes, and answer review. | Honor text limits and plate-divider clearance; replace generic pips with three stateful Oracle runes; preserve raw score while exact flow/score thresholds change reward, fill, color, and concise response copy. | `oracle-trial` implemented with ornament-disjoint copy, shaped focus, themed instrumentation, staged scoring, and breakpoint tests. |
+| `quiz-frame` | HUD/UI | `quiz` | Hold question, four choices, focus, ward health, flow multiplier, score, Insight Runes, and the lesson card: committed pick and answer with their rationales, `-`/`+` verdict markers, the lens with its mastery runes, and the continue prompt. | Honor text limits and plate-divider clearance; replace generic pips with three stateful Oracle runes; preserve raw score while exact flow/score thresholds change reward, fill, color, and concise response copy; worst-case rationales stay inside the lesson panel. | `oracle-trial` implemented with ornament-disjoint copy, shaped focus, themed instrumentation, staged scoring, lesson-card layout and contrast, and breakpoint tests. |
 | `reward-frame` | Scene/UI | `level-up` | Telegraph the threshold, celebrate it once, and establish the new Oracle-bond baseline. | No rapid full-background flashing; tier and reward remain readable. | `oracle-ascension` implemented with tiered crest and readable hold. |
 | `result-frame` | Scene/UI | `game-over` | Resolve the run with hero state, final score, earned Insight Rune, level, completed crest, and an obvious reset/replay path. | Defeat is clear without erasing earned progress; all accepted replay inputs are visible. | `oracle-aftermath` implemented with preserved tier, score-rune rank, and defeated hero. |
 | `run-progression` | Presentation system | `oracle`, `quiz`, `level-up`, `game-over` | Own every tracked metric's direction, thresholds, crossing response, cap, reset, and carry-forward state. | At least two non-numeric channels change; exact breakpoints are tested; all run metrics reset deterministically. | Bond, ward, flow, Insight Rune, data-charge, and corruption-containment stages are implemented; Datafall and reward audio grow by tier. |
 
 ## Sound requirement ledger
 
-Sound entries remain `art.kind = "audio"` production metadata, and the engine
-now owns their runtime. `src-tauri/src/audio.rs` describes a constrained
+Sound entries remain `art.kind = "audio"` production metadata: the manifest has
+no sound schema or audio template field, so editing an entry changes no sound.
+The engine owns the runtime that implements them. `src-tauri/src/audio.rs`
+describes a constrained
 four-voice chip (two duty-selectable pulses, a triangle-like wave, and noise).
 Its director samples an observable-state snapshot every tick and diffs it
 against the previous tick, so sound is a pure function of state transitions
@@ -369,16 +456,16 @@ per tick, chosen by priority, so one input edge can never stack cues. Loops and
 beds stay at or below chip volume 5 while every cue peaks above it. The shell's
 `src/speaker.js` only schedules the engine's notes through WebAudio behind a
 gesture-gated audio context and the device's four-detent volume wheel (V cycles
-MUTE, LOW, MID, HIGH). Unknown scenes are silent until the ledger names them.
+MUTE, LOW, MID, HIGH). Scenes the director does not recognize stay silent.
 All compositions are original, in a D minor palette that resolves to D major at
 the Oracle's crest.
 
 | ID | Used by scenes | Player-facing purpose | Cues/loops and variants | Constraints and acceptance | Status |
 |---|---|---|---|---|---|
 | `opening-soundscape` | `copyright` and all five opening story scenes | Make the dormant-to-Oracle reveal audible and give the credits intentional restraint. | Archival tick, source pulse, archive answer, vault branches, convergence, Oracle cadence, clean tail. | Constrained chip-style palette; starts near silent; fullest arrangement only at the crescendo; reduced-audio variant. | Implemented: dry noise ticks on the four chronicle reveals; voices grow 1 → 2 → 3 → 3 → 4 and peak volume rises across the five beats; every beat tails before its scene exits; a skip cuts the fanfare and the title loop waits 30 ticks. The volume wheel's MUTE/LOW detents are the reduced-audio variant. |
-| `ui-soundscape` | `title`, `quiz-menu`, `character-creation` | Make focus, choice, cancel, customization, and confirmation instantly legible. | Navigate, confirm, cancel, unavailable, trait variants, begin-run cadence. | One input edge produces at most one cue; no cue crosses scenes unintentionally. | Implemented: title and menu loops; name, path, and aura each answer on their own voice or duty; the Oracle motif is reserved for the bind cadence; presses that change nothing get a soft unavailable cue; engine tests script every edge. |
+| `ui-soundscape` | `title`, `quiz-menu`, `codex`, `character-creation` | Make focus, choice, cancel, customization, paging, and confirmation instantly legible. | Navigate, confirm, cancel, unavailable, page turn, trait variants, begin-run cadence. | One input edge produces at most one cue; no cue crosses scenes unintentionally. | Implemented: title and menu loops; name, path, and aura each answer on their own voice or duty; the Oracle motif is reserved for the bind cadence; the Codex has no loop under reading, pages turn on alternating pitches, opening it confirms and leaving it cancels; presses that change nothing, including A/Start in the Codex, get a soft unavailable cue; engine tests script every edge. |
 | `oracle-soundscape` | `oracle` | Separate Datafall play from truthful loading state without overwhelming it. | Low ambience; data, bug, retry, ready, and B-back cues; three progression-tier variants. | Loops stop on quiz/menu transition; status remains readable when muted. | Implemented: the Datafall loop has two, three, and four voices at Initiate, Adept, and Oracle-bound; the 3/6/9 charge and 1/3/5 seal thresholds replace the plain data and bug cues; retry, ready, and leave derive from the truthful status line; B-back cuts the loop on its exit tick. |
-| `quiz-soundscape` | `quiz` | Clarify cursor movement, answer commitment, result, danger, and batch completion. | Cursor, commit, correct, wrong, low-ward, flow-stage, batch-complete cues. | Correct/wrong never rely on sound alone; prevent stacked result cues. | Implemented: every result opens with the same commit click, then plays exactly one variant (rune awaken over flow-stage over correct; ward break over low-ward over wrong); a heartbeat bed runs on the last ward; the review lock is silent; a new cue cancels the previous cue's remaining notes. |
+| `quiz-soundscape` | `quiz` | Clarify cursor movement, answer commitment, result, danger, and batch completion. | Cursor, commit, correct, redeemed, wrong, low-ward, flow-stage, leave-warning, batch-complete cues. | Correct/wrong never rely on sound alone; prevent stacked result cues. | Implemented: every result opens with the same commit click, then plays exactly one variant (rune awaken over redeemed over flow-stage over correct; ward break over low-ward over wrong); a heartbeat bed runs on the last ward; the first B of a leave plays a warning; the lesson card is silent and its ignored presses get no unavailable cue; continuing plays the question reveal; a new cue cancels the previous cue's remaining notes. |
 | `progression-soundscape` | `level-up`, `game-over` | Make thresholds, earned tier, defeat, and reset feel conclusive. | Telegraph, reward cadence per tier, defeat fall, score hold, replay/reset cadence. | Reward arrangement grows by tier; new run audibly returns to Initiate. | Implemented: batch-complete telegraph, then a two/three/four-voice reward cadence that resolves inside the 60-tick hold; tier-specific continuation; defeat fall and a quiet score-hold chord; the replay cadence always uses the thin Initiate timbre. |
 
 ## Whole-game polish matrix
@@ -393,12 +480,19 @@ the Oracle's crest.
 | `oracle-awakening` | Existing high-detail awakening composition becomes the earned final image. | Center luminance rises during the final hold, then clears cleanly to title. | The full four-voice Oracle cadence, tailing before the title. | Elapsed or A/Start lands on a fresh title frame. | Reaches the opening's brightest/densest state after four distinct scenes. | Existing plate retained; five-frame distinctness and luminance arc implemented/tested; audio implemented/tested. |
 | `title` | Restrained Oracle motif and legible title at native scale. | One controlled eye/prompt pulse never competes with title. | A restrained title loop after a clean breath; one confirm cue. | A/Start continues; unavailable cartridge state remains honest. | Returns to an Initiate baseline while preserving the Oracle promise. | Visual template implemented/tested; audio implemented/tested. |
 | `quiz-menu` | Rune frame and shaped focus for both choices. | Focus moves on input edge. | Menu bed plus navigate, confirm, cancel, and unavailable cues. | Begin and back are explicit; held input cannot double-confirm. | New run previews the Initiate palette and reset. | Visual template implemented/tested; audio implemented/tested. |
-| `codex` | Archive frame holds five lens rows and totals; lesson pages hold counter, lens runes, question, answer, and rationale in bounded panels. | Page turns are instant input-edge cuts; there is no idle animation to compete with reading. | Page-turn and back cues; no ambience competes with reading. | B returns to the menu; A/Start are intentionally inactive; paging wraps; the empty journal has explicit guidance. | Runes wake at 1/3/5 evidence per lens and pending reviews clear as misses are redeemed. | Visual template, legacy renderer, and breakpoint tests implemented; page and back cues implemented. |
+| `codex` | Archive frame holds five lens rows and totals; lesson pages hold counter, lens runes, question, answer, and rationale in bounded panels. | Page turns are instant input-edge cuts; there is no idle animation to compete with reading. | Entry confirm, alternating page-turn cues, unavailable cue for A/Start, and back cancel; no ambience competes with reading. | B returns to the menu; A/Start are intentionally inactive; paging wraps; the empty journal has explicit guidance. | Runes wake at 1/3/5 evidence per lens and pending reviews clear as misses are redeemed. | Visual template, legacy renderer, and breakpoint tests implemented; page and back cues implemented. |
 | `character-creation` | Authored hero, pairwise-disjoint identity rows, a grounded stage placement, centered action copy, and Oracle status form one staged composition. | Aura changes the authored colorway; identity rows react immediately; begin has one clean handoff. | Per-row trait timbres and the Oracle-motif begin cadence. | Every row stays centered and contained; B returns; loading/retry/ready states are truthful. | Establishes identity that remains visible across the run. | Native interior, support-line, and sibling-bound assertions implemented; audio implemented/tested. |
 | `oracle` | Sanctum, playfield, status, raw counts, themed charge/containment runes, controls, and tier crest remain distinct. | Exact 3/6/9 gains light charge runes; 1/3/5 hits break containment runes; Datafall and status retain owned exits. | Tier-grown Datafall ambience; data, bug, rune, seal, retry, ready, and leave cues. | Questions-ready enters quiz; B abandons safely; all other controls are intentionally inactive. | Clean play preserves seals while collection fills runes; bond visuals retain all three tiers. | Native meter layout and exact first-breakpoint frame changes implemented/tested; audio implemented/tested. |
-| `quiz` | Question, choices, hero token, ward runes, flow multiplier, Insight Rune meter, raw score, and tier frame remain readable; answer copy clears every ornament. | Cursor, commit, 45-tick review, ward loss, x2/x3 flow, 300/900/1800 rune crossings, and batch threshold have causal timing. | Cursor, one commit-and-result cue, last-ward heartbeat, question reveal. | Green/red answer copy plus ward/flow/rune banners appear without redundant result words; every automatic outcome routes visibly. | Score reward changes mechanically at streak thresholds and earned runes persist into results. | HUD siblings, ward states, exact scoring breakpoints, and choice/plate bounds implemented/tested; audio implemented/tested. |
-| `level-up` | Hero and newly expanded crest dominate; level text supports rather than carries reward. | Crest growth → hero rise → one-second hold → continue; stable background avoids flashing. | Batch telegraph, tier-grown reward cadence, tier continuation cue. | A/Start is inactive for 60 ticks, then routes to ready quiz or Oracle wait. | Explicit threshold celebration establishes the new visual baseline. | Visual template/progression implemented/tested; audio implemented/tested. |
+| `quiz` | Question, choices, hero token, ward runes, flow multiplier, Insight Rune meter, raw score, and tier frame remain readable; answer copy clears every ornament; the lesson card holds worst-case rationales, `-`/`+` verdict markers, and the lens-rune footer inside one panel. | Cursor, commit, 45-tick lesson-card hold, ward loss, x2/x3 flow, 300/900/1800 rune crossings, and batch threshold have causal timing. | Cursor, one commit-and-result cue (including redeemed), leave warning, last-ward heartbeat, question reveal; the lesson card itself is silent. | The lesson card shows the misconception and answer rationales under the ward/flow/rune/`REDEEMED` banner, then waits for A/Start; B leaves only on a second press within 90 ticks; every automatic outcome routes visibly. | Score reward changes mechanically at streak thresholds, lens runes wake on the card footer, and earned runes persist into results. | HUD siblings, ward states, exact scoring breakpoints, choice/plate bounds, and lesson-card containment and contrast implemented/tested; audio implemented/tested. |
+| `level-up` | Hero and newly expanded crest dominate; level text supports rather than carries reward. | Crest growth → hero rise → one-second hold → continue; stable background avoids flashing. | Batch telegraph, tier-grown reward cadence, tier continuation cue. | A/Start wait for the manifest's 60-tick gate, then route to a ready quiz or the Oracle wait; the scene continues on its own at 180 ticks. | Explicit threshold celebration establishes the new visual baseline. | Visual template/progression implemented/tested; audio implemented/tested. |
 | `game-over` | Defeated hero, final score, Insight Rune rank, level, and earned crest share one conclusive frame. | Energy recedes without erasing earned bond or score rank; replay resets both on the next run. | Defeat fall, score-hold chord, Initiate replay cadence. | The visible A/B/Start prompt returns to menu; the next new run resets all run state. | Shows the exact bond and Insight Rune stages reached before reset. | Visual template/progression and score-rune result implemented/tested; audio implemented/tested. |
+
+Reduced motion applies to every row above. The shell forwards the system's
+`prefers-reduced-motion` preference, and the engine then freezes its decorative
+motion clock: blinking prompts stay lit, heroes stop bobbing, starfields stop
+scrolling, and settling motions show their end state. Scene timing, timing
+gates, input, sound, and data are unchanged, so each row's information and
+duration survive the reduced variant. There is no in-game toggle.
 
 ## Runtime traceability
 
@@ -406,20 +500,22 @@ the Oracle's crest.
 |---|---|---|
 | Manifest title and `quiz`/`quest` type | Implemented | Parsed at cartridge load and used by the engine. |
 | Scene graph | Configured/executable | Schema-v2 handlers and semantic transitions are validated, compiled, and executed by the engine. |
-| Mechanic and presentation graph | Mixed | Mechanics and audio art entries remain metadata (sound is engine-owned per trusted handler); typed visual templates are parsed, validated, and executed by scene renderers. |
+| Mechanic and presentation graph | Mixed | Mechanics and `kind = "audio"` art entries remain validated metadata: the engine derives sound from state per trusted handler, and no manifest field selects or changes it. Typed visual templates are parsed, validated, and executed by scene renderers. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
+| Question generation | Implemented | Each request carries the anonymized project brief (`repo_context.rs`: README, design notes, manifest summary, and up to 30 `COMPONENT n` skeletons with every path withheld) and the learner state (weakest lens, up to 24 earlier stems) to the selected CLI on stdin under a 120-second process-tree deadline. Payload v2 requires a known lens and a fitting, location-free rationale for every choice; failing questions are dropped individually, and a short delivery tops the open batch up to a full six. |
+| Level focus and transfer prompts | Implemented in the prompt | `Concept::focus_for_level` asks for at least four of six questions on the level's focus lenses, and level 4+ asks for at least two PREDICT questions. Acceptance checks that each question names a known lens; it does not enforce the focus share or the `PREDICT:` prefix. |
 | Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
 | Copyright and five-scene opening story | Implemented with asset-backed templates | Trusted Bevy handlers render the chronicle, source ember, archive answer, memory vault, convergence, and Oracle awakening before `Title`; manifest timing gates control per-scene auto-advance and direct skip while fanfare/title frames remain separate. |
 | Title, menu, hero creation, Oracle, quiz, level-up, and game-over screens | Implemented | Trusted handlers own input and rendering while the manifest routes their semantic events. |
 | First request, prefetch, invalid-batch retry, and Oracle hold | Implemented | Engine question effects, pending batches, and retry timer. |
-| Oracle Datafall with safe recovery | Implemented in this pass | Held movement, authored drops, automatic counters, 3/6/9 charge runes, 1/3/5 breakable containment runes, split HUD, and B-back close the indefinite wait. |
-| Themed run instrumentation and score thresholds | Implemented in this pass | Oracle ward glyphs replace stars; x1/x2/x3 flow changes score awards; 300/900/1800 Insight Runes change HUD and review feedback; exact breakpoints and native sibling bounds are tested. |
+| Oracle Datafall with safe recovery | Implemented | Held movement, authored drops, automatic counters, 3/6/9 charge runes, 1/3/5 breakable containment runes, split HUD, and B-back close the indefinite wait. |
+| Themed run instrumentation and score thresholds | Implemented | Oracle ward glyphs replace stars; x1/x2/x3 flow changes score awards; 300/900/1800 Insight Runes change HUD and review feedback; exact breakpoints and native sibling bounds are tested. |
 | Safe Oracle-to-quiz input boundary | Implemented | A/Start are ignored in Oracle; B exits to the menu; held D-pad controls have no answer action after the automatic transition. |
-| Quiz result and reward input boundaries | Implemented in this pass | The 45-tick lesson hold replaces active controls and then waits for A/Start; B leaves an active question only through a 90-tick confirmation; level-up enforces a 60-tick hold before A/Start can leave. |
-| Lesson card, shuffled choices, and spaced retry | Implemented in this pass | Committed answers show the misconception and answer rationales in a composed lesson panel; display order follows `learning::presentation_order`; misses return within the batch; mastery and the lesson journal update on every commitment. Native layout, contrast, and flow tests cover worst-case copy. |
-| Answered-question continuity | Implemented | Answer commitment records question text under `quiz.progress`; cartridge reload compares normalized text and filters recorded questions while serialized save updates preserve the independent AI-batch namespace and read the legacy Claude key. |
+| Quiz result and reward input boundaries | Implemented | The 45-tick lesson hold replaces active controls and then waits for A/Start; B leaves an active question only through a 90-tick confirmation. Level-up continuation asks the scene graph (`can_signal`), so the manifest's `after_ticks` sets both the input hold and the continue prompt (60 ticks here); the scene continues on its own at 180 ticks. |
+| Lesson card, shuffled choices, and spaced retry | Implemented | Committed answers show the misconception and answer rationales in a composed lesson panel; display order follows `learning::presentation_order`; a survivable miss inserts a review copy after up to `RETRY_GAP` (3) questions inside the current batch; mastery and the lesson journal update on every commitment. Native layout, contrast, and flow tests cover worst-case copy (`lesson_cards_render_the_misconception_and_the_answer`, `a_missed_concept_is_journaled_retried_redeemed_and_reread_in_the_codex`). |
+| Learner persistence | Implemented | Each commitment updates `quiz.progress` in one atomic save update: a correct answer moves the question to the retired list, a miss to the missed list (the latest attempt decides), and lens mastery records first-try, redeemed, and missed counts. Cartridge load drops retired questions, queues missed ones as reviews, journals both, and plays lower-level batches first. Serialized updates preserve the independent AI-batch namespace; answered lists from earlier builds load as retired, and the legacy Claude batch key is still read. |
 | Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
-| Concise answer review and reduced motion | Partially implemented | Green/red answer copy, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
+| Concise answer review and reduced motion | Implemented | Green/red lesson copy with `-`/`+` markers, shaped focus, stable level-up, and staged opening motion are implemented. The shell forwards the system's `prefers-reduced-motion` preference (`engine_set_reduced_motion`), and the engine freezes decorative motion while scene timing, input, and data stay identical (`reduced_motion_freezes_decorative_motion_but_keeps_scene_timing`). There is no in-game toggle. |
 | Visual templates selected from manifest | Implemented | Twelve typed built-in templates are selected by `art[].template`; `oracle-awakening` selects five art-ID-addressed opening plates, other Oracle templates composite their native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
 | Oracle Codex lesson journal | Implemented | The `codex` handler and `open-codex` menu signal route the menu to a read-only mastery-and-lesson journal; menus without the route keep `RETURN TO TITLE`. |
 | Whole-game sound design and playback | Implemented | The engine's audio director derives every cue and scene loop from per-tick state snapshots and publishes tick-stamped chip notes through the bounded `engine_audio` queue; the shell speaker plays them behind a gesture-gated context and the persisted volume wheel. Scenes still select audio by trusted handler, not by manifest template. |
@@ -439,11 +535,12 @@ the Oracle's crest.
 4. **Completed — FSM closure pass:** Add Oracle B-back recovery, own the quiz
    answer-review lock, enforce the level-up hold, display every accepted
    game-over input, and test runtime/template/manifest routes.
-5. **Partially completed — Feedback/accessibility pass:** Correctness labels,
-   shaped focus, staged motion, and native-scale assertions are implemented; a
-   user-facing reduced-motion setting remains.
-6. **Continuity pass:** Show the previous lesson and batch status during a wait
-   using state the engine already owns.
+5. **Completed — Feedback/accessibility pass:** Correctness labels and
+   markers, shaped focus, staged motion, native-scale assertions, and reduced
+   motion that follows the system preference are implemented.
+6. **In progress — Continuity pass:** Show the previous lesson and batch status
+   during a wait using state the engine already owns, beginning with a
+   Datafall recall line that is being implemented now.
 7. **Completed — Whole-game presentation pass:** Twelve typed built-in visual
    templates cover all fourteen reachable scenes, beginning with the dormant
    `copyright-card` and culminating in the fifth opening beat's Oracle
@@ -452,24 +549,37 @@ the Oracle's crest.
    every entry in the sound ledger with scene-owned loop exits, one cue per
    input edge, and tier-grown arrangements; manifest-selected audio templates
    remain future work.
-9. **Partially completed — Felt-progression pass:** Tiered visuals carry the
-   crest, palette, circuit density, and hero identity across Oracle, quiz,
-   reward, and results; tiered audio remains part of the sound runtime pass.
+9. **Completed — Felt-progression pass:** Tiered visuals carry the crest,
+   palette, circuit density, and hero identity across Oracle, quiz, reward, and
+   results, and the Datafall and reward arrangements gain a voice per tier.
 10. **Completed — Executable scene graph:** Add schema v2 handlers, semantic
    transitions, timing gates, reachability validation, built-in quiz/quest
    templates, and schema-v1 compatibility.
-11. **Completed — Answered-question continuity:** Record committed questions in
-    the cartridge save, filter them on later runs and launches, and serialize
-    namespace updates so background batch writes cannot erase progress.
+11. **Completed — Answered-question continuity:** Record committed answers in
+    the cartridge save, retire correct answers for later runs and launches,
+    keep misses queued for review until redeemed, and serialize namespace
+    updates so background batch writes cannot erase progress.
 12. **Completed — Instrument and threshold pass:** Replace generic health pips
     with Oracle ward runes; attach exact stages to flow, score, Datafall charge,
     corruption containment, batches, and bond; verify native layout and exact
     breakpoint transitions.
+13. **Completed — Learning-model pass:** Tag questions with concept lenses and
+    per-choice rationales (payload v2), replace the answer review with the
+    lesson card, shuffle choices per question and attempt, schedule spaced
+    retries inside the batch, record lens mastery and the lesson journal, add
+    the Oracle Codex, deepen lens focus by level with PREDICT transfer at level
+    4+, and adapt each request to the weakest lens and earlier stems.
 
 ## Open decisions
 
-- Beyond answered-question history, should score, wards, hero identity, or
-  presentation tier persist per cartridge across launches?
+- Beyond learner progress (retired and missed questions, lens mastery), should
+  score, wards, hero identity, or presentation tier persist per cartridge
+  across launches?
+- Should the runtime show a distinct mastered state for a lens with three runes
+  and no pending review, or keep the two signals separate as they are now?
+- Should acceptance enforce the level's focus-lens share and the PREDICT count,
+  rejecting or topping up a batch that misses them, or keep both as prompt
+  guidance?
 
 Resolved: every choice carries a short rationale shown on the lesson card, and
 B from an active quiz uses an in-scene 90-tick confirmation before leaving.

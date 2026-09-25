@@ -60,6 +60,13 @@ or motion only when the silence/stillness has a purpose and a defined handoff.
 - Ensure entering and exiting frames share a motif or deliberately clear it.
 - Provide a reduced-motion version with equivalent information and duration;
   avoid full-frame flashes as a substitute for impact.
+- In the CODE QUEST engine, reduced motion follows the system preference: the
+  shell forwards `prefers-reduced-motion`, and renderers draw decorative motion
+  from a frozen clock (`motion_ticks`), show settling motions at their end state
+  (`settled_ticks`), and keep blinking prompts lit (`blink_lit`), while scene
+  timing, input, and data use the real clock. Specify the resting composition
+  each scene shows under that freeze, and keep state changes out of the
+  decorative clock so they survive it.
 
 ### Sound design
 
@@ -73,6 +80,15 @@ or motion only when the silence/stillness has a purpose and a defined handoff.
   fullest arrangement for earned peaks.
 - Specify muted and reduced-audio behavior. Never make sound the only carrier of
   required information.
+- In the CODE QUEST engine, sound is derived from state, like rendering. The
+  audio director (`src-tauri/src/audio.rs`) compares each tick's state snapshot
+  with the previous one and chooses at most one cue per tick by priority, owns
+  each scene's loop and cuts it on the exit tick, and grows the Datafall and
+  reward arrangements by presentation tier; the shell speaker only plays the
+  notes, behind a MUTE/LOW/MID/HIGH volume wheel. Specify each cue as the state
+  change that triggers it, not as a button handler, and record audio tests as
+  evidence. The manifest has no sound schema: audio art entries remain the
+  production requirements, and a new cue or loop is engine work.
 
 ### Mechanical closure
 
@@ -88,6 +104,10 @@ animation whose skip path bypasses required initialization.
 - Give loading, empty, offline/disabled, invalid-data, timeout, and retry states
   honest behavior when they are possible.
 - Make success, failure, back, replay, and abandon paths explicit.
+- Give feedback holds an owned exit. The quiz lesson card ignores input for its
+  45-tick hold and then waits for a fresh A or Start; a reward hold is set by
+  the manifest's `after_ticks` gate, and its prompt appears only when the scene
+  graph would accept the continuation.
 - Verify input-edge behavior across transitions and deterministic state reset on
   new runs.
 - Test graph reachability and event closure; reachability alone is insufficient.
@@ -107,7 +127,9 @@ animation whose skip path bypasses required initialization.
   counts. For each, name the desirable direction, reachable range, breakpoints,
   staged reward or consequence, crossing feedback, cap, and reset. If changing
   the number has no meaningful threshold response, remove it from the HUD or
-  turn it into a real system.
+  turn it into a real system. Include learning metrics that outlive a run: in
+  CODE QUEST quizzes, per-lens mastery runes (1/3/5 evidence) and pending
+  reviews persist per cartridge and never reset with a new run.
 - Test the values immediately below, at, and above every threshold. Include
   decreasing metrics so danger, recovery, and low-value mastery receive staged
   feedback rather than only a terminal zero state.

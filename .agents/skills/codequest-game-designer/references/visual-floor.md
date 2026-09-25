@@ -62,7 +62,10 @@ palette to otherwise sparse geometry.
    High-resolution concept art is not evidence until the 240×160 frame passes.
 8. Compile the PNGs into the runtime format, render every reachable scene, and
    inspect credits, opening stages, title, menus, gameplay, rewards, failure,
-   and replay.
+   and replay. Include the states layered over a shared plate: the quiz lesson
+   card (missed, correct, legacy, and worst-case rationale copy) and both Oracle
+   Codex layouts (mastery over the archive plate, lessons over the trial
+   plate) with empty-journal and missing-rationale states.
 9. Run layout checks on the final native composite with worst-case live strings
    and counters. Fail the build when text or focus exceeds its usable interior,
    any pair of live/static foreground siblings overlaps, a plate ornament enters
@@ -99,6 +102,8 @@ number.
 - Is the brightest/densest region meaningful?
 - Can focus, correctness, and failure change without repainting the source?
 - Does the scene remain legible in grayscale and when audio is muted?
+- Does the resting composition carry every state when reduced motion freezes
+  decorative motion and keeps blinking prompts lit?
 - Do all live bounds remain inside their containers without intersecting other
   foreground content?
 - Is every centered or aligned element positioned relative to its measured art

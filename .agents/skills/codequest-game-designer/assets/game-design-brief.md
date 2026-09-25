@@ -51,6 +51,12 @@ without copying the original solution?]
 | Assessment | | | | |
 | Transfer | | | | |
 
+[For a quiz cartridge, cite the runtime mechanisms each stage relies on—concept
+lenses and per-choice rationales, the lesson card, shuffled choices, spaced
+retry and redemption, lens mastery runes, the Oracle Codex, level focus
+lenses, and PREDICT transfer questions—and mark any stage that needs new
+engine work as proposed.]
+
 ## Scene storyboard
 
 | ID | Purpose | Learning role | Entry state | Player actions | State/feedback | Exit and next scenes | Mechanics | Art |
@@ -80,6 +86,12 @@ without copying the original solution?]
 
 ## Sound requirement ledger
 
+[Sound needs are `art.kind = "audio"` entries; the manifest has no sound schema
+or audio template. In the CODE QUEST engine the audio director derives cues and
+scene loops from game state per trusted handler. Describe each cue by the state
+change that triggers it, and record whether the director implements it
+(Implemented, with its audio test) or needs engine work (Needed).]
+
 | ID | Used by scenes | Player-facing purpose | Cues/loops and variants | Constraints and acceptance | Status |
 |---|---|---|---|---|---|
 | `sound-id` | | | | | Needed |
@@ -89,6 +101,9 @@ without copying the original solution?]
 | Scene | Static | Motion | Sound | Mechanical closure | Felt progression | Evidence/status |
 |---|---|---|---|---|---|---|
 | `scene-id` | | | | | | Proposed |
+
+[State the reduced-motion resting composition for any scene whose motion
+carries meaning; the engine freezes decorative motion but not scene timing.]
 
 ## Runtime traceability
 

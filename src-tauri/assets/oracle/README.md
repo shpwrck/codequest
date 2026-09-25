@@ -12,7 +12,7 @@ templates selected by `art[].template` in `CODEQUEST.toml`.
 | `oracle-atelier` | `atelier.png` | Hero, customization values, truthful generation status, focus |
 | `oracle-hero` | `hero-*.png`, `portrait-*.png` | Selected authored colorway with no procedural accessory or weapon overlays |
 | `oracle-sanctum` | `sanctum.png`, `drop-*.png` | Authored Datafall collectibles/hazards, hero movement, raw counts, 3/6/9 charge runes, 1/3/5 containment breaches, status, tier grading |
-| `oracle-trial` | `trial.png` | Question, choices, focus, Oracle ward runes, x1/x2/x3 flow, 300/900/1800 Insight Runes, raw score, correctness, review lock |
+| `oracle-trial` | `trial.png` | Question, shuffled choices, focus, Oracle ward runes, x1/x2/x3 flow, 300/900/1800 Insight Runes, raw score, and the lesson card: committed pick and answer with rationales, `-`/`+` verdict markers, lens mastery footer, and continue prompt |
 | `oracle-ascension` | `ascension.png` | Hero rise, earned tier, level, batch, hold/continue state |
 | `oracle-aftermath` | `aftermath.png` | Defeated hero, final score, earned tier, replay prompt |
 | `oracle-progression` | shared plates | Cyan/gold balance, hero identity, and earned tier across the run |
@@ -61,6 +61,9 @@ runtime buffers and refuses incorrect dimensions or byte counts.
   restrained cyan ember, opens the archive, carries the code-seer into the
   memory vault, adds gold at convergence, and reveals the complete Oracle only
   in `awakening.png` at the crescendo.
+- Runtime motion over a plate (bobbing heroes, pulsing prompts, scrolling
+  stars) is decorative. Under reduced motion the renderer draws its resting
+  composition, so every plate and live state must read without it.
 - Every reachable scene, including the repository chronicle and aftermath, must
   meet this floor at native resolution. A procedural palette swap is not an
   acceptable substitute for an illustrated plate.
