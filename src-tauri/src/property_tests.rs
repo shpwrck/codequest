@@ -154,6 +154,20 @@ fn slot_of(order: [usize; 4], source: usize) -> usize {
         .expect("every source choice has a slot")
 }
 
+/// The app's acceptance of one reply before any repair: accepted questions, or
+/// an error when none survive.
+fn parse_generated_questions(
+    response: &str,
+    count: usize,
+) -> Result<Vec<questions::QQuestion>, String> {
+    let batch = questions::parse_generated_batch(response, count)?;
+    if batch.accepted.is_empty() {
+        Err("INCOMPLETE OR INVALID QUESTIONS".to_string())
+    } else {
+        Ok(batch.accepted)
+    }
+}
+
 #[test]
 fn presentation_order_is_a_stable_permutation_that_moves_every_choice_on_retry() {
     for (case, mut rng) in cases(0x0DE5, CASES) {
@@ -728,7 +742,7 @@ fn provider_replies_yield_only_questions_that_pass_the_acceptance_policy() {
         let response = provider_response(&mut rng);
         let count = rng.range(0, 8);
         let context = format!("case {case}, count {count}: {response}");
-        match questions::parse_generated_questions(&response, count) {
+        match parse_generated_questions(&response, count) {
             Ok(accepted) => {
                 accepted_replies += 1;
                 assert_accepted_batch(&accepted, count, &context);
@@ -736,7 +750,7 @@ fn provider_replies_yield_only_questions_that_pass_the_acceptance_policy() {
                 // itself, so saved questions never drift between builds.
                 let again = serde_json::to_string(&accepted).unwrap();
                 assert_eq!(
-                    questions::parse_generated_questions(&again, accepted.len()),
+                    parse_generated_questions(&again, accepted.len()),
                     Ok(accepted.clone()),
                     "{context}"
                 );
@@ -776,7 +790,7 @@ fn provider_reply_parsing_never_panics_on_garbage_or_truncation() {
         };
         let count = rng.range(0, 8);
         let context = format!("case {case}, count {count}: {response:?}");
-        match questions::parse_generated_questions(&response, count) {
+        match parse_generated_questions(&response, count) {
             Ok(accepted) => assert_accepted_batch(&accepted, count, &context),
             Err(error) => assert!(PARSE_ERRORS.contains(&error.as_str()), "{error}: {context}"),
         }
@@ -865,6 +879,7 @@ fn cartridge_queue_skips_retired_questions_and_orders_batches_by_level() {
             answered_questions: listed_questions(&mut rng),
             missed_questions: listed_questions(&mut rng),
             mastery: arbitrary_mastery(&mut rng),
+            ..SavedQuizProgress::default()
         };
         let context = format!("case {case}: {batches:?}\n{progress:?}");
 
