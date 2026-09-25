@@ -110,6 +110,12 @@ for (const transient of [
   "DIRECTORY NOT FOUND",
   "BEVY ENGINE STOPPED",
   "CANNOT READ CODEQUEST.toml: denied",
+  // Git that could not answer says nothing about the folder (lib.rs
+  // git_repo_check_within), and a damaged save is the player's to repair.
+  "GIT CALL TIMED OUT",
+  "GIT CLI UNAVAILABLE - NOT FOUND",
+  "GIT CALL FAILED - FATAL: CANNOT CHANGE TO 'D:\\REPO': PERMISSION DENIED",
+  "CARTRIDGE SAVE IS CORRUPT",
   null,
 ]) {
   assert.equal(isRefusedCartridgeError(transient), false, `${transient} must not recycle a cartridge`);
