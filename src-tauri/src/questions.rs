@@ -22,10 +22,11 @@ pub(crate) const QUIZ_PROGRESS_KEY: &str = "quiz.progress";
 /// Previously generated stems the prompt lists so a provider does not repeat
 /// them.
 pub(crate) const MAX_AVOIDED_STEMS: usize = 24;
-/// Upper bound for a whole generation prompt. Prompts travel as one command
-/// line argument, and Windows limits a command line to 32767 UTF-16 units, so
-/// this leaves room for the program path, the other arguments, and quoting.
-pub(crate) const MAX_PROMPT_CHARS: usize = 30_000;
+/// Upper bound, in bytes, for a whole generation prompt. Prompts travel on the
+/// provider's stdin, so no command-line limit applies; this cap only keeps a
+/// request proportionate. It leaves the instructions and learner state room
+/// beside a brief that fills its own budget, so a full brief is never trimmed.
+pub(crate) const MAX_PROMPT_BYTES: usize = 2 * crate::repo_context::BRIEF_BUDGET;
 
 /// One answer choice. Payload v2 pairs the text with `why`: for the correct
 /// choice, why it holds; for a distractor, the misconception it represents.
@@ -711,14 +712,17 @@ fn saved_batch(value: serde_json::Value) -> Option<SavedQuestionBatch> {
 /// Saved batches, oldest first: batches from the legacy Claude-only key
 /// predate every batch under the provider-neutral key.
 pub(crate) fn load_saved_question_batches(path: &Path) -> Result<Vec<SavedQuestionBatch>, String> {
-    let save = save::SaveFile::open_or_create(path)?;
-    Ok(
-        [LEGACY_CLAUDE_QUESTION_BATCHES_KEY, AI_QUESTION_BATCHES_KEY]
-            .into_iter()
-            .flat_map(|key| save.get::<Vec<serde_json::Value>>(key).unwrap_or_default())
-            .filter_map(saved_batch)
-            .collect(),
-    )
+    Ok(saved_question_batches(&save::SaveFile::open_or_create(
+        path,
+    )?))
+}
+
+fn saved_question_batches(save: &save::SaveFile) -> Vec<SavedQuestionBatch> {
+    [LEGACY_CLAUDE_QUESTION_BATCHES_KEY, AI_QUESTION_BATCHES_KEY]
+        .into_iter()
+        .flat_map(|key| save.get::<Vec<serde_json::Value>>(key).unwrap_or_default())
+        .filter_map(saved_batch)
+        .collect()
 }
 
 pub(crate) fn persist_ai_question_batch(
@@ -745,9 +749,12 @@ pub(crate) fn persist_ai_question_batch(
 }
 
 pub(crate) fn load_quiz_progress(path: &Path) -> Result<SavedQuizProgress, String> {
-    Ok(save::SaveFile::open_or_create(path)?
-        .get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
-        .unwrap_or_default())
+    Ok(quiz_progress(&save::SaveFile::open_or_create(path)?))
+}
+
+fn quiz_progress(save: &save::SaveFile) -> SavedQuizProgress {
+    save.get::<SavedQuizProgress>(QUIZ_PROGRESS_KEY)
+        .unwrap_or_default()
 }
 
 pub(crate) fn load_retired_questions(path: &Path) -> Result<HashSet<String>, String> {
@@ -824,10 +831,12 @@ pub(crate) fn cartridge_questions(
     loaded
 }
 
+/// Everything a cartridge load needs from its save, from one read of it.
 pub(crate) fn load_cartridge_questions(path: &Path) -> Result<CartridgeQuestions, String> {
+    let save = save::SaveFile::open_or_create(path)?;
     Ok(cartridge_questions(
-        load_saved_question_batches(path)?,
-        load_quiz_progress(path)?,
+        saved_question_batches(&save),
+        quiz_progress(&save),
     ))
 }
 
@@ -974,14 +983,9 @@ pub(crate) fn ai_question_prompt(
     )
 }
 
-/// Characters `prompt` occupies on a Windows command line, where argument
-/// quoting escapes every double quote and backslash.
-pub(crate) fn command_line_chars(prompt: &str) -> usize {
-    prompt.chars().count() + prompt.matches(['"', '\\']).count()
-}
-
-/// [`ai_question_prompt`], shortening the project brief when needed so the
-/// whole prompt stays within [`MAX_PROMPT_CHARS`].
+/// [`ai_question_prompt`], shortening the project brief at a character
+/// boundary when needed so the whole prompt stays within
+/// [`MAX_PROMPT_BYTES`]. A brief within its own budget is never shortened.
 pub(crate) fn bounded_ai_question_prompt(
     project_name: &str,
     level: u32,
@@ -992,7 +996,7 @@ pub(crate) fn bounded_ai_question_prompt(
     let mut brief = project_brief;
     loop {
         let prompt = ai_question_prompt(project_name, level, count, brief, learner);
-        let overflow = command_line_chars(&prompt).saturating_sub(MAX_PROMPT_CHARS);
+        let overflow = prompt.len().saturating_sub(MAX_PROMPT_BYTES);
         if overflow == 0 || brief.is_empty() {
             return prompt;
         }
@@ -1976,23 +1980,32 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_full_prompt_fits_a_windows_command_line() {
+    fn a_full_brief_fits_the_prompt_budget_and_oversized_briefs_are_trimmed() {
         let brief = "X".repeat(crate::repo_context::BRIEF_BUDGET);
         let learner = LearnerState {
             weakest: Some(Concept::Responsibility),
             asked: vec!["Q".repeat(4 * engine::QUIZ_QUESTION_COLUMNS); MAX_AVOIDED_STEMS],
         };
-        let prompt = ai_question_prompt("A PROJECT NAME OF SOME LENGTH", 4, 6, &brief, &learner);
-        let length = command_line_chars(&prompt);
+        let name = "A PROJECT NAME OF SOME LENGTH";
+        let prompt = ai_question_prompt(name, 4, 6, &brief, &learner);
         assert!(
-            length <= MAX_PROMPT_CHARS,
-            "a full brief fits untrimmed: {length}"
+            prompt.len() <= MAX_PROMPT_BYTES,
+            "a full brief fits untrimmed: {}",
+            prompt.len()
+        );
+        assert_eq!(
+            bounded_ai_question_prompt(name, 4, 6, &brief, &learner),
+            prompt
         );
 
-        let quoted = "\"\\".repeat(crate::repo_context::BRIEF_BUDGET / 2);
-        let bounded = bounded_ai_question_prompt("DEMO", 4, 6, &quoted, &learner);
-        assert!(command_line_chars(&bounded) <= MAX_PROMPT_CHARS);
-        assert!(bounded.contains("PROJECT: DEMO\n\"\\"));
+        let oversized = "\u{e9}".repeat(MAX_PROMPT_BYTES);
+        let bounded = bounded_ai_question_prompt("DEMO", 4, 6, &oversized, &learner);
+        assert!(bounded.len() <= MAX_PROMPT_BYTES, "{}", bounded.len());
+        assert!(bounded.contains("PROJECT: DEMO\n\u{e9}\u{e9}"));
+        assert!(
+            bounded.len() > MAX_PROMPT_BYTES - 4,
+            "trims only the excess"
+        );
         assert_eq!(
             bounded_ai_question_prompt("DEMO", 1, 6, "BRIEF", &learner),
             ai_question_prompt("DEMO", 1, 6, "BRIEF", &learner)
