@@ -1694,6 +1694,68 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn saved_batches_queue_easiest_first_while_the_journal_stays_chronological() {
+        let question = |text: &str| QQuestion {
+            q: text.into(),
+            ..engine_state_question()
+        };
+        // A run ended with a prefetched Oracle-bound batch unplayed, and an
+        // Initiate batch was generated later.
+        let batches = vec![
+            SavedQuestionBatch {
+                level: 4,
+                questions: vec![question("PREDICT: WHAT IF THE ENGINE LOST STATE?")],
+            },
+            SavedQuestionBatch {
+                level: 1,
+                questions: vec![
+                    question("WHAT IS THE PROJECT FOR?"),
+                    question("WHO OWNS THE RULES?"),
+                ],
+            },
+        ];
+        let mut progress = SavedQuizProgress::default();
+        progress.record(&evidence(
+            "PREDICT: WHAT IF THE ENGINE LOST STATE?",
+            None,
+            false,
+        ));
+        progress.record(&evidence("WHAT IS THE PROJECT FOR?", None, false));
+
+        let loaded = cartridge_questions(batches, progress);
+
+        let queued = loaded
+            .questions
+            .iter()
+            .map(|question| question.question.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            queued,
+            [
+                "WHAT IS THE PROJECT FOR?",
+                "WHO OWNS THE RULES?",
+                "PREDICT: WHAT IF THE ENGINE LOST STATE?",
+            ],
+            "a new Initiate run meets Initiate questions first"
+        );
+        assert_eq!(loaded.batch_ends, [2, 3]);
+        assert_eq!(loaded.batch_levels, [1, 4]);
+        let journal = loaded
+            .lessons
+            .iter()
+            .map(|lesson| lesson.question.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            journal,
+            [
+                "PREDICT: WHAT IF THE ENGINE LOST STATE?",
+                "WHAT IS THE PROJECT FOR?"
+            ],
+            "the journal keeps generation order"
+        );
+    }
+
+    #[test]
     fn cartridge_load_retires_answers_reviews_misses_and_journals_both() {
         let batches: Vec<SavedQuestionBatch> = serde_json::from_str(LEGACY_BATCHES).unwrap();
         let mut explained = engine_state_question();

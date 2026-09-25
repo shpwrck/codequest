@@ -184,6 +184,8 @@ pub enum AudioScene {
     Battle,
     Victory,
     Defeat,
+    /// The read-only Oracle Codex: page turns only, no ambience under reading.
+    Codex,
     /// A scene the sound design does not know yet. It is always silent.
     #[default]
     Unlisted,
@@ -240,6 +242,10 @@ pub struct RunAudio {
     pub insight: usize,
     pub level: u32,
     pub completed_batches: usize,
+    /// The committed answer redeemed a previously missed question.
+    pub redeemed: bool,
+    /// A first B press has armed the leave confirmation.
+    pub leave_armed: bool,
 }
 
 /// Everything sound may react to, sampled once per engine tick. New scenes and
@@ -258,6 +264,8 @@ pub struct AudioSnapshot {
     pub hero_class: usize,
     pub hero_style: usize,
     pub quest_selected: usize,
+    /// The Codex page on screen (0 is the mastery overview).
+    pub codex_page: usize,
     pub run: Option<RunAudio>,
     pub data: u32,
     /// Data-charge runes lit (0-3).
@@ -284,6 +292,7 @@ impl AudioSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cue {
     Navigate(usize),
+    PageTurn(usize),
     Confirm,
     Cancel,
     Unavailable,
@@ -300,6 +309,8 @@ pub enum Cue {
     QuestionReveal,
     Cursor(usize),
     Correct,
+    Redeemed,
+    LeaveWarning,
     FlowUp(u32),
     RuneAwaken(usize),
     Wrong,
@@ -317,14 +328,19 @@ impl Cue {
     fn priority(self) -> u8 {
         match self {
             Self::Unavailable => 1,
-            Self::Navigate(_) | Self::Cursor(_) | Self::Trait { .. } | Self::QuestionReveal => 2,
+            Self::Navigate(_)
+            | Self::PageTurn(_)
+            | Self::Cursor(_)
+            | Self::Trait { .. }
+            | Self::QuestionReveal => 2,
+            Self::LeaveWarning => 5,
             Self::DataCollect(_) => 3,
             Self::BugHit => 4,
             Self::Retry => 5,
             Self::Ready | Self::ChargeRune(_) => 6,
             Self::SealBreak(_) => 7,
             Self::Correct | Self::Wrong => 8,
-            Self::FlowUp(_) | Self::LowWard => 9,
+            Self::Redeemed | Self::FlowUp(_) | Self::LowWard => 9,
             Self::RuneAwaken(_) | Self::WardBreak => 10,
             Self::Confirm
             | Self::Cancel
@@ -440,6 +456,29 @@ impl Cue {
             Self::QuestionReveal => {
                 vec![tone(0, Wave, D5, 6, 7), tone(6, Wave, A5, 10, 7).decay(2)]
             }
+            // A dry leaf-turn: a noise swish under a soft pulse that alternates
+            // pitch so paging feels directional without any ambience.
+            Self::PageTurn(page) => vec![
+                tone(0, Noise, NOISE_HAT, 3, 5).decay(1),
+                tone(1, Pulse2, [D5, E5][page % 2], 4, 7)
+                    .duty(Duty::Eighth)
+                    .decay(1),
+            ],
+            // Two falling notes ask the question without committing to it.
+            Self::LeaveWarning => vec![
+                tone(0, Pulse1, E5, 4, 8).duty(Duty::Quarter),
+                tone(6, Pulse1, BB4, 8, 8).duty(Duty::Quarter).decay(1),
+            ],
+            // The miss resolves: the correct cadence climbs past its old peak
+            // to the Oracle's A, with the wave voice confirming the root.
+            Self::Redeemed => commit_then(vec![
+                tone(2, Pulse1, A4, 4, 11),
+                tone(6, Pulse1, D5, 4, 11),
+                tone(10, Pulse1, F5, 4, 11),
+                tone(14, Pulse1, A5, 16, 12).decay(2),
+                tone(14, Pulse2, D5, 16, 8).duty(Duty::Quarter).decay(2),
+                tone(2, Wave, D3, 28, 9),
+            ]),
             Self::Cursor(slot) => {
                 vec![tone(0, Pulse1, [A5, G5, F5, E5][slot % 4], 3, 8).decay(1)]
             }
@@ -1053,11 +1092,13 @@ fn entry_cue(before: &AudioSnapshot, after: &AudioSnapshot) -> Option<Cue> {
     }
     match (before.scene, after.scene) {
         (Scene::Title, Scene::QuizMenu | Scene::QuestSelect)
-        | (Scene::QuizMenu, Scene::CharacterCreation)
+        | (Scene::QuizMenu, Scene::CharacterCreation | Scene::Codex)
         | (Scene::QuestSelect, Scene::Battle)
         | (Scene::Victory | Scene::Defeat, _) => Some(Cue::Confirm),
         (Scene::QuizMenu | Scene::QuestSelect, Scene::Title)
-        | (Scene::CharacterCreation | Scene::Quiz, Scene::QuizMenu) => Some(Cue::Cancel),
+        | (Scene::CharacterCreation | Scene::Quiz | Scene::Codex, Scene::QuizMenu) => {
+            Some(Cue::Cancel)
+        }
         (Scene::CharacterCreation, Scene::Oracle | Scene::Quiz) => Some(Cue::BeginRun),
         (Scene::Oracle, Scene::Quiz) => Some(Cue::QuestionReveal),
         (Scene::Oracle, Scene::QuizMenu) => Some(Cue::Leave),
@@ -1094,6 +1135,9 @@ fn scene_event(before: &AudioSnapshot, after: &AudioSnapshot) -> Option<Cue> {
                     candidates.push(Cue::Trait { row, value });
                 }
             }
+        }
+        AudioScene::Codex if after.codex_page != before.codex_page => {
+            candidates.push(Cue::PageTurn(after.codex_page));
         }
         AudioScene::Oracle => datafall_events(before, after, &mut candidates),
         AudioScene::Quiz => quiz_events(before, after, &mut candidates),
@@ -1140,6 +1184,7 @@ fn quiz_events(before: &AudioSnapshot, after: &AudioSnapshot, candidates: &mut V
         // One result cue per commit: the rarest threshold it crossed wins.
         let result = match run.phase {
             AnswerPhase::Correct if run.insight > previous.insight => Cue::RuneAwaken(run.insight),
+            AnswerPhase::Correct if run.redeemed => Cue::Redeemed,
             AnswerPhase::Correct if run.multiplier > previous.multiplier => {
                 Cue::FlowUp(run.multiplier)
             }
@@ -1151,6 +1196,8 @@ fn quiz_events(before: &AudioSnapshot, after: &AudioSnapshot, candidates: &mut V
         candidates.push(result);
     } else if run.phase == AnswerPhase::Choosing && run.selected != previous.selected {
         candidates.push(Cue::Cursor(run.selected));
+    } else if run.leave_armed && !previous.leave_armed {
+        candidates.push(Cue::LeaveWarning);
     }
 }
 
@@ -1163,7 +1210,8 @@ fn accepts_unavailable(after: &AudioSnapshot, pressed: u16) -> bool {
         | AudioScene::CharacterCreation
         | AudioScene::QuestSelect
         | AudioScene::LevelUp
-        | AudioScene::GameOver => true,
+        | AudioScene::GameOver
+        | AudioScene::Codex => true,
         AudioScene::Oracle => pressed & !(pad::LEFT | pad::RIGHT) != 0,
         AudioScene::Quiz => after
             .run
@@ -1511,6 +1559,8 @@ mod tests {
             Cue::Leave,
             Cue::QuestionReveal,
             Cue::Correct,
+            Cue::Redeemed,
+            Cue::LeaveWarning,
             Cue::Wrong,
             Cue::LowWard,
             Cue::WardBreak,
@@ -1522,6 +1572,7 @@ mod tests {
         for index in 0..6 {
             cues.extend([
                 Cue::Navigate(index),
+                Cue::PageTurn(index),
                 Cue::Cursor(index),
                 Cue::DataCollect(index as u32),
             ]);

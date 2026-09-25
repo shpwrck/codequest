@@ -489,7 +489,6 @@ pub struct QuestSpec {
 }
 
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // SCAFFOLD: remove once lesson review reads rationales.
 pub struct QuizQuestion {
     pub question: String,
     pub choices: Vec<String>,
@@ -538,7 +537,6 @@ pub struct RepositoryProvenance {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // SCAFFOLD: remove once the Codex reads lessons and mastery.
 pub struct CartridgeSpec {
     pub id: String,
     pub title: String,
@@ -2068,7 +2066,7 @@ fn audio_snapshot(state: &GameState) -> AudioSnapshot {
         Screen::Battle => AudioScene::Battle,
         Screen::Victory => AudioScene::Victory,
         Screen::Defeat => AudioScene::Defeat,
-        Screen::Codex => AudioScene::Unlisted,
+        Screen::Codex => AudioScene::Codex,
     };
     let held = state.held.iter().fold(0, |bits, button| {
         bits | match button {
@@ -2105,6 +2103,7 @@ fn audio_snapshot(state: &GameState) -> AudioSnapshot {
         hero_class: state.hero_class,
         hero_style: state.hero_style,
         quest_selected: state.quest_selected,
+        codex_page: state.codex_page,
         run: state.quiz.as_ref().map(|run| RunAudio {
             question: run.question,
             selected: run.selected,
@@ -2118,6 +2117,8 @@ fn audio_snapshot(state: &GameState) -> AudioSnapshot {
             insight: InsightStage::from_score(run.score).index(),
             level: run.level,
             completed_batches: run.completed_batches,
+            redeemed: run.redeemed,
+            leave_armed: run.leave_armed > 0,
         }),
         data: state.oracle_data,
         data_stage: threshold_stage(state.oracle_data, &DATA_CHARGE_THRESHOLDS),
@@ -8758,6 +8759,8 @@ mod tests {
                 insight: 2,
                 level: 4,
                 completed_batches: 1,
+                redeemed: false,
+                leave_armed: false,
             })
         );
 
@@ -9771,6 +9774,55 @@ mod tests {
     fn wrapping_never_splits_into_oversized_lines() {
         let lines = wrap_text("alpha beta supercalifragilistic", 8);
         assert!(lines.iter().all(|line| line.chars().count() <= 8));
+    }
+
+    #[test]
+    fn the_codex_turns_pages_audibly_and_keeps_reading_quiet() {
+        use audio::Cue;
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        let _ = tap_cues(&mut engine, Button::Down);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::Confirm));
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(
+            tap_cues(&mut engine, Button::Right)[0],
+            Some(Cue::PageTurn(1))
+        );
+        assert_eq!(
+            tap_cues(&mut engine, Button::Left)[0],
+            Some(Cue::PageTurn(0))
+        );
+        assert_eq!(
+            tap_cues(&mut engine, Button::A)[0],
+            Some(Cue::Unavailable),
+            "A is deliberately inactive in the Codex"
+        );
+        for _ in 0..120 {
+            engine.update();
+            assert_eq!(last_cue(&engine), None, "no ambience under reading");
+        }
+        assert_eq!(tap_cues(&mut engine, Button::B)[0], Some(Cue::Cancel));
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn leaving_warns_once_and_redemption_has_its_own_cadence() {
+        use audio::Cue;
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        assert_eq!(tap_cues(&mut engine, Button::B)[0], Some(Cue::LeaveWarning));
+        assert_eq!(engine.screen(), Screen::Quiz, "one B only arms the leave");
+        for _ in 0..QUIZ_LEAVE_CONFIRM_TICKS {
+            engine.update();
+        }
+
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        for _ in 0..RETRY_GAP {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert!(current_question(&engine).review);
+        focus_choice(&mut engine, true);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::Redeemed));
     }
 
     #[test]

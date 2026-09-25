@@ -7,9 +7,6 @@
 //! answers become evidence, and evidence fills per-lens mastery runes at
 //! explicit thresholds. Nothing here depends on Tauri or Bevy.
 
-// SCAFFOLD: remove once the question pipeline and engine consume this API.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
