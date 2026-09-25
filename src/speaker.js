@@ -6,13 +6,28 @@
  * game state and never chooses what to play. */
 
 export const TICKS_PER_SECOND = 60;
-/** Notes are scheduled this far ahead so polling jitter never clips them. */
+/** Anchoring puts the engine's newest tick this far ahead of the audio clock,
+ * so polling jitter never clips the notes that start on it. */
 export const SCHEDULE_LEAD_SECONDS = 0.06;
-/** The tick clock re-anchors when it drifts further than this from real time. */
-export const MAX_DRIFT_SECONDS = 0.15;
-/** Notes later than this are dropped instead of played out of time. */
-const MAX_LATENESS_SECONDS = 0.1;
+/** The newest tick must land at least this far ahead. Closer means the engine
+ * fell behind the audio clock (a slow frame), so the clock re-anchors rather
+ * than start every later note late. */
+export const MIN_LEAD_SECONDS = 0.02;
+/** ...and at most this far ahead. Further means the audio clock fell behind
+ * (or a late poll anchored late), so the clock re-anchors rather than keep
+ * the extra delay on every later note. */
+export const MAX_LEAD_SECONDS = 0.12;
+/** Notes later than this do not start; they still end whatever their voice
+ * was sounding, as they would have on time. */
+export const MAX_LATENESS_SECONDS = 0.1;
 const RELEASE_SECONDS = 0.004;
+/* Noise brightness is the linear-feedback register's clock. At the reference
+ * pitch it steps every second sample of the buffer; at the maximum rate it
+ * steps every sample, the brightest a sampled register can be. */
+const NOISE_REFERENCE_PITCH = 84;
+const NOISE_MIN_RATE = 0.0625;
+const NOISE_MAX_RATE = 2;
+const NOISE_CEILING_PITCH = NOISE_REFERENCE_PITCH + 12 * Math.log2(NOISE_MAX_RATE);
 
 export const VOLUME_STORAGE_KEY = "cqa-volume";
 export const VOLUME_LEVELS = Object.freeze(["mute", "low", "mid", "high"]);
@@ -59,11 +74,15 @@ export function pulseHarmonics(eighths, count = 48) {
 }
 
 /** Maps engine ticks onto an audio clock. The first batch anchors the map
- * slightly in the future; large drift (a stalled tab, a slow engine) anchors
- * it again instead of scheduling a burst of stale notes. */
+ * `lead` seconds in the future. Every later batch keeps the anchor only while
+ * the engine's newest tick still maps between `minLead` and `maxLead` ahead of
+ * `now`; outside that window, in either direction, it anchors again. Engine
+ * overruns (which only ever lose engine time) and audio-clock stalls therefore
+ * cost one short jump instead of lag that builds up until every note is late. */
 export function createTickClock({
   lead = SCHEDULE_LEAD_SECONDS,
-  maxDrift = MAX_DRIFT_SECONDS,
+  minLead = MIN_LEAD_SECONDS,
+  maxLead = MAX_LEAD_SECONDS,
 } = {}) {
   let anchorTick = null;
   let anchorTime = 0;
@@ -74,16 +93,60 @@ export function createTickClock({
     },
     /** Aligns the engine's current tick with `now`; true when it re-anchored. */
     sync(engineTick, now) {
-      const target = now + lead;
-      if (anchorTick !== null && Math.abs(timeFor(engineTick) - target) <= maxDrift) return false;
+      if (anchorTick !== null) {
+        const ahead = timeFor(engineTick) - now;
+        if (ahead >= minLead && ahead <= maxLead) return false;
+      }
       anchorTick = engineTick;
-      anchorTime = target;
+      anchorTime = now + lead;
       return true;
     },
     timeFor,
     reset() {
       anchorTick = null;
     },
+  };
+}
+
+/** True unless the note is a cut: a zero volume step or zero length. */
+function audible(note) {
+  const volume = Math.min(15, Math.max(0, Number(note.volume) || 0));
+  const ticks = Math.max(0, Number(note.durationTicks) || 0);
+  return volume > 0 && ticks > 0;
+}
+
+/** Plans one `engine_audio` batch against `clock` at audio time `now`. Each
+ * note on a known voice becomes `{ note, at, sounds }`: at `at` its voice stops
+ * what it was sounding, and when `sounds` is true the note then starts there.
+ * A cut never sounds. A note due more than MAX_LATENESS_SECONDS ago does not
+ * start either, but it still ends its voice now: under monophony a late note
+ * or cut means the voice's previous note is over, and dropping that would
+ * leave a stale note ringing to its natural end. */
+export function planBatch(clock, batch, now) {
+  if (!Array.isArray(batch?.notes)) return [];
+  clock.sync(Number(batch.tick) || 0, now);
+  const plan = [];
+  for (const note of batch.notes) {
+    if (!VOICES.includes(note?.voice)) continue;
+    const due = clock.timeFor(Number(note.tick) || 0);
+    if (due < now - MAX_LATENESS_SECONDS) plan.push({ note, at: now, sounds: false });
+    else plan.push({ note, at: Math.max(due, now), sounds: audible(note) });
+  }
+  return plan;
+}
+
+/** How the noise voice renders a brightness `pitch`: the register's playback
+ * rate, and a highpass cutoff in Hz (0 for none). Rates stop at the brightest
+ * a sampled register can be (a faster rate only skips samples of the same
+ * white noise), so brightness past that ceiling thins the noise from below
+ * instead: each octave past it removes half of the band that is left. Every
+ * step of the brightness scale therefore sounds distinct. */
+export function noiseColor(pitch, sampleRate = 44100) {
+  const rate = 2 ** ((pitch - NOISE_REFERENCE_PITCH) / 12);
+  const excess = Math.max(0, pitch - NOISE_CEILING_PITCH);
+  return {
+    rate: Math.min(NOISE_MAX_RATE, Math.max(NOISE_MIN_RATE, rate)),
+    highpass: (sampleRate / 2) * (1 - 2 ** (-excess / 12)),
   };
 }
 
@@ -178,33 +241,43 @@ export function createSpeaker({
     }
   }
 
-  function createSource(voice, note, start, end) {
+  /* The noise register, thinned by a highpass only when its brightness is
+   * past the playback-rate ceiling at either end of a slide. */
+  function createNoise(note, start, end) {
     const slide = Number(note.slide) || 0;
-    if (voice === "noise") {
-      const source = context.createBufferSource();
-      source.buffer = noise();
-      source.loop = true;
-      const rate = (pitch) => Math.min(2, Math.max(0.0625, 2 ** ((pitch - 84) / 12)));
-      source.playbackRate.setValueAtTime(rate(note.pitch), start);
-      if (slide) source.playbackRate.exponentialRampToValueAtTime(rate(note.pitch + slide), end);
-      return source;
-    }
+    const from = noiseColor(Number(note.pitch) || 0, context.sampleRate);
+    const to = noiseColor((Number(note.pitch) || 0) + slide, context.sampleRate);
+    const source = context.createBufferSource();
+    source.buffer = noise();
+    source.loop = true;
+    source.playbackRate.setValueAtTime(from.rate, start);
+    if (slide) source.playbackRate.exponentialRampToValueAtTime(to.rate, end);
+    if (from.highpass <= 0 && to.highpass <= 0) return { source, output: source };
+    const filter = context.createBiquadFilter();
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(from.highpass, start);
+    if (slide) filter.frequency.linearRampToValueAtTime(to.highpass, end);
+    source.connect(filter);
+    return { source, output: filter };
+  }
+
+  function createSource(voice, note, start, end) {
+    if (voice === "noise") return createNoise(note, start, end);
+    const slide = Number(note.slide) || 0;
     const source = context.createOscillator();
     if (voice === "wave") source.type = "triangle";
     else source.setPeriodicWave(pulseWave(note.duty));
     source.frequency.setValueAtTime(midiToHz(note.pitch), start);
     if (slide) source.frequency.exponentialRampToValueAtTime(midiToHz(note.pitch + slide), end);
-    return source;
+    return { source, output: source };
   }
 
+  /* Starts an audible note, replacing whatever its voice was sounding. */
   function scheduleNote(note, start) {
     const voice = note.voice;
     stopVoice(voice, start);
     const volumeStep = Math.min(15, Math.max(0, Number(note.volume) || 0));
     const ticks = Math.max(0, Number(note.durationTicks) || 0);
-    // A silent note is a cut: the voice simply stops.
-    if (volumeStep === 0 || ticks === 0) return;
-
     const end = start + ticks / TICKS_PER_SECOND;
     const peak = (volumeStep / 15) * VOICE_GAIN[voice];
     const envelope = context.createGain();
@@ -221,8 +294,8 @@ export function createSpeaker({
     gate.gain.setValueAtTime(1, Math.max(start, end - RELEASE_SECONDS));
     gate.gain.linearRampToValueAtTime(0, end);
 
-    const source = createSource(voice, note, start, end);
-    source.connect(envelope);
+    const { source, output } = createSource(voice, note, start, end);
+    output.connect(envelope);
     envelope.connect(gate);
     gate.connect(master);
     source.start(start);
@@ -248,15 +321,14 @@ export function createSpeaker({
       silence();
       return 0;
     }
-    const now = context.currentTime;
-    clock.sync(Number(batch.tick) || 0, now);
     let scheduled = 0;
-    for (const note of batch.notes) {
-      if (!VOICES.includes(note?.voice)) continue;
-      const due = clock.timeFor(Number(note.tick) || 0);
-      if (due < now - MAX_LATENESS_SECONDS) continue;
-      scheduleNote(note, Math.max(due, now));
-      if (note.volume > 0 && note.durationTicks > 0) scheduled += 1;
+    for (const { note, at, sounds } of planBatch(clock, batch, context.currentTime)) {
+      if (!sounds) {
+        stopVoice(note.voice, at);
+        continue;
+      }
+      scheduleNote(note, at);
+      scheduled += 1;
     }
     return scheduled;
   }
