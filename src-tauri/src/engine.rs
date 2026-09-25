@@ -14238,14 +14238,16 @@ mod tests {
     fn a_miss_on_a_batch_opening_question_waits_the_full_gap_in_its_own_batch() {
         let mut questions: Vec<_> = (0..12).map(concept_question).collect();
         let mut batch_ends = vec![6, 12];
+        let mut deferred = Vec::new();
         // Index 6 opens the second batch; the first batch's end (6) is behind
         // it, so the review lands RETRY_GAP questions later in the second.
         assert_eq!(
-            schedule_retry(&mut questions, &mut batch_ends, 6),
-            Some(7 + RETRY_GAP)
+            schedule_retry(&mut questions, &mut batch_ends, &mut deferred, 6),
+            Some(RetrySlot::At(7 + RETRY_GAP))
         );
+        assert!(deferred.is_empty());
         assert_eq!(batch_ends, vec![6, 13]);
-        assert!(questions[7 + RETRY_GAP].review);
+        assert_eq!(questions[7 + RETRY_GAP].review, Review::InSession);
         assert_eq!(questions[7 + RETRY_GAP].question, questions[6].question);
     }
 
@@ -14258,7 +14260,7 @@ mod tests {
             commit(&mut engine, true);
             finish_lesson(&mut engine);
         }
-        assert!(current_question(&engine).review);
+        assert!(current_question(&engine).review.is_review());
 
         commit(&mut engine, false);
         let run = engine_state(&engine).quiz.as_ref().unwrap();
@@ -14385,7 +14387,7 @@ mod tests {
         let mut cartridge = quiz_cartridge();
         cartridge.questions = (0..18).map(concept_question).collect();
         let missed = concept_question(2);
-        record_lesson(&mut cartridge.lessons, &missed, false);
+        record_lesson(&mut cartridge.lessons, &missed, false, 1);
         state.cartridge = Some(cartridge);
         state.batch_ends = vec![6, 12, 18];
         state.batch_levels = vec![1, 2, 3];
@@ -14395,7 +14397,7 @@ mod tests {
 
         let questions = &state.cartridge.as_ref().unwrap().questions;
         assert_eq!(questions.len(), 13);
-        assert!(questions[0].review);
+        assert_eq!(questions[0].review, Review::InSession);
         assert_eq!(questions[0].question, missed.question);
         assert_eq!(state.batch_ends, vec![7, 13]);
         assert_eq!(
