@@ -19,6 +19,13 @@ import {
   pulseHarmonics,
   stepVolume,
 } from "../src/speaker.js";
+import {
+  WHEEL_DETENT_PX,
+  WHEEL_GESTURE_GAP_MS,
+  createWheelDetents,
+} from "../src/device-shell.js";
+import { reducedMotionCss } from "./contract-css.mjs";
+import { bootShell } from "./shell-harness.mjs";
 
 const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
@@ -318,6 +325,48 @@ assert.equal(stepVolume("mid", -1), "low");
 assert.equal(normalizeVolume("HIGH"), "high");
 assert.equal(normalizeVolume("loud"), DEFAULT_VOLUME, "Unknown stored levels fall back safely");
 
+/* ---------- Wheel travel, not wheel events, turns the detents ---------- */
+
+const rollGesture = (roll, deltas, { start = 0, every = 8, mode = 0 } = {}) =>
+  deltas.map((delta, index) => roll(delta, mode, start + index * every)).reduce((sum, turn) => sum + turn, 0);
+assert.equal(WHEEL_DETENT_PX, 100, "One classic mouse notch is one detent");
+assert.equal(WHEEL_GESTURE_GAP_MS, 200);
+{
+  const roll = createWheelDetents();
+  assert.equal(rollGesture(roll, Array(30).fill(-4)), 1, "A light touchpad swipe turns one detent, not thirty");
+  assert.equal(
+    rollGesture(roll, Array(60).fill(-5), { start: 1000 }),
+    3,
+    "A long swipe turns one detent per 100 px of travel",
+  );
+  assert.equal(rollGesture(roll, Array(40).fill(3), { start: 2000 }), -1, "Rolling down turns the wheel down");
+}
+{
+  const roll = createWheelDetents();
+  const notches = [0, 60, 120, 180].map((at) => roll(-100, 0, at));
+  assert.deepEqual(notches, [1, 1, 1, 1], "A notched mouse turns one detent per notch");
+  assert.equal(roll(-120, 0, 1000), 1, "A single larger notch is still one detent");
+  assert.equal(roll(-3, 1, 2000), 1, "Line-mode wheels turn one detent per notch");
+  assert.equal(roll(-3, 1, 2050), 1);
+  assert.equal(roll(1, 2, 3000), -1, "Page-mode wheels turn one detent per page");
+  assert.equal(roll(0, 0, 3001), 0, "Horizontal-only events leave the wheel alone");
+  assert.equal(roll(-2, 0, 3002), 1, "Reversing direction mid-gesture responds at once");
+  assert.equal(roll(Number.NaN, 0, 3003), 0);
+}
+{
+  // The real adapter wires the accumulator into the wheel it renders.
+  const shell = await bootShell({ storage: { [VOLUME_STORAGE_KEY]: "low" } });
+  const wheel = shell.el("volume-wheel");
+  assert.equal(wheel.dataset.level, "low");
+  for (let event = 0; event < 30; event += 1) {
+    const wheeled = wheel.dispatch("wheel", { deltaY: -4 });
+    assert.ok(wheeled.defaultPrevented, "The wheel never scrolls the page");
+  }
+  assert.equal(wheel.dataset.level, "mid", "Thirty small touchpad events turn the front wheel one detent");
+  assert.equal(shell.storage.getItem(VOLUME_STORAGE_KEY), "mid");
+  shell.close();
+}
+
 /* ---------- Pulse duty and pitch ---------- */
 
 assert.equal(midiToHz(69), 440);
@@ -487,7 +536,9 @@ assert.match(
   /for \(const gesture of \["keydown", "pointerdown"\]\)[\s\S]*?speaker\.unlock\(\)/,
   "The first key press or device press wakes the speaker",
 );
-assert.match(adapter, /event\.code === "KeyV"[\s\S]*?nextVolume\(speaker\.volume\)/, "V cycles the volume wheel");
+const keyV = adapter.match(/if \(event\.code === "KeyV"\) \{([^}]*)\}/);
+assert.ok(keyV, "The device keydown handler needs a V branch");
+assert.match(keyV[1], /if \(!event\.repeat\) setVolume\(nextVolume\(speaker\.volume\)\);/, "V cycles the volume wheel once per press");
 assert.match(adapter, /command === "engine_audio"\) return \{ tick: 0, notes: \[\] \}/, "The browser demo is silent");
 assert.match(rust, /fn engine_audio\(state: State<EngineState>\) -> audio::AudioBatch/, "Rust exposes engine_audio");
 assert.match(rust, /generate_handler!\[[\s\S]*?engine_audio/, "engine_audio is registered with Tauri");
@@ -512,7 +563,11 @@ for (const level of VOLUME_LEVELS) {
   );
 }
 assert.match(css, /\.volume-meter\[data-level="mute"\]/, "MUTE needs its own visible state");
-assert.match(css, /prefers-reduced-motion:[\s\S]*?\.volume-knurl/, "The wheel roll needs a reduced-motion state");
+assert.match(
+  reducedMotionCss(css),
+  /\.volume-knurl\b[^{}]*\{[^}]*transition:\s*none/,
+  "The wheel roll needs a reduced-motion state",
+);
 assert.match(adapter, /wheel\.setAttribute\("aria-valuetext", label\)/, "The wheel announces its detent");
 assert.match(
   adapter,

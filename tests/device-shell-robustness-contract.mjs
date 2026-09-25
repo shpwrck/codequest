@@ -8,11 +8,17 @@ import {
   leavesKeyToFocusedControl,
   trappedFocusTarget,
 } from "../src/device-shell.js";
-import { isRefusedCartridgeError, rackFocusIndex } from "../src/cartridge-library.js";
+import {
+  CARTRIDGE_REFUSED_MESSAGE,
+  isRefusedCartridgeError,
+  rackFocusIndex,
+} from "../src/cartridge-library.js";
+import { bootShell, rackStorage } from "./shell-harness.mjs";
 
 const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const adapter = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+const backend = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
 function fn(name) {
   const start = adapter.search(new RegExp(`\\n  (?:async )?function ${name}\\(`));
@@ -38,10 +44,14 @@ assert.equal(leavesKeyToFocusedControl("Enter", false), false, "Enter on the pag
 assert.equal(leavesKeyToFocusedControl("KeyD", true), false, "Game keys must keep reaching the engine");
 const keydown = adapter.match(/window\.addEventListener\("keydown", \(event\) => \{[\s\S]*?\n  \}\);/)?.[0] || "";
 assert.ok(keydown, "Missing the device keydown handler");
+const focusGuardAt = keydown.search(
+  /if \(leavesKeyToFocusedControl\(event\.code, isShellControl\(event\.target\)\)\) return;/,
+);
+const startMappingAt = keydown.indexOf("const button = keyMap[event.code]");
+assert.ok(focusGuardAt >= 0, "The keydown handler must leave Enter to a focused shell control");
+assert.ok(startMappingAt >= 0, "The keydown handler must map keys to device buttons");
 assert.ok(
-  keydown.indexOf("leavesKeyToFocusedControl(event.code, isShellControl(event.target))")
-    < keydown.indexOf("const button = keyMap[event.code]")
-    && keydown.includes("leavesKeyToFocusedControl("),
+  focusGuardAt < startMappingAt,
   "Focused shell controls must keep Enter before the START mapping cancels it",
 );
 assert.match(fn("isShellControl"), /button, \[role=button\], \[role=switch\]/);
@@ -103,16 +113,37 @@ assert.match(batteryGuides, /batteryGuide\.querySelector\("\.guide-action"\)\.te
 assert.match(fn("renderBatteryTray"), /`\$\{lastPowerFailure\} · EJECT TO SWAP`/);
 
 // 21: transient load faults keep rack entries and the saved battery choice.
-assert.equal(isRefusedCartridgeError("NOT A GIT REPOSITORY - CARTRIDGE REFUSED"), true);
-assert.equal(isRefusedCartridgeError(new Error("NOT A GIT REPOSITORY")), true);
+assert.equal(CARTRIDGE_REFUSED_MESSAGE, "NOT A GIT REPOSITORY - CARTRIDGE REFUSED");
+assert.equal(isRefusedCartridgeError(CARTRIDGE_REFUSED_MESSAGE), true);
+assert.equal(isRefusedCartridgeError(new Error(CARTRIDGE_REFUSED_MESSAGE)), true);
+assert.equal(isRefusedCartridgeError({ message: CARTRIDGE_REFUSED_MESSAGE }), true);
 for (const transient of [
   "INVALID CODEQUEST.toml: expected `=`",
   "DIRECTORY NOT FOUND",
   "BEVY ENGINE STOPPED",
   "CANNOT READ CODEQUEST.toml: denied",
+  "GIT CALL FAILED: program not found",
+  "GIT CALL TIMED OUT",
+  // The bare phrase is what a failed git probe used to collapse into.
+  "NOT A GIT REPOSITORY",
+  new Error("NOT A GIT REPOSITORY"),
   null,
 ]) {
   assert.equal(isRefusedCartridgeError(transient), false, `${transient} must not recycle a cartridge`);
+}
+// The shell and the backend must agree on the one refusal, and no other
+// backend message may be mistaken for it.
+const backendMessages = [...backend.matchAll(/"([A-Z][A-Z0-9 .:·'\/_-]{5,})"/g)].map(([, text]) => text);
+assert.ok(
+  backendMessages.includes(CARTRIDGE_REFUSED_MESSAGE),
+  "The backend must still refuse non-repositories with the text the shell recycles on",
+);
+for (const message of backendMessages) {
+  assert.equal(
+    isRefusedCartridgeError(message),
+    message === CARTRIDGE_REFUSED_MESSAGE,
+    `Backend message ${message} must not recycle a cartridge`,
+  );
 }
 const insertByPath = fn("insertByPath");
 assert.match(
@@ -128,6 +159,11 @@ assert.doesNotMatch(
   "An engine error at startup must not erase the saved battery choice",
 );
 assert.match(initialize, /if \(isRefusedCartridgeError\(error\)\) forgetCartridge\(savedPath\);/);
+assert.doesNotMatch(
+  initialize,
+  /catch \(error\) \{[^}]*localStorage\.removeItem\("cqa-cart-id"\)/,
+  "A startup fault that may clear must keep the saved slot for the next launch",
+);
 assert.match(initialize, /showDeviceError\(`CARTRIDGE NOT LOADED · \$\{deviceMessageText\(error\)\}`\)/);
 assert.doesNotMatch(initialize, /catch \(_\) \{\s*cartridge = null/, "Startup cartridge faults must not be swallowed");
 
@@ -257,5 +293,167 @@ assert.match(
   fn("createBrowserDemo"),
   /if \(command === "pick_cartridge"\) throw new Error\("RUN IN TAURI TO LOAD CARTRIDGES"\);/,
 );
+
+/* ---------- The real adapter, driven through its own handlers ---------- */
+
+const cartridgeFor = (path) => ({
+  path,
+  title: path.split("/").at(-1).toUpperCase(),
+  branch: "main",
+  revision: "abc1234",
+  color: "#6a6fd1",
+});
+const rackPaths = (shell) => JSON.parse(shell.storage.getItem("cqa-repo-carts")).map(({ path }) => path);
+const poweredOn = (shell) => shell.calledWith("engine_power", ({ powered }) => powered === true).length;
+
+// 27: power never switches on under a cartridge load that is still walking git.
+{
+  const shell = await bootShell({ storage: rackStorage(["/repos/big"]) });
+  await shell.key("KeyC");
+  assert.ok(shell.trayOpen, "C opens the rack while powered off");
+  shell.hold("engine_set_cartridge");
+  await shell.dispatch(shell.rackCard(0), "keydown", { key: "Enter" });
+  assert.ok(shell.isHeld("engine_set_cartridge"), "Enter on a rack card starts the load");
+  await shell.key("KeyP");
+  await shell.paint();
+  assert.equal(shell.calledWith("verify_ai_provider").length, 0, "P during a cartridge load must not start a power-on");
+  assert.equal(shell.powered, false, "The power switch stays off while the cartridge loads");
+  assert.match(shell.messages, /WAIT FOR THE CARTRIDGE/, "A refused power-on says why");
+  await shell.answer("engine_set_cartridge", cartridgeFor("/repos/big"));
+  assert.ok(shell.loaded && !shell.trayOpen, "The finished load seats the cartridge and closes the rack");
+  await shell.key("KeyP");
+  await shell.paint();
+  assert.equal(shell.powered, true, "Power-on works once the cartridge is seated");
+  assert.equal(poweredOn(shell), 1);
+  await shell.advance(2600);
+  assert.equal(shell.calledWith("engine_finish_boot").length, 1, "The boot logo finishes on its own timer");
+  shell.close();
+}
+{
+  // The native folder picker is part of the same cartridge operation.
+  const shell = await bootShell({ storage: rackStorage([]) });
+  await shell.key("KeyC");
+  shell.hold("pick_cartridge");
+  await shell.dispatch(shell.rackAction("add"), "click");
+  await shell.key("KeyP");
+  await shell.paint();
+  assert.equal(shell.calledWith("verify_ai_provider").length, 0, "P while the folder picker is open must not power on");
+  await shell.answer("pick_cartridge", cartridgeFor("/repos/picked"));
+  assert.ok(shell.loaded, "The picked cartridge still loads");
+  assert.equal(shell.powered, false);
+  shell.close();
+}
+
+// 27: ejecting is fenced the same way, and a double click unloads once.
+{
+  const shell = await bootShell({ storage: rackStorage(["/repos/big"], { current: "/repos/big" }) });
+  assert.ok(shell.loaded, "The saved cartridge is seated at startup");
+  await shell.key("KeyC");
+  const eject = shell.rackAction("eject");
+  await shell.dispatch(eject, "click");
+  await shell.dispatch(eject, "click");
+  await shell.key("KeyP");
+  await shell.paint();
+  assert.equal(shell.calledWith("verify_ai_provider").length, 0, "P during the eject animation must not power on");
+  shell.hold("engine_set_cartridge");
+  await shell.advance(240);
+  assert.ok(shell.isHeld("engine_set_cartridge"), "The eject unloads the engine after its animation");
+  await shell.key("KeyP");
+  await shell.paint();
+  assert.equal(shell.calledWith("verify_ai_provider").length, 0, "P during the unload must not power on");
+  await shell.answer("engine_set_cartridge", null);
+  await shell.advance(240);
+  assert.equal(shell.loaded, false);
+  assert.equal(
+    shell.calledWith("engine_set_cartridge", ({ path }) => path === null).length,
+    1,
+    "A double-clicked eject unloads the engine once",
+  );
+  assert.equal(shell.storage.getItem("cqa-cart-id"), null);
+  shell.close();
+}
+
+// 28: power input waits for initialize(), which then never switches it off.
+{
+  const shell = await bootShell({
+    storage: rackStorage(["/repos/big"], { current: "/repos/big" }),
+    hold: ["app_revision", "engine_set_cartridge"],
+  });
+  await shell.key("KeyP");
+  await shell.paint();
+  await shell.answer("app_revision", "abc1234");
+  assert.ok(shell.isHeld("engine_set_cartridge"), "Startup is still loading the saved cartridge");
+  await shell.dispatch(shell.el("power-switch"), "pointerdown");
+  await shell.key("KeyC");
+  await shell.paint();
+  assert.equal(shell.calledWith("verify_ai_provider").length, 0, "Power input before startup finishes must be ignored");
+  assert.equal(shell.powered, false);
+  assert.equal(shell.trayOpen, false, "The rack cannot open under the startup load");
+  await shell.answer("engine_set_cartridge", cartridgeFor("/repos/big"));
+  assert.deepEqual(
+    shell.calledWith("engine_power").map(({ args }) => args.powered),
+    [false],
+    "Startup switches the engine off exactly once",
+  );
+  assert.equal(
+    shell.el("battery-status").textContent,
+    "CODEX · UNTESTED",
+    "An early P must not leave a stale NO BATTERIES failure behind",
+  );
+  await shell.key("KeyP");
+  await shell.paint();
+  assert.equal(shell.powered, true);
+  assert.equal(shell.calledWith("engine_power").at(-1).args.powered, true, "Nothing switches the engine off afterwards");
+  await shell.advance(2600);
+  assert.equal(shell.calledWith("engine_finish_boot").length, 1, "The saved cartridge boots on its own timer");
+  shell.close();
+}
+
+// 13: only the backend's refusal recycles a cartridge; git faults keep it.
+{
+  const shell = await bootShell({
+    storage: rackStorage(["/repos/share", "/repos/gone"], { current: "/repos/share" }),
+    hold: ["engine_set_cartridge"],
+  });
+  await shell.answer("engine_set_cartridge", new Error("GIT CALL TIMED OUT"));
+  assert.match(shell.messages, /CARTRIDGE NOT LOADED · GIT CALL TIMED OUT/);
+  assert.deepEqual(rackPaths(shell), ["/repos/share", "/repos/gone"], "A git timeout at startup keeps the rack entry");
+  assert.equal(shell.storage.getItem("cqa-cart-id"), "/repos/share", "The next launch retries the saved cartridge");
+  await shell.key("KeyC");
+  shell.hold("engine_set_cartridge");
+  await shell.dispatch(shell.rackCard(0), "keydown", { key: "Enter" });
+  await shell.answer("engine_set_cartridge", new Error("GIT CALL FAILED: program not found"));
+  assert.deepEqual(rackPaths(shell), ["/repos/share", "/repos/gone"], "Git that cannot start keeps the rack entry");
+  shell.hold("engine_set_cartridge");
+  await shell.dispatch(shell.rackCard(1), "keydown", { key: "Enter" });
+  await shell.answer("engine_set_cartridge", new Error(CARTRIDGE_REFUSED_MESSAGE));
+  assert.deepEqual(rackPaths(shell), ["/repos/share"], "A refused folder leaves the rack");
+  assert.equal(shell.rackCard(0).dataset.path, "/repos/share", "The open rack is rebuilt without it");
+  shell.close();
+}
+{
+  const shell = await bootShell({
+    storage: rackStorage(["/repos/plain"], { current: "/repos/plain" }),
+    hold: ["engine_set_cartridge"],
+  });
+  await shell.answer("engine_set_cartridge", new Error(CARTRIDGE_REFUSED_MESSAGE));
+  assert.deepEqual(rackPaths(shell), [], "A refused saved cartridge is forgotten at startup");
+  assert.equal(shell.storage.getItem("cqa-cart-id"), null);
+  shell.close();
+}
+{
+  // A kept saved slot follows its rack entry when the player recycles it.
+  const shell = await bootShell({
+    storage: rackStorage(["/repos/share"], { current: "/repos/share" }),
+    hold: ["engine_set_cartridge"],
+  });
+  await shell.answer("engine_set_cartridge", new Error("GIT CALL TIMED OUT"));
+  await shell.key("KeyC");
+  await shell.dispatch(shell.rackCard(0), "keydown", { key: "Delete" });
+  await shell.advance(180);
+  assert.deepEqual(rackPaths(shell), []);
+  assert.equal(shell.storage.getItem("cqa-cart-id"), null, "A recycled cartridge must not come back next launch");
+  shell.close();
+}
 
 console.log("Device shell robustness contract OK: focus, repeat, fault surfacing, modal trays, stable rack");

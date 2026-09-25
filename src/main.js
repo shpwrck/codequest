@@ -13,6 +13,7 @@ import {
 } from "./cartridge-library.js";
 import {
   GUIDE_MESSAGE_MAX_LENGTH,
+  createWheelDetents,
   deviceMessageText,
   leavesKeyToFocusedControl,
   trappedFocusTarget,
@@ -95,6 +96,7 @@ import {
   let batteryTrayOpen = false;
   let picking = false;
   let inserting = false;
+  let ejecting = false;
   let trayReturnFocus = null;
   let framePending = false;
   let audioPending = false;
@@ -567,7 +569,13 @@ import {
 
   async function setPower(on) {
     const target = Boolean(on);
-    if (powered === target || (target && powerTransitioning)) return;
+    // initialize() restores the batteries and the saved cartridge and then
+    // switches the engine off, so power input waits until it has finished.
+    if (!ready || powered === target || (target && powerTransitioning)) return;
+    if (target && cartridgeBusy()) {
+      showDeviceError("WAIT FOR THE CARTRIDGE");
+      return;
+    }
     const generation = ++powerGeneration;
     powerTransitioning = true;
 
@@ -675,6 +683,9 @@ import {
 
   function forgetCartridge(path) {
     cartridges = cartridges.filter((entry) => entry.path !== path);
+    // A saved slot that failed to load at startup is kept for a retry; once
+    // its rack entry goes, the next launch must not bring it back.
+    if (localStorage.getItem("cqa-cart-id") === path) localStorage.removeItem("cqa-cart-id");
     persistCartridges();
   }
 
@@ -727,8 +738,20 @@ import {
     showDeviceMessage(message, "error", options);
   }
 
+  /* Loading or ejecting a cartridge is an async engine call that can walk git
+   * history for seconds. Power and the slot never change under each other:
+   * power-on waits for the cartridge, and the slot refuses while power is on
+   * or switching, so the engine and the shell always agree on the game. */
+  function cartridgeBusy() {
+    return picking || inserting || ejecting;
+  }
+
   async function insertCartridge(value) {
     if (!value || cartridge || inserting) return;
+    if (powered || powerTransitioning) {
+      showDeviceError("TURN POWER OFF TO LOAD A GAME");
+      return;
+    }
     const alreadyCached = cartridges.some((entry) => entry.path === value.path);
     if (!alreadyCached && cartridges.length >= MAX_CARTRIDGES) {
       showDeviceError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
@@ -785,7 +808,12 @@ import {
   }
 
   function ejectCartridge() {
-    if (!cartridge) return;
+    if (!cartridge || ejecting) return;
+    if (powered || powerTransitioning) {
+      showDeviceError("TURN POWER OFF TO EJECT");
+      return;
+    }
+    ejecting = true;
     const slot = $("cart-back");
     slot.classList.add("ejecting");
     window.setTimeout(async () => {
@@ -798,6 +826,8 @@ import {
       } catch (error) {
         slot.classList.remove("ejecting");
         showDeviceError(error);
+      } finally {
+        ejecting = false;
       }
     }, 240);
   }
@@ -975,7 +1005,7 @@ import {
   }
 
   function openTray() {
-    if (powered) return;
+    if (!ready || powered || powerTransitioning) return;
     if (batteryTrayOpen) closeBatteryTray({ restoreFocus: false });
     const active = document.activeElement;
     trayReturnFocus = active instanceof HTMLElement && active !== document.body ? active : null;
@@ -1026,7 +1056,7 @@ import {
   }
 
   function openBatteryTray() {
-    if (powered || batteryChanging || !batteryDoorOpen) return;
+    if (!ready || powered || batteryChanging || !batteryDoorOpen) return;
     if (trayOpen) closeTray();
     renderBatteryTray();
     batteryTray.classList.remove("hidden");
@@ -1232,6 +1262,7 @@ import {
   }
 
   for (const wheel of volumeWheels) {
+    const roll = createWheelDetents();
     wheel.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1239,7 +1270,11 @@ import {
     });
     wheel.addEventListener("wheel", (event) => {
       event.preventDefault();
-      if (event.deltaY !== 0) setVolume(stepVolume(speaker.volume, -event.deltaY));
+      const detents = roll(event.deltaY, event.deltaMode, performance.now());
+      if (!detents) return;
+      let level = speaker.volume;
+      for (let turned = 0; turned < Math.abs(detents); turned += 1) level = stepVolume(level, detents);
+      setVolume(level);
     }, { passive: false });
     wheel.addEventListener("keydown", (event) => {
       const direction = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[event.key];
@@ -1338,7 +1373,9 @@ import {
         cacheCartridge(cartridge);
       } catch (error) {
         cartridge = null;
-        localStorage.removeItem("cqa-cart-id");
+        // Only a refused folder is forgotten. A fault that may clear (git
+        // unavailable or timed out, a bad CODEQUEST.toml, a missing drive)
+        // keeps its rack entry and the saved slot, so the next launch retries.
         if (isRefusedCartridgeError(error)) forgetCartridge(savedPath);
         showDeviceError(`CARTRIDGE NOT LOADED · ${deviceMessageText(error)}`);
       }
