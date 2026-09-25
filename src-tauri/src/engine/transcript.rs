@@ -89,6 +89,12 @@ impl TranscriptChannel {
             .find(|publication| publication.seq == seq)
         {
             Some(base) if base.screen == latest.screen => {
+                // A change that reverted before the reader polled (Down then
+                // Up) leaves nothing to say; announcing it would blank the
+                // live region while the screen still shows the same words.
+                if base.sentences == latest.sentences {
+                    return None;
+                }
                 announcement(&base.sentences, &latest.sentences)
             }
             _ => latest.sentences.join(" "),
@@ -410,6 +416,33 @@ fn datafall(out: &mut Transcript, state: &GameState) {
         }
         QuestionStatus::Contacting => format!("Contacting {provider}"),
     });
+    // The header's second line, from the same `oracle_line` both Datafall
+    // renderers draw. The failure's per-second countdown is left out so the
+    // live region is not re-announced every second.
+    match state.oracle_line() {
+        Some(OracleLine::Failure { reason, retry_in }) => out.say(format!(
+            "Last attempt: {reason}, {}",
+            if retry_in.is_some() {
+                "retrying soon"
+            } else {
+                "retrying now"
+            }
+        )),
+        Some(OracleLine::Recall {
+            outstanding,
+            concept,
+            answer,
+        }) => out.say(format!(
+            "{}{}: {}",
+            if outstanding { "Review" } else { "Recall" },
+            concept.map_or_else(String::new, |concept| format!(
+                ", {} lens",
+                spoken(concept.label())
+            )),
+            shown_choice(answer.trim())
+        )),
+        None => {}
+    }
     let charge = threshold_stage(state.oracle_data, &DATA_CHARGE_THRESHOLDS);
     out.say(format!(
         "Data {}, charge runes {charge} of 3",
@@ -424,14 +457,14 @@ fn datafall(out: &mut Transcript, state: &GameState) {
     out.say("Left and Right move to catch data and dodge bugs, B leaves");
 }
 
-/// Wards, flow, score, and any awakened insight rune, as the trial HUD shows
-/// them.
+/// Wards, flow, score, and any awakened insight mark, as the trial HUD shows
+/// them. `Rune` only ever names a lens, as on screen.
 fn run_status(run: &QuizRun) -> String {
     let insight = InsightStage::from_score(run.score);
     let rune = if insight == InsightStage::Unlit {
         String::new()
     } else {
-        format!(", insight rune {}", insight.label())
+        format!(", insight {}", insight.label())
     };
     format!(
         "Wards {} of 3, flow x{}, score {}{rune}",
@@ -455,19 +488,19 @@ fn trial(out: &mut Transcript, state: &GameState) {
         out.say("Trial. Waiting for a question");
         return;
     };
-    let number = run.question + 1;
+    let heading = trial_heading(state, run);
     let Some(question) = state
         .cartridge
         .as_ref()
         .and_then(|cartridge| cartridge.questions.get(run.question))
     else {
-        out.say(format!("Trial {number}. Waiting for the next question"));
+        out.say(format!("{heading}. Waiting for the next question"));
         return;
     };
     let Some((correct, _)) = run.feedback else {
         match question.concept {
-            Some(concept) => out.say(format!("Trial {number}, {} lens", spoken(concept.label()))),
-            None => out.say(format!("Trial {number}")),
+            Some(concept) => out.say(format!("{heading}, {} lens", spoken(concept.label()))),
+            None => out.say(&heading),
         }
         out.say(shown_question(&question.question));
         let order = run.display_order(question.choices.len());
@@ -490,7 +523,7 @@ fn trial(out: &mut Transcript, state: &GameState) {
     };
 
     out.say(format!(
-        "Trial {number}. {}",
+        "{heading}. {}",
         if correct { "Correct" } else { "Missed" }
     ));
     out.say(quiz_feedback_banner(run));
@@ -505,22 +538,47 @@ fn trial(out: &mut Transcript, state: &GameState) {
             runes(state, concept)
         ));
     }
-    if let Some(note) = shown_retry_note(state, run) {
-        out.say(format!("Returns: {}", spoken(&note)));
+    // Both lesson footers draw the note; the legacy one drops it when the
+    // banner leaves no room, but a screen reader has no width to run out of.
+    // Only continuing clears it, so it is stable across the input hold.
+    if let Some(note) = run.retry_note {
+        out.say(retry_sentence(note));
     }
     out.say(run_status(run));
     // Stable across the input hold, so the card is announced once.
     out.say("A or Start continues after a short hold");
 }
 
-/// A miss's return note (`BACK IN 3`, `LATER`, `NEXT RUN`) when the lesson
-/// footer draws it: always on the trial template, and on the legacy footer
-/// only when it fits beside the banner.
-fn shown_retry_note(state: &GameState, run: &QuizRun) -> Option<String> {
-    let note = run.retry_note?.label();
-    let drawn = state.uses_visual_template(VisualTemplate::Trial)
-        || quiz_retry_note_x(&quiz_feedback_banner(run), &note).is_some();
-    drawn.then_some(note)
+/// The trial heading, by the header counter's rules ([`question_counter`]):
+/// `Retry` while a returning review copy is on screen, with its place and
+/// length in the batch, or the run's question number when no batch is known.
+fn trial_heading(state: &GameState, run: &QuizRun) -> String {
+    let label = if current_question_is_review(state) {
+        "Retry"
+    } else {
+        "Trial"
+    };
+    match state.batch_progress() {
+        Some((place, length)) => format!("{label} {place} of {length}"),
+        None => format!("{label} {}", run.question + 1),
+    }
+}
+
+/// When a missed question returns, as the lesson footer's
+/// [`RetryNote::label`] tells it.
+fn retry_sentence(note: RetryNote) -> String {
+    match note {
+        RetryNote::NextRun => "This question returns next run".into(),
+        RetryNote::In(0) => "This question returns next".into(),
+        // The footer counts the gap (`BACK IN 3`) only while it is short and
+        // says `LATER` beyond that; follow its cap rather than repeat it.
+        RetryNote::In(gap) if note.label().starts_with("BACK IN") => format!(
+            "This question returns in {gap} question{}",
+            if gap == 1 { "" } else { "s" }
+        ),
+        // A deferred copy waits for the Oracle's next questions (`LATER`).
+        RetryNote::In(_) | RetryNote::Later => "This question returns later".into(),
+    }
 }
 
 /// The lesson card read from the same composition the renderers draw: the
@@ -557,28 +615,60 @@ fn lesson(out: &mut Transcript, state: &GameState) {
     flush(out, label, &mut why);
 }
 
+/// Both level-up screens: the bond heading ([`bond_title`]), the level, the
+/// batch's first-try recap, and the next batch's lenses until input goes
+/// live. Only that last sentence changes when it does, so only the prompt is
+/// announced then.
 fn level_up(out: &mut Transcript, state: &GameState) {
+    let level = state.quiz.as_ref().map_or(1, |run| run.level);
+    let bond = bond_sentence(level);
     if state.uses_visual_template(VisualTemplate::Ascension) {
-        out.say(format!(
-            "The Oracle bond ascends: {}",
-            spoken(state.visual_tier().label())
-        ));
+        out.say(format!("{bond}: {}", spoken(state.visual_tier().label())));
     } else {
         out.say("Level up!");
+        out.say(bond);
     }
     if let Some(run) = state.quiz.as_ref() {
-        out.say(format!(
-            "Level {}. Batch {} survived",
-            run.level, run.completed_batches
-        ));
+        out.say(format!("Level {}", run.level));
+        out.say(first_try_sentence(run.ledger.last_batch));
     }
-    out.say(if state.level_up_can_continue() {
-        "A or Start continues"
+    if state.level_up_can_continue() {
+        out.say("A or Start continues");
     } else {
-        "Please wait"
-    });
+        let lenses: Vec<String> = Concept::focus_for_level(level)
+            .iter()
+            .map(|concept| spoken(concept.label()))
+            .collect();
+        out.say(format!("Next: {}", spoken_list(&lenses)));
+    }
 }
 
+/// [`bond_title`] as a sentence: `ORACLE BOND DEEPENS` reads
+/// `The Oracle bond deepens`.
+fn bond_sentence(level: u32) -> String {
+    let verb = bond_title(level)
+        .rsplit(' ')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    format!("The Oracle bond {verb}")
+}
+
+/// [`first_try_label`] as a sentence, with the same caps.
+fn first_try_sentence((right, attempted): (u32, u32)) -> String {
+    format!("First try {} of {}", right.min(99), attempted.min(99))
+}
+
+/// `a`, `a and b`, or `a, b and c`.
+fn spoken_list(items: &[String]) -> String {
+    match items.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => items.concat(),
+    }
+}
+
+/// Both result screens, in the order their rows are drawn: score, insight,
+/// the Aftermath's bond, level, then the learning ledger.
 fn game_over(out: &mut Transcript, state: &GameState) {
     let aftermath = state.uses_visual_template(VisualTemplate::Aftermath);
     out.say(if aftermath {
@@ -589,6 +679,12 @@ fn game_over(out: &mut Transcript, state: &GameState) {
     match state.quiz.as_ref() {
         Some(run) => {
             out.say(format!("Final score {}", run.score));
+            let insight = InsightStage::from_score(run.score);
+            if insight == InsightStage::Unlit {
+                out.say("Insight unlit");
+            } else {
+                out.say(format!("Insight {}", insight.label()));
+            }
             if aftermath {
                 out.say(format!(
                     "Bond reached: {}",
@@ -596,16 +692,37 @@ fn game_over(out: &mut Transcript, state: &GameState) {
                 ));
             }
             out.say(format!("Level {} reached", run.level));
-            let insight = InsightStage::from_score(run.score);
-            if insight == InsightStage::Unlit {
-                out.say("No insight rune awakened");
-            } else {
-                out.say(format!("Insight rune {}", insight.label()));
-            }
+            ledger(out, state, run);
         }
         None => out.say("No questions found"),
     }
     out.say("A, B, or Start returns to the menu");
+}
+
+/// The run's learning ledger, one sentence per row of [`ledger_rows`] and
+/// from the same data: first tries, redemptions, open reviews, and where to
+/// go next.
+fn ledger(out: &mut Transcript, state: &GameState, run: &QuizRun) {
+    let ledger = &run.ledger;
+    out.say(first_try_sentence((
+        ledger.first_try_right,
+        ledger.first_try,
+    )));
+    out.say(format!("Redeemed {}", ledger.redeemed.min(99)));
+    let open = open_reviews(state);
+    out.say(match open {
+        0 => "All clear".to_string(),
+        1 => "1 lesson awaiting review".to_string(),
+        open => format!("{} lessons awaiting review", open.min(99)),
+    });
+    if let Some((concept, stage)) = woken_lens(state) {
+        out.say(format!(
+            "{} lens rose to {stage} of 3 runes",
+            spoken(concept.label())
+        ));
+    } else if open > 0 {
+        out.say("See the Codex");
+    }
 }
 
 fn codex(out: &mut Transcript, state: &GameState) {
@@ -1151,7 +1268,7 @@ mod tests {
         assert_eq!(
             engine.transcript(),
             format!(
-                "Trial 1, Roles lens. {} {} Wards 3 of 3, flow x1, score 0. \
+                "Trial 1 of 6, Roles lens. {} {} Wards 3 of 3, flow x1, score 0. \
                  Up and Down choose, A answers, B leaves.",
                 question.question,
                 choices.join(" ")
@@ -1192,10 +1309,10 @@ mod tests {
         assert_eq!(
             card,
             format!(
-                "Trial 1. Missed. WARD STRAINED. You chose: {}. Why not: {} \
+                "Trial 1 of 6. Missed. WARD STRAINED. You chose: {}. Why not: {} \
                  The answer: {}. Why it holds: {} Roles mastery: 0 of 3 runes. \
-                 Returns: Later. Wards 2 of 3, flow x1, score 0. \
-                 A or Start continues after a short hold.",
+                 This question returns later. \
+                 Wards 2 of 3, flow x1, score 0. A or Start continues after a short hold.",
                 question.choices[picked],
                 question.rationales[picked],
                 question.choices[0],
@@ -1226,7 +1343,7 @@ mod tests {
         assert_eq!(
             engine.transcript(),
             format!(
-                "Trial 1. Correct. ROLES RUNE I. The answer: {}. Why it holds: {} \
+                "Trial 1 of 6. Correct. ROLES RUNE I. The answer: {}. Why it holds: {} \
                  Roles mastery: 1 of 3 runes. Wards 3 of 3, flow x1, score 100. \
                  A or Start continues after a short hold.",
                 question.choices[0], question.rationales[0]
@@ -1337,13 +1454,347 @@ mod tests {
         };
         assert_eq!(
             screen_transcript(&state),
-            "Game over. Final score 900. Level 3 reached. Insight rune II. \
+            "Game over. Final score 900. Insight II. Level 3 reached. \
+             First try 0 of 0. Redeemed 0. All clear. \
              A, B, or Start returns to the menu."
         );
+        state.quiz.as_mut().unwrap().score = 0;
+        assert!(
+            screen_transcript(&state).contains(" Insight unlit. "),
+            "the score mark reads like the screen's INSIGHT UNLIT"
+        );
         state.screen = Screen::LevelUp;
+        state.quiz.as_mut().unwrap().ledger.last_batch = (4, 6);
         assert_eq!(
             screen_transcript(&state),
-            "Level up! Level 3. Batch 2 survived. Please wait."
+            "Level up! The Oracle bond deepens. Level 3. First try 4 of 6. \
+             Next: Flows and Tradeoffs.",
+            "level 3 stays Adept, so the bond deepens; the hold names the lenses ahead"
+        );
+        state.quiz.as_mut().unwrap().level = 4;
+        assert_eq!(
+            screen_transcript(&state),
+            "Level up! The Oracle bond ascends. Level 4. First try 4 of 6. \
+             Next: Invariants and Tradeoffs."
+        );
+    }
+
+    #[test]
+    fn the_ascension_reads_its_bond_recap_and_lenses_then_only_the_prompt() {
+        let mut cartridge = oracle_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(question).collect();
+        let mut engine = powered(cartridge);
+        advance_to(&mut engine, Screen::Quiz);
+        // One miss, then every first try and the miss's review copy right.
+        for index in 0..=QUESTION_BATCH_SIZE {
+            answer(&mut engine, index != 0);
+            continue_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        assert!(state(&engine).uses_visual_template(VisualTemplate::Ascension));
+        assert!(!state(&engine).level_up_can_continue());
+        let recap = format!("First try 5 of {QUESTION_BATCH_SIZE}.");
+        assert_eq!(
+            engine.transcript(),
+            format!("The Oracle bond ascends: Adept. Level 2. {recap} Next: Flows and Tradeoffs."),
+            "Initiate to Adept crosses a tier"
+        );
+
+        let mut channel = TranscriptChannel::default();
+        publish(&mut channel, &engine);
+        let held = channel.since(0).unwrap().seq;
+        for _ in 0..600 {
+            if state(&engine).level_up_can_continue() {
+                break;
+            }
+            engine.update();
+        }
+        assert!(state(&engine).level_up_can_continue());
+        publish(&mut channel, &engine);
+        assert_eq!(
+            channel.since(held).unwrap().text,
+            "A or Start continues.",
+            "only the prompt is announced when input goes live"
+        );
+
+        engine
+            .app
+            .world_mut()
+            .resource_mut::<GameState>()
+            .quiz
+            .as_mut()
+            .unwrap()
+            .level = 3;
+        assert!(
+            engine
+                .transcript()
+                .starts_with("The Oracle bond deepens: Adept. Level 3. "),
+            "{}",
+            engine.transcript()
+        );
+    }
+
+    #[test]
+    fn the_result_screens_read_the_learning_ledger_row_for_row() {
+        let mut cartridge = quiz_cartridge();
+        (cartridge.lessons, cartridge.mastery) = journal();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            screen: Screen::GameOver,
+            quiz: Some(QuizRun {
+                score: 900,
+                level: 3,
+                hearts: 0,
+                ledger: RunLedger {
+                    first_try: 6,
+                    first_try_right: 4,
+                    redeemed: 1,
+                    ..RunLedger::default()
+                },
+                ..QuizRun::new()
+            }),
+            ..GameState::default()
+        };
+        assert_eq!(
+            screen_transcript(&state),
+            "Game over. Final score 900. Insight II. Level 3 reached. \
+             First try 4 of 6. Redeemed 1. 1 lesson awaiting review. \
+             Roles lens rose to 2 of 3 runes. A, B, or Start returns to the menu.",
+            "the open Invariants miss cracks its rune III, so Roles ties it at two \
+             and wins as the earlier lens"
+        );
+        let spoken_rows = |state: &GameState| {
+            let mut out = Transcript::default();
+            ledger(&mut out, state, state.quiz.as_ref().unwrap());
+            out.finish().len()
+        };
+        assert_eq!(
+            spoken_rows(&state),
+            ledger_rows(&state, state.quiz.as_ref().unwrap()).len()
+        );
+
+        // No lens woke this run, and a review is open: go to the Codex.
+        state.quiz.as_mut().unwrap().ledger.stages_at_start =
+            Concept::ALL.map(|concept| state.mastery_stage(concept));
+        let text = screen_transcript(&state);
+        assert!(
+            text.contains(" 1 lesson awaiting review. See the Codex. "),
+            "{text}"
+        );
+        assert_eq!(
+            spoken_rows(&state),
+            ledger_rows(&state, state.quiz.as_ref().unwrap()).len()
+        );
+
+        // Nothing open and nothing woke: all clear, and no fourth row.
+        for lesson in &mut state.cartridge.as_mut().unwrap().lessons {
+            lesson.outstanding = false;
+        }
+        // Clearing the open miss un-cracks its rune, so the run starts from
+        // the stages now lit.
+        state.quiz.as_mut().unwrap().ledger.stages_at_start =
+            Concept::ALL.map(|concept| state.mastery_stage(concept));
+        let text = screen_transcript(&state);
+        assert!(
+            text.contains(" Redeemed 1. All clear. A, B, or Start"),
+            "{text}"
+        );
+        assert_eq!(
+            spoken_rows(&state),
+            ledger_rows(&state, state.quiz.as_ref().unwrap()).len()
+        );
+    }
+
+    /// Commits the right answer, or the choice after it for a miss.
+    fn answer(engine: &mut GameEngine, correct: bool) {
+        let slot = {
+            let state = state(engine);
+            let run = state.quiz.as_ref().unwrap();
+            let question = &state.cartridge.as_ref().unwrap().questions[run.question];
+            let order = run.display_order(question.choices.len());
+            let answer = order
+                .iter()
+                .position(|source| *source == question.answer)
+                .unwrap();
+            if correct {
+                answer
+            } else {
+                (answer + 1) % order.len()
+            }
+        };
+        focus(engine, slot);
+        press(engine, Button::A);
+    }
+
+    /// Waits out the lesson hold and continues past the card.
+    fn continue_lesson(engine: &mut GameEngine) {
+        for _ in 0..QUIZ_FEEDBACK_TICKS {
+            engine.update();
+        }
+        press(engine, Button::A);
+    }
+
+    #[test]
+    fn a_miss_says_when_it_returns_and_its_review_copy_is_read_as_a_retry() {
+        let mut cartridge = oracle_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(question).collect();
+        let mut engine = powered(cartridge);
+        advance_to(&mut engine, Screen::Quiz);
+        assert!(engine
+            .transcript()
+            .starts_with("Trial 1 of 6, Roles lens. "));
+
+        answer(&mut engine, false);
+        assert_eq!(
+            state(&engine).quiz.as_ref().unwrap().retry_note,
+            Some(RetryNote::In(RETRY_GAP))
+        );
+        let card = engine.transcript();
+        assert!(card.starts_with("Trial 1 of 7. Missed. "), "{card}");
+        assert!(
+            card.contains(" This question returns in 3 questions. "),
+            "the footer's BACK IN 3, spoken: {card}"
+        );
+        continue_lesson(&mut engine);
+        for place in 2..=RETRY_GAP + 1 {
+            assert!(
+                engine
+                    .transcript()
+                    .starts_with(&format!("Trial {place} of 7, Roles lens. ")),
+                "{}",
+                engine.transcript()
+            );
+            answer(&mut engine, true);
+            assert!(!engine.transcript().contains("This question returns"));
+            continue_lesson(&mut engine);
+        }
+        let retry = engine.transcript();
+        assert!(
+            retry.starts_with("Retry 5 of 7, Roles lens. "),
+            "the header's amber RETRY 5/7, spoken: {retry}"
+        );
+        answer(&mut engine, true);
+        assert!(engine.transcript().starts_with("Retry 5 of 7. Correct. "));
+    }
+
+    #[test]
+    fn a_later_batch_reads_its_own_place_and_every_retry_note_is_spoken() {
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..13).map(question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            screen: Screen::Quiz,
+            batch_ends: vec![7, 13],
+            quiz: Some(QuizRun {
+                completed_batches: 1,
+                question: 7,
+                ..QuizRun::new()
+            }),
+            ..GameState::default()
+        };
+        let text = screen_transcript(&state);
+        assert!(
+            text.starts_with("Trial 1 of 6, Roles lens. "),
+            "the second batch counts from one, as the header does: {text}"
+        );
+
+        state.quiz.as_mut().unwrap().feedback = Some((false, 0));
+        for (note, sentence) in [
+            (RetryNote::In(0), "This question returns next."),
+            (RetryNote::In(1), "This question returns in 1 question."),
+            (RetryNote::In(9), "This question returns in 9 questions."),
+            (RetryNote::In(10), "This question returns later."),
+            (RetryNote::NextRun, "This question returns next run."),
+        ] {
+            state.quiz.as_mut().unwrap().retry_note = Some(note);
+            let text = screen_transcript(&state);
+            assert!(text.contains(&format!(" {sentence} ")), "{note:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn the_datafall_reads_the_oracle_line_without_its_countdown() {
+        let mut failed = GameState {
+            screen: Screen::Oracle,
+            ai_provider: Some("CLAUDE".into()),
+            question_failure: Some("TIMED OUT".into()),
+            question_retry_ticks: 300,
+            ..GameState::default()
+        };
+        assert!(matches!(
+            failed.oracle_line(),
+            Some(OracleLine::Failure {
+                retry_in: Some(5),
+                ..
+            })
+        ));
+        let counting = screen_transcript(&failed);
+        assert!(
+            counting.contains(" Last attempt: TIMED OUT, retrying soon. "),
+            "{counting}"
+        );
+        failed.question_retry_ticks = 120;
+        assert_eq!(
+            screen_transcript(&failed),
+            counting,
+            "the countdown ticking must not re-announce the Datafall"
+        );
+        failed.question_retry_ticks = 0;
+        failed.questions_loading = true;
+        assert!(screen_transcript(&failed).contains(" Last attempt: TIMED OUT, retrying now. "));
+
+        let mut cartridge = oracle_cartridge();
+        cartridge.questions.clear();
+        (cartridge.lessons, cartridge.mastery) = journal();
+        let mut waiting = GameState {
+            screen: Screen::Oracle,
+            cartridge: Some(cartridge),
+            ai_provider: Some("CLAUDE".into()),
+            quiz: Some(QuizRun::new()),
+            questions_loading: true,
+            ..GameState::default()
+        };
+        let mut channel = TranscriptChannel::default();
+        channel.publish(Screen::Oracle, screen_sentences(&waiting));
+        let first = screen_transcript(&waiting);
+        assert!(
+            first.contains(" Review, Invariants lens: ONLY THE ENGINE CHANGES SCENES. "),
+            "the outstanding miss is recalled first: {first}"
+        );
+        waiting.screen_ticks = ORACLE_RECALL_TICKS;
+        assert!(channel.publish(Screen::Oracle, screen_sentences(&waiting)));
+        assert_eq!(
+            channel.since(1).unwrap().text,
+            "Recall, Roles lens: THE HEADLESS BEVY ENGINE.",
+            "each recalled lesson is announced alone"
+        );
+    }
+
+    #[test]
+    fn a_change_that_reverts_before_the_reader_polls_announces_nothing() {
+        let mut channel = TranscriptChannel::default();
+        let focus_first = sentences("Menu. Option 1: A, selected. Option 2: B. Up and Down move.");
+        let focus_second = sentences("Menu. Option 1: A. Option 2: B, selected. Up and Down move.");
+        assert!(channel.publish(Screen::QuizMenu, focus_first.clone()));
+        assert!(channel.publish(Screen::QuizMenu, focus_second));
+        assert!(channel.publish(Screen::QuizMenu, focus_first));
+        assert_eq!(
+            channel.since(1),
+            None,
+            "Down then Up between polls must not blank the live region"
+        );
+        assert_eq!(
+            channel.since(2).map(|update| update.text),
+            Some("Option 1: A, selected.".into())
+        );
+        assert!(channel.publish(Screen::Off, Vec::new()));
+        assert_eq!(
+            channel.since(3),
+            Some(TranscriptUpdate {
+                seq: 4,
+                text: String::new()
+            }),
+            "powering off still clears the region"
         );
     }
 
@@ -1477,7 +1928,7 @@ mod tests {
         press(&mut engine, Button::A);
         publish(&mut channel, &engine);
         assert_eq!(channel.since(trial.seq).unwrap().text, engine.transcript());
-        assert!(engine.transcript().starts_with("Trial 1. "));
+        assert!(engine.transcript().starts_with("Trial 1 of 6. "));
     }
 
     #[test]
