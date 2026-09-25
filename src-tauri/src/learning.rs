@@ -88,6 +88,28 @@ pub struct AnswerEvidence {
     pub correct: bool,
     /// True when this attempt re-asked a question the player previously missed.
     pub review: bool,
+    /// The source choice index the player picked, recorded only on a miss so
+    /// the Codex can show the misconception it reveals.
+    pub picked: Option<usize>,
+    /// True when the player revealed this pending lesson's answer in the Codex
+    /// before this attempt, so a correct answer is relearning, not evidence.
+    pub peeked: bool,
+}
+
+/// A learner-progress change the engine asks its host to persist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProgressEvent {
+    /// A committed answer.
+    Answered(AnswerEvidence),
+    /// The player revealed a pending lesson's answer in the Codex. The
+    /// question text is exactly as generated; saves normalize it for identity.
+    Peeked { question: String },
+}
+
+impl From<AnswerEvidence> for ProgressEvent {
+    fn from(evidence: AnswerEvidence) -> Self {
+        Self::Answered(evidence)
+    }
 }
 
 /// Accumulated evidence for one lens on one cartridge.
@@ -102,10 +124,20 @@ pub struct LensRecord {
     /// Wrong answers, counting every attempt.
     #[serde(default)]
     pub missed: u32,
+    /// Correct answers given after revealing the answer in the Codex. They
+    /// show the lesson was relearned, so they are not mastery evidence.
+    /// Omitted from saves while zero, so unchanged progress keeps its shape.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub relearned: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl LensRecord {
-    /// Evidence of understanding: first-try successes plus redemptions.
+    /// Evidence of understanding: first-try successes plus redemptions made
+    /// without revealing the answer first. Relearning is not evidence.
     pub fn evidence(&self) -> u32 {
         self.first_try.saturating_add(self.redeemed)
     }
@@ -117,6 +149,7 @@ impl LensRecord {
 
     pub fn record(&mut self, evidence: &AnswerEvidence) {
         match (evidence.correct, evidence.review) {
+            (true, _) if evidence.peeked => self.relearned = self.relearned.saturating_add(1),
             (true, false) => self.first_try = self.first_try.saturating_add(1),
             (true, true) => self.redeemed = self.redeemed.saturating_add(1),
             (false, _) => self.missed = self.missed.saturating_add(1),
@@ -145,6 +178,14 @@ pub struct Lesson {
     pub concept: Option<Concept>,
     /// True while the player's latest attempt at this question was wrong.
     pub outstanding: bool,
+    /// The wrong choice the player last picked and the misconception it
+    /// reveals (empty for legacy questions without rationales). A later
+    /// correct answer keeps it, so a learned lesson can recall it. `None` for
+    /// lessons recorded before picks were saved.
+    pub misconception: Option<(String, String)>,
+    /// True once the player revealed this pending lesson's answer in the
+    /// Codex; the next attempt then counts as relearning, not evidence.
+    pub peeked: bool,
 }
 
 /// Whether a rationale fits the lesson panel without truncation.
@@ -224,12 +265,21 @@ mod tests {
             concept: Some(Concept::Invariant),
             correct: false,
             review: false,
+            picked: Some(2),
+            peeked: false,
         };
         record_evidence(&mut mastery, &evidence);
         evidence.correct = true;
+        evidence.picked = None;
         evidence.review = true;
         record_evidence(&mut mastery, &evidence);
         evidence.review = false;
+        record_evidence(&mut mastery, &evidence);
+        // Reading the answer in the Codex first turns a redemption, or even a
+        // fresh-looking success, into relearning.
+        evidence.peeked = true;
+        record_evidence(&mut mastery, &evidence);
+        evidence.review = true;
         record_evidence(&mut mastery, &evidence);
         record_evidence(
             &mut mastery,
@@ -246,10 +296,12 @@ mod tests {
             LensRecord {
                 first_try: 1,
                 redeemed: 1,
-                missed: 1
+                missed: 1,
+                relearned: 2,
             }
         );
         assert_eq!(record.evidence(), 2);
+        assert_eq!(record.stage(), 1, "relearning never lights a rune");
         assert_eq!(mastery.len(), 1);
     }
 

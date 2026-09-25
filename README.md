@@ -66,6 +66,11 @@ score. Every question assesses one of five concept lenses: **purpose**,
   and 5 pieces of evidence (first-try successes plus redemptions). The Codex
   shows them with pending reviews, and pages through the lesson journal:
   question, answer, and rationale.
+- **Pending reviews are self-tests.** A Codex page for a missed question shows
+  the wrong choice you picked and the misconception behind it, and keeps the
+  answer sealed until you press A. Reading it first is allowed, but it is not
+  evidence: the next correct answer to that question counts as relearning and
+  lights no rune.
 - **Generation adapts to you.** Each request names your weakest lens and the
   questions you have already been asked, so new batches target your gaps
   without repeating themselves.
@@ -280,7 +285,7 @@ the running CODE QUEST ADVANCE build.
 | Keyboard | Handheld input | Current use |
 |---|---|---|
 | Arrow keys | D-pad | Navigate; move during Datafall; page the Codex |
-| D | A | Confirm, answer, continue past a lesson, or start a quest |
+| D | A | Confirm, answer, continue past a lesson, reveal a sealed Codex answer, or start a quest |
 | S | B | Back, leave the Oracle or Codex, leave a run (press twice), or abort a quest |
 | Enter | START | Start or confirm |
 | Shift | SELECT | Reserved |

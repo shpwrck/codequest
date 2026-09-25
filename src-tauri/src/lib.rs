@@ -846,24 +846,25 @@ fn question_failure_reason(error: &str) -> String {
 }
 
 /// Builds the answer recorder the engine calls when a player commits an
-/// answer. The engine calls it from its fixed-rate loop, and a durable save
-/// write would stall frames there, so one writer thread applies evidence in
-/// commit order. The writer stops once the returned recorder is dropped.
+/// answer or reveals a pending lesson in the Codex. The engine calls it from
+/// its fixed-rate loop, and a durable save write would stall frames there, so
+/// one writer thread applies events in the order they happened. The writer
+/// stops once the returned recorder is dropped.
 fn answer_recorder_with<F>(persist: F) -> (engine::AnsweredQuestionRecorder, thread::JoinHandle<()>)
 where
-    F: Fn(&std::path::Path, &learning::AnswerEvidence) + Send + 'static,
+    F: Fn(&std::path::Path, &learning::ProgressEvent) + Send + 'static,
 {
-    let (sender, receiver) = mpsc::channel::<(String, learning::AnswerEvidence)>();
+    let (sender, receiver) = mpsc::channel::<(String, learning::ProgressEvent)>();
     let writer = thread::Builder::new()
         .name("cqa-save-writer".into())
         .spawn(move || {
-            for (path, evidence) in receiver {
-                persist(std::path::Path::new(&path), &evidence);
+            for (path, event) in receiver {
+                persist(std::path::Path::new(&path), &event);
             }
         })
         .expect("failed to start save writer thread");
-    let recorder: engine::AnsweredQuestionRecorder = Arc::new(move |path, evidence| {
-        let _ = sender.send((path, evidence));
+    let recorder: engine::AnsweredQuestionRecorder = Arc::new(move |path, event| {
+        let _ = sender.send((path, event));
     });
     (recorder, writer)
 }
@@ -1051,8 +1052,8 @@ pub fn run() {
             question_failure_reason(&error)
         })
     });
-    let (answered_question_recorder, _save_writer) = answer_recorder_with(|path, evidence| {
-        let _ = questions::persist_answer_evidence(path, evidence);
+    let (answered_question_recorder, _save_writer) = answer_recorder_with(|path, event| {
+        let _ = questions::persist_progress(path, event);
     });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1954,6 +1955,8 @@ mod question_policy_tests {
             concept,
             correct,
             review: false,
+            picked: None,
+            peeked: false,
         }
     }
 
@@ -2148,22 +2151,31 @@ mod question_policy_tests {
         let engine_thread = thread::current().id();
         let writer_threads = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = Arc::clone(&writer_threads);
-        let (recorder, writer) = answer_recorder_with(move |path, evidence| {
+        let (recorder, writer) = answer_recorder_with(move |path, event| {
             seen.lock().unwrap().push(thread::current().id());
-            questions::persist_answer_evidence(path, evidence).unwrap();
+            questions::persist_progress(path, event).unwrap();
         });
         let cartridge = repo.to_string_lossy().to_string();
-        let evidence = |correct| AnswerEvidence {
+        let evidence = |correct, peeked| AnswerEvidence {
             review: correct,
+            picked: (!correct).then_some(2),
+            peeked,
             ..answer(
                 "WHY WRITE SAVES ATOMICALLY?",
                 Some(Concept::Invariant),
                 correct,
             )
         };
+        let peek = learning::ProgressEvent::Peeked {
+            question: "WHY WRITE SAVES ATOMICALLY?".into(),
+        };
 
-        recorder(cartridge.clone(), evidence(false));
-        recorder(cartridge, evidence(true));
+        // Miss, reveal the answer, redeem (relearning), miss again, redeem.
+        recorder(cartridge.clone(), evidence(false, false).into());
+        recorder(cartridge.clone(), peek);
+        recorder(cartridge.clone(), evidence(true, true).into());
+        recorder(cartridge.clone(), evidence(false, false).into());
+        recorder(cartridge, evidence(true, false).into());
         drop(recorder);
         writer.join().unwrap();
 
@@ -2173,8 +2185,20 @@ mod question_policy_tests {
             progress.missed_questions.is_empty(),
             "the redemption was applied last"
         );
+        assert!(
+            progress.peeked_questions.is_empty(),
+            "every attempt clears a peek"
+        );
+        assert_eq!(
+            progress.missed_picks.get("WHY WRITE SAVES ATOMICALLY?"),
+            Some(&2)
+        );
         let lens = progress.mastery[&Concept::Invariant];
-        assert_eq!((lens.redeemed, lens.missed), (1, 1));
+        assert_eq!(
+            (lens.redeemed, lens.relearned, lens.missed),
+            (1, 1, 2),
+            "the redemption after a peek counts as relearning"
+        );
         assert!(writer_threads
             .lock()
             .unwrap()
