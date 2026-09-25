@@ -39,8 +39,17 @@ The current progression model is visible as well as numeric:
 
 The game has no filler question deck. If the installed AI provider returns an
 invalid batch, the Oracle keeps Datafall playable and retries; press B to leave
-the wait safely. Runtime audio is not implemented yet. Audio entries in the
-manifest are production requirements, not playable sound.
+the wait safely.
+
+Sound is engine-owned, like the framebuffer. Each tick the engine compares the
+observable game state with the previous tick and emits tick-stamped notes for a
+four-voice chip (two pulses, a triangle wave, and noise); the shell's speaker
+only plays them. Scene loops stop on the tick their scene exits, one input
+produces at most one cue, and the Datafall and level-up arrangements gain a
+voice with each Oracle bond tier. The audio context starts on your first key
+press or device press, and the right-edge volume wheel (or V) steps through
+MUTE, LOW, MID, and HIGH; the setting is remembered. Every answer, threshold,
+and status stays visible on screen when muted.
 
 ## Install
 
@@ -200,6 +209,7 @@ the running CODE QUEST ADVANCE build.
 | P | Power switch | Turn the device on or off |
 | C | Cartridge slot | Open or close the rack while powered off |
 | F1 | FRONT/BACK switch | Turn the device over |
+| V | Volume wheel | Cycle MUTE, LOW, MID, HIGH |
 
 The engine consumes input edges, not browser key-repeat events. During the
 Datafall-to-question handoff and the 45-tick answer review, inactive controls are

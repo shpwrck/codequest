@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 
+use crate::audio::{
+    self, pad, AnswerPhase, AudioBatch, AudioOut, AudioQueue, AudioScene, AudioSnapshot,
+    QuestionStatus, RunAudio, Tier,
+};
 use crate::codequest::{CodeQuestConfig, GameType, VisualTemplate};
 use crate::external_tools;
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
@@ -1231,7 +1235,11 @@ impl GameEngine {
             .init_resource::<Effects>()
             .init_resource::<Framebuffer>()
             .init_resource::<GameState>()
-            .add_systems(Update, (apply_commands, advance_game, render).chain());
+            .init_resource::<AudioOut>()
+            .add_systems(
+                Update,
+                (apply_commands, advance_game, direct_audio, render).chain(),
+            );
         let mut engine = Self { app };
         engine.update();
         engine
@@ -1262,6 +1270,11 @@ impl GameEngine {
             .collect()
     }
 
+    /// Notes the audio director emitted since the last call, plus the tick.
+    fn take_audio(&mut self) -> AudioBatch {
+        self.app.world_mut().resource_mut::<AudioOut>().drain()
+    }
+
     #[cfg(test)]
     fn screen(&self) -> Screen {
         self.app.world().resource::<GameState>().screen
@@ -1278,6 +1291,7 @@ impl Default for GameEngine {
 pub struct EngineRuntime {
     sender: mpsc::Sender<EngineCommand>,
     frame: Arc<RwLock<Vec<u8>>>,
+    audio: Arc<Mutex<AudioQueue>>,
 }
 
 impl EngineRuntime {
@@ -1288,6 +1302,8 @@ impl EngineRuntime {
         let (sender, receiver) = mpsc::channel();
         let frame = Arc::new(RwLock::new(vec![0; FRAME_BYTES]));
         let shared_frame = Arc::clone(&frame);
+        let audio = Arc::new(Mutex::new(AudioQueue::default()));
+        let shared_audio = Arc::clone(&audio);
         let engine_sender = sender.clone();
         let child = Arc::new(Mutex::new(None));
         let running_child = Arc::clone(&child);
@@ -1314,6 +1330,9 @@ impl EngineRuntime {
                     if let Ok(mut target) = shared_frame.write() {
                         target.copy_from_slice(engine.frame());
                     }
+                    if let Ok(mut queue) = shared_audio.lock() {
+                        queue.append(engine.take_audio());
+                    }
                     next_frame += FRAME_TIME;
                     if let Some(remaining) = next_frame.checked_duration_since(Instant::now()) {
                         thread::sleep(remaining);
@@ -1324,7 +1343,11 @@ impl EngineRuntime {
             })
             .expect("failed to start Bevy engine thread");
 
-        Self { sender, frame }
+        Self {
+            sender,
+            frame,
+            audio,
+        }
     }
 
     pub fn set_power(&self, powered: bool) -> Result<(), String> {
@@ -1354,11 +1377,112 @@ impl EngineRuntime {
             .unwrap_or_else(|_| vec![0; FRAME_BYTES])
     }
 
+    /// Takes every note the engine has emitted since the last drain.
+    pub fn drain_audio(&self) -> AudioBatch {
+        self.audio
+            .lock()
+            .map(|mut queue| queue.drain())
+            .unwrap_or_default()
+    }
+
     fn send(&self, command: EngineCommand) -> Result<(), String> {
         self.sender
             .send(command)
             .map_err(|_| "BEVY ENGINE STOPPED".to_string())
     }
+}
+
+/// Samples the observable game state the audio director listens to. Sound is
+/// derived from these snapshots only; gameplay code never calls audio.
+fn audio_snapshot(state: &GameState) -> AudioSnapshot {
+    let scene = match state.screen {
+        Screen::Off => AudioScene::Off,
+        Screen::Boot => AudioScene::Boot,
+        Screen::Copyright => AudioScene::Copyright,
+        Screen::OpeningFanfare => AudioScene::Opening(match state.opening_beat() {
+            OpeningBeat::Legacy => audio::OpeningBeat::Legacy,
+            OpeningBeat::SourceEmber => audio::OpeningBeat::SourceEmber,
+            OpeningBeat::ArchiveAnswer => audio::OpeningBeat::ArchiveAnswer,
+            OpeningBeat::MemoryVault => audio::OpeningBeat::MemoryVault,
+            OpeningBeat::Convergence => audio::OpeningBeat::Convergence,
+            OpeningBeat::OracleAwakening => audio::OpeningBeat::OracleAwakening,
+        }),
+        Screen::Title => AudioScene::Title,
+        Screen::QuizMenu => AudioScene::QuizMenu,
+        Screen::CharacterCreation => AudioScene::CharacterCreation,
+        Screen::Oracle => AudioScene::Oracle,
+        Screen::Quiz => AudioScene::Quiz,
+        Screen::LevelUp => AudioScene::LevelUp,
+        Screen::GameOver => AudioScene::GameOver,
+        Screen::QuestSelect => AudioScene::QuestSelect,
+        Screen::Battle => AudioScene::Battle,
+        Screen::Victory => AudioScene::Victory,
+        Screen::Defeat => AudioScene::Defeat,
+    };
+    let held = state.held.iter().fold(0, |bits, button| {
+        bits | match button {
+            Button::Up => pad::UP,
+            Button::Down => pad::DOWN,
+            Button::Left => pad::LEFT,
+            Button::Right => pad::RIGHT,
+            Button::A => pad::A,
+            Button::B => pad::B,
+            Button::Start => pad::START,
+            Button::Select => pad::SELECT,
+            Button::L => pad::L,
+            Button::R => pad::R,
+        }
+    });
+    // Mirrors the Oracle's truthful status line.
+    let questions = if state.has_unanswered_question() {
+        QuestionStatus::Ready
+    } else if state.questions_loading {
+        QuestionStatus::Writing
+    } else if state.question_retry_ticks > 0 {
+        QuestionStatus::Retrying
+    } else {
+        QuestionStatus::Contacting
+    };
+    AudioSnapshot {
+        powered: state.powered,
+        scene,
+        scene_ticks: state.screen_ticks,
+        held,
+        menu_selected: state.menu_selected,
+        hero_row: state.hero_row,
+        hero_name: state.hero_name,
+        hero_class: state.hero_class,
+        hero_style: state.hero_style,
+        quest_selected: state.quest_selected,
+        run: state.quiz.as_ref().map(|run| RunAudio {
+            question: run.question,
+            selected: run.selected,
+            phase: match run.feedback {
+                None => AnswerPhase::Choosing,
+                Some((true, _)) => AnswerPhase::Correct,
+                Some((false, _)) => AnswerPhase::Wrong,
+            },
+            hearts: run.hearts,
+            multiplier: streak_multiplier(run.streak),
+            insight: InsightStage::from_score(run.score).index(),
+            level: run.level,
+            completed_batches: run.completed_batches,
+        }),
+        data: state.oracle_data,
+        data_stage: threshold_stage(state.oracle_data, &DATA_CHARGE_THRESHOLDS),
+        bugs: state.oracle_bug_hits,
+        breach_stage: threshold_stage(state.oracle_bug_hits, &BUG_BREACH_THRESHOLDS),
+        questions,
+        tier: match state.presentation_tier() {
+            PresentationTier::Initiate => Tier::Initiate,
+            PresentationTier::Adept => Tier::Adept,
+            PresentationTier::OracleBound => Tier::OracleBound,
+        },
+    }
+}
+
+fn direct_audio(state: Res<GameState>, mut audio: ResMut<AudioOut>) {
+    audio.observe(&audio_snapshot(&state));
 }
 
 fn apply_commands(
@@ -6168,6 +6292,334 @@ mod tests {
         issue(&mut second, EngineCommand::BootComplete);
 
         assert_ne!(first.frame(), second.frame());
+    }
+
+    fn last_cue(engine: &GameEngine) -> Option<audio::Cue> {
+        engine.app.world().resource::<AudioOut>().last_cue()
+    }
+
+    /// Presses and releases `button`, returning the cue each edge started.
+    fn tap_cues(engine: &mut GameEngine, button: Button) -> [Option<audio::Cue>; 2] {
+        [true, false].map(|pressed| {
+            issue(engine, EngineCommand::Input { button, pressed });
+            last_cue(engine)
+        })
+    }
+
+    #[test]
+    fn every_input_edge_starts_at_most_one_distinct_cue() {
+        use audio::Cue;
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+
+        let script = [
+            (Button::Start, Some(Cue::Confirm)),
+            (Button::Down, Some(Cue::Navigate(1))),
+            (Button::Up, Some(Cue::Navigate(0))),
+            (Button::Left, Some(Cue::Unavailable)),
+            (Button::A, Some(Cue::Confirm)),
+            (Button::Right, Some(Cue::Trait { row: 0, value: 1 })),
+            (Button::Down, Some(Cue::Navigate(1))),
+            (Button::A, Some(Cue::Trait { row: 1, value: 1 })),
+            (Button::Down, Some(Cue::Navigate(2))),
+            (Button::Left, Some(Cue::Trait { row: 2, value: 4 })),
+            (Button::Down, Some(Cue::Navigate(3))),
+            (Button::Right, Some(Cue::Unavailable)),
+            (Button::Start, Some(Cue::BeginRun)),
+            (Button::A, Some(Cue::Unavailable)),
+            (Button::Left, None),
+        ];
+        for (button, expected) in script {
+            let [press, release] = tap_cues(&mut engine, button);
+            assert_eq!(press, expected, "{button:?} on {:?}", engine.screen());
+            assert_eq!(release, None, "releasing {button:?} must stay silent");
+        }
+        assert_eq!(engine.screen(), Screen::Oracle);
+
+        let mut arrival = Vec::new();
+        for _ in 0..75 {
+            engine.update();
+            arrival.extend(last_cue(&engine));
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        // The first falling shard lands on the hero before the vision arrives.
+        assert_eq!(arrival, [Cue::DataCollect(1), Cue::QuestionReveal]);
+
+        for (button, expected) in [
+            (Button::Down, Some(Cue::Cursor(1))),
+            (Button::Up, Some(Cue::Cursor(0))),
+            (Button::Right, Some(Cue::Unavailable)),
+            (Button::A, Some(Cue::Correct)),
+            // The answer review ignores input, and so does the speaker.
+            (Button::Down, None),
+            (Button::B, None),
+        ] {
+            let [press, release] = tap_cues(&mut engine, button);
+            assert_eq!(press, expected, "{button:?} in the quiz");
+            assert_eq!(release, None);
+        }
+    }
+
+    #[test]
+    fn engine_audio_is_silent_while_off_or_booting() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        for _ in 0..60 {
+            engine.update();
+        }
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+        for _ in 0..180 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Boot);
+        let silent = engine.take_audio();
+        assert!(silent.notes.is_empty(), "{:?}", silent.notes);
+        assert!(silent.tick > 240, "the engine tick advances while silent");
+
+        issue(&mut engine, EngineCommand::BootComplete);
+        for _ in 0..60 {
+            engine.update();
+        }
+        let chronicle = engine.take_audio();
+        assert!(chronicle.notes.iter().any(|note| !note.is_cut()));
+        assert!(chronicle
+            .notes
+            .iter()
+            .all(|note| note.tick > silent.tick && note.tick <= chronicle.tick));
+
+        // Power loss may only cut voices, never start one.
+        issue(&mut engine, EngineCommand::Power(false));
+        for _ in 0..120 {
+            engine.update();
+        }
+        assert!(engine.take_audio().notes.iter().all(|note| note.is_cut()));
+    }
+
+    #[test]
+    fn datafall_loop_is_cut_on_the_tick_b_leaves_the_oracle() {
+        let mut engine = waiting_oracle_engine();
+        let _ = engine.take_audio();
+        for _ in 0..157 {
+            engine.update();
+        }
+        let before = engine.take_audio();
+        assert!(before.notes.iter().any(|note| !note.is_cut()));
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::B,
+                pressed: true,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        assert_eq!(last_cue(&engine), Some(audio::Cue::Leave));
+        let exit = engine.take_audio();
+        let tails = before
+            .notes
+            .iter()
+            .filter(|note| !note.is_cut() && note.tick + u64::from(note.duration_ticks) > exit.tick)
+            .collect::<Vec<_>>();
+        assert!(
+            !tails.is_empty(),
+            "the exit should interrupt the Datafall loop"
+        );
+        for tail in tails {
+            assert!(
+                exit.notes
+                    .iter()
+                    .any(|note| note.voice == tail.voice && note.tick == exit.tick),
+                "{:?} carried the Datafall loop into the menu",
+                tail.voice
+            );
+        }
+    }
+
+    #[test]
+    fn oracle_retry_and_ready_states_are_audible_once() {
+        let mut engine = waiting_oracle_engine();
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                questions: Vec::new(),
+            },
+        );
+        assert_eq!(last_cue(&engine), Some(audio::Cue::Retry));
+        engine.update();
+        assert_eq!(last_cue(&engine), None);
+
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                questions: quiz_cartridge().questions,
+            },
+        );
+        assert_eq!(last_cue(&engine), Some(audio::Cue::Ready));
+    }
+
+    #[test]
+    fn audio_snapshot_mirrors_the_observable_run_state() {
+        let mut state = GameState {
+            powered: true,
+            screen: Screen::Oracle,
+            screen_ticks: 12,
+            questions_loading: true,
+            oracle_data: 6,
+            oracle_bug_hits: 1,
+            ..GameState::default()
+        };
+        state.held.insert(Button::Left);
+        state.held.insert(Button::A);
+        state.quiz = Some(QuizRun {
+            question: 7,
+            completed_batches: 1,
+            selected: 2,
+            hearts: 1,
+            score: 900,
+            level: 4,
+            streak: 3,
+            leveled_up: false,
+            feedback: Some((false, 10)),
+        });
+        let snapshot = audio_snapshot(&state);
+        assert_eq!(snapshot.scene, AudioScene::Oracle);
+        assert_eq!(snapshot.held, pad::LEFT | pad::A);
+        assert_eq!((snapshot.data_stage, snapshot.breach_stage), (2, 1));
+        assert_eq!(snapshot.questions, QuestionStatus::Writing);
+        assert_eq!(snapshot.tier, Tier::OracleBound);
+        assert_eq!(
+            snapshot.run,
+            Some(RunAudio {
+                question: 7,
+                selected: 2,
+                phase: AnswerPhase::Wrong,
+                hearts: 1,
+                multiplier: 2,
+                insight: 2,
+                level: 4,
+                completed_batches: 1,
+            })
+        );
+
+        state.powered = false;
+        state.screen = Screen::Off;
+        state.quiz = None;
+        let off = audio_snapshot(&state);
+        assert_eq!(
+            (off.powered, off.scene, off.tier),
+            (false, AudioScene::Off, Tier::Initiate)
+        );
+    }
+
+    #[test]
+    fn oracle_opening_soundtrack_grows_from_archival_ticks_to_the_full_cadence() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(oracle_template_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        assert_eq!(engine.screen(), Screen::Copyright);
+        let _ = engine.take_audio();
+
+        // Copyright, then the five story scenes, then a breath of title.
+        let mut sections = Vec::new();
+        for (expected, ticks) in [
+            (Screen::Copyright, 180),
+            (Screen::OpeningFanfare, 96),
+            (Screen::OpeningFanfare, 66),
+            (Screen::OpeningFanfare, 66),
+            (Screen::OpeningFanfare, 66),
+            (Screen::OpeningFanfare, 66),
+        ] {
+            assert_eq!(engine.screen(), expected);
+            for _ in 0..ticks {
+                engine.update();
+            }
+            sections.push(engine.take_audio().notes);
+        }
+        assert_eq!(engine.screen(), Screen::Title);
+        for _ in 0..120 {
+            engine.update();
+        }
+        sections.push(engine.take_audio().notes);
+
+        let voices = |notes: &[audio::Note]| {
+            notes
+                .iter()
+                .filter(|note| !note.is_cut())
+                .map(|note| note.voice)
+                .collect::<HashSet<_>>()
+                .len()
+        };
+        let peak = |notes: &[audio::Note]| notes.iter().map(|note| note.volume).max().unwrap_or(0);
+        assert_eq!(voices(&sections[0]), 1, "the chronicle keeps near silence");
+        assert!(peak(&sections[0]) <= 4);
+        let story = sections[1..6]
+            .iter()
+            .map(|notes| voices(notes))
+            .collect::<Vec<_>>();
+        assert_eq!(story[0], 1, "the source ember is a single pulse");
+        assert!(story.windows(2).all(|pair| pair[0] <= pair[1]), "{story:?}");
+        assert_eq!(story[4], 4, "the Oracle crescendo is the full arrangement");
+        assert!(sections[1..5]
+            .iter()
+            .all(|notes| peak(notes) < peak(&sections[5])));
+        assert!(
+            sections[6]
+                .iter()
+                .all(|note| note.volume <= audio::AMBIENCE_MAX_VOLUME),
+            "the title settles into its restrained loop"
+        );
+
+        if let Ok(directory) = std::env::var("CQA_AUDIO_DUMP_DIR") {
+            let notes = sections.concat();
+            std::fs::create_dir_all(&directory).expect("dump directory should be writable");
+            std::fs::write(
+                std::path::Path::new(&directory).join("oracle-opening.json"),
+                serde_json::to_string(&notes).expect("notes should serialize"),
+            )
+            .expect("dump should be writable");
+        }
+    }
+
+    #[test]
+    fn scripted_play_produces_identical_note_streams() {
+        let play = || {
+            let mut engine = playing_quiz_engine();
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button: Button::A,
+                    pressed: true,
+                },
+            );
+            for _ in 0..60 {
+                engine.update();
+            }
+            engine.take_audio()
+        };
+        let first = play();
+        assert!(first.notes.iter().filter(|note| !note.is_cut()).count() > 10);
+        assert_eq!(first, play());
     }
 
     #[test]
