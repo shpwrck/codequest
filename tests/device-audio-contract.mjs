@@ -626,7 +626,12 @@ assert.deepEqual(
 
 /* ---------- Mute and persistence ---------- */
 
-const stillSounding = [noiseSource, slid, sources().at(-1)];
+// A note a later batch cancelled before it started (its stop precedes its
+// start) never sounds, so only notes that will really play are checked.
+const stillSounding = [noiseSource, slid, sources().at(-1)].filter(
+  (source) => source.stopAt > source.startAt,
+);
+assert.ok(stillSounding.length >= 2, "The check needs notes that really sound");
 assert.ok(stillSounding.every((source) => source.stopAt > audio.currentTime + 0.05), "Notes are still sounding");
 assert.equal(speaker.setVolume("mute"), "mute");
 assert.ok(
