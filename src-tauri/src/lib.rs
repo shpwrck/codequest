@@ -625,7 +625,10 @@ fn is_cli_preamble(line: &str) -> bool {
 /// The line of a failed call's stderr that says why it failed: the last line
 /// that announces an error (`ERROR:`, `error:`, `fatal:`), or else the last
 /// line that is not CLI preamble. Errors come after any preamble and after
-/// any echo of the prompt, so the last such line is the cause.
+/// any echo of the prompt, so the last such line is the cause. The echoed
+/// prompt carries project documentation and code, so only a prefix followed
+/// by a colon counts as an announcement: a line such as `errors.push(e)` from
+/// the prompt must not pass for the cause.
 fn failure_line(stderr: &str) -> Option<String> {
     let lines: Vec<String> = stderr
         .lines()
@@ -634,7 +637,7 @@ fn failure_line(stderr: &str) -> Option<String> {
         .collect();
     let announces_error = |line: &&String| {
         let lower = line.to_ascii_lowercase();
-        lower.starts_with("error") || lower.starts_with("fatal")
+        lower.starts_with("error:") || lower.starts_with("fatal:")
     };
     lines
         .iter()
@@ -1297,6 +1300,14 @@ mod question_policy_tests {
         assert_eq!(
             failure_line("Error: first attempt\nretrying\nError: Invalid API key\n"),
             Some("ERROR: INVALID API KEY".to_string())
+        );
+        // Code and prose from the echoed prompt only look like errors.
+        assert_eq!(
+            failure_line(&format!(
+                "{banner}user\n    errors.push(reason);\nFatalError handling\n\
+                 stream disconnected before completion\n"
+            )),
+            Some("STREAM DISCONNECTED BEFORE COMPLETION".to_string())
         );
     }
 
