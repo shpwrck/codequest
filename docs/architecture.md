@@ -229,7 +229,7 @@ flowchart TD
   E --> F["repo_context::project_brief<br/>(git ls-files, anonymized, 20 KiB)"]
   E --> G["questions::load_learner_state<br/>(weakest lens, 24 asked stems)"]
   F & G --> H["bounded_ai_question_prompt<br/>(payload v2 prompt, 40 KiB cap)"]
-  H --> I["ask_provider: CLI on stdin<br/>command_output_with_timeout (120 s)"]
+  H --> I["ask_provider: CLI on stdin<br/>command_output_with_timeout (provider budget)"]
   I --> J["parse_generated_batch<br/>question_values -> normalized_question<br/>-> generated_question_is_acceptable"]
   J -->|"short batch, mechanical rejections, 10 s left"| K["repair_request -> repair_prompt<br/>ask_provider -> merge_repairs"]
   J --> L["GeneratedBatch::into_questions"]
@@ -293,7 +293,7 @@ its own budget always fits.
 ### 5.3 The provider call
 
 `ai_questions` checks the repository with `git_repo_check_within`, then calls
-`ask_provider` with `AI_QUESTION_TIMEOUT` (120 s). `ai_prompt_command` builds:
+`ask_provider` within `configured_question_timeout(provider)`: 150 s for Claude and 300 s for Codex by default, or `CQA_AI_TIMEOUT_SECS` (whole seconds, clamped to 30-900) for both. `ai_prompt_command` builds:
 
 - Claude: `claude -p --output-format json --no-session-persistence --tools ""`
   (plus `--model $CQA_CLAUDE_MODEL`). `ai_response_text` reads the `result`
@@ -345,7 +345,7 @@ When the batch is short, `GeneratedBatch::repair_request` collects up to
 (`is_repairable`) and builds `repair_prompt`: for each question, the exact
 fields that break which limit and by how much, then the question JSON with an
 `id`. `ai_questions` sends it through the same provider if at least
-`MIN_REPAIR_TIME` (10 s) of the 120 s budget remains. `merge_repairs` accepts a
+`MIN_REPAIR_TIME` (10 s) of that budget remains. `merge_repairs` accepts a
 repair only if it echoes a sent `id`, keeps that question's answer index,
 passes the full policy, and repeats nothing. The batch never exceeds `count`.
 

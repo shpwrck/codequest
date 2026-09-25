@@ -273,6 +273,15 @@ Set `CQA_CODEX_MODEL` or `CQA_CLAUDE_MODEL` to choose the model used by the
 corresponding CLI. Set `CQA_NO_AI=1` to disable generation for diagnostics;
 `0`, `false`, `no`, and `off` leave it enabled.
 
+Each generation request, including its repair pass, has a time budget that
+depends on the provider: 150 seconds for Claude and 300 seconds for Codex,
+which is slower at high reasoning effort. Set `CQA_AI_TIMEOUT_SECS` to a whole
+number of seconds to use one budget for both providers. Values are clamped to
+30–900 seconds, and a value that is not a whole number is logged and ignored.
+The readiness probe keeps its own 60-second limit. While a request is pending,
+the Oracle keeps Datafall playable. A request that runs out of time shows
+`TIMED OUT` and is retried.
+
 ### Quest battle
 
 Quest cartridges turn repository operations into streamed command battles.
@@ -401,8 +410,8 @@ acceptance rate. Each level costs one real provider request:
 CQA_CODEX_MODEL=gpt-5.5 ./scripts/eval-questions.sh codex 1,2,4 ~/src/other-repo
 ```
 
-`CQ_EVAL_ROUNDS` repeats each level, `CQ_EVAL_TIMEOUT_SECS` replaces the app's
-120-second limit, and `CQA_CLAUDE`, `CQA_CODEX`, `CQA_CLAUDE_MODEL`, and
+`CQ_EVAL_ROUNDS` repeats each level, `CQ_EVAL_TIMEOUT_SECS` sets the limit per
+request (120 seconds by default, shorter than the app's Codex budget), and `CQA_CLAUDE`, `CQA_CODEX`, `CQA_CLAUDE_MODEL`, and
 `CQA_CODEX_MODEL` select the CLI and model exactly as in the app. The module
 documentation in `src-tauri/src/question_eval.rs` lists every option.
 
