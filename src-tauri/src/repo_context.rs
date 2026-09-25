@@ -568,7 +568,11 @@ fn jsx_comment_opening(text: &str) -> Option<(usize, usize)> {
     while let Some(offset) = text[from..].find(['`', '{']) {
         let at = from + offset;
         let tail = &text[at..];
-        if let Some(body) = tail[1..].trim_start().strip_prefix("/*") {
+        // Only a brace opens one: a code span that starts with `/*` is code.
+        if let Some(body) = tail
+            .strip_prefix('{')
+            .and_then(|rest| rest.trim_start().strip_prefix("/*"))
+        {
             return Some((at, text.len() - body.len()));
         }
         if tail.starts_with('`') {
@@ -2251,13 +2255,14 @@ mod tests {
             assert!(!prose.contains(hidden), "{hidden} leaked into:\n{prose}");
         }
 
-        let mdx = "# Architecture\n\n{/* TODO: staging admin password hunter2 */}\n{/*\ninternal escalation: call db-staging.corp.internal\n*/}\nThe engine owns every rule. { /* inline secret */ } Still shown.\nA `{/*` in code stays.\n<!-- MDX 1 comment secret -->\nShown last.\n";
+        let mdx = "# Architecture\n\n{/* TODO: staging admin password hunter2 */}\n{/*\ninternal escalation: call db-staging.corp.internal\n*/}\nThe engine owns every rule. { /* inline secret */ } Still shown.\nA `{/*` in code stays.\nA `/* block` in code stays, and `/*` alone too.\n<!-- MDX 1 comment secret -->\nShown last.\n";
         let prose = markdown_prose(mdx, Markup::Mdx, &redactor).join("\n");
         for shown in [
             "# Architecture",
             "The engine owns every rule.",
             "Still shown.",
             "A `{/*` in code stays.",
+            "A `/* block` in code stays, and `/*` alone too.",
             "Shown last.",
         ] {
             assert!(prose.contains(shown), "{shown} missing from:\n{prose}");
