@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import { reducedMotionCss } from "./contract-css.mjs";
+
 const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const adapter = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -171,7 +173,7 @@ assert.match(css, /@keyframes frontDisplayOut\s*\{[\s\S]*?opacity:\s*0/s, "The f
 assert.match(css, /#device-back\s*\{[^}]*visibility:\s*hidden/s, "WebKit can expose the mirrored rear face before the turn");
 assert.match(css, /#shell-scale\.showing-back\s+#device-back\s*\{[^}]*visibility:\s*visible/s, "The rear face never becomes explicitly visible");
 assert.match(css, /#shell-scale\.showing-back\s+#device-front\s*\{[^}]*visibility:\s*hidden/s, "The front face remains visible behind the rear face");
-assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?#shell-scale\.turning\s+#device-rotator\s*\{[^}]*animation:\s*none/s, "The turn animation has no reduced-motion behavior");
+assert.match(reducedMotionCss(css), /#shell-scale\.turning\s+#device-rotator\s*\{[^}]*animation:\s*none/,"The turn animation has no reduced-motion behavior");
 
 assert.ok(pixels(block(".rear-screw-sw"), "bottom", "lower-left screw inset") >= 40, "Lower-left screw overlaps the bottom shell shading");
 assert.ok(pixels(block(".rear-screw-se"), "bottom", "lower-right screw inset") >= 40, "Lower-right screw overlaps the bottom shell shading");
