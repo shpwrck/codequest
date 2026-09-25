@@ -96,7 +96,11 @@ each application session. On the first power-on, CODE QUEST makes one minimal
 non-interactive request to the selected CLI. The engine and boot animation do
 not start until that request succeeds. If the pack is missing or the CLI is
 unavailable, unauthenticated, or unhealthy, the switch and power LED flash red
-and return to the off position. Battery changes are locked while power is on.
+and return to the off position. The reason the CLI reported, such as
+`CODEX CLI UNAVAILABLE`, appears in the device's status strip and stays on the
+CHECK BATTERIES guide and the rear battery tab until power is tried again or
+the batteries are changed.
+Battery changes are locked while power is on.
 
 ## Load a cartridge
 
@@ -113,6 +117,10 @@ The rack caches at most three repositories. Labels show the current branch and
 refresh whenever the rack opens. Drag a cartridge down, press Delete, or use its
 recycle action to remove only the rack entry; repository files and saves remain
 on disk. A loaded cartridge must be ejected before another can be inserted.
+If a cartridge fails to load, for example because its `CODEQUEST.toml` is
+invalid or its drive is not mounted, the rack keeps it and shows the error; fix
+the problem and load it again. Only a folder that is no longer a Git repository
+leaves the rack on its own.
 
 Loading a repository creates a versioned, namespaced save beside it, never
 inside it: `/games/demo` uses `/games/demo.sav`. Quiz saves retain validated AI

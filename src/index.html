@@ -192,11 +192,12 @@
         <span class="view-toggle-track" aria-hidden="true"><span class="view-toggle-knob"></span></span>
         <span class="view-toggle-label view-back">BACK</span>
       </button>
-      <div id="cart-tray" class="hidden">
+      <div id="device-message" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="cart-tray" class="hidden" role="dialog" aria-modal="true" aria-labelledby="cart-tray-head" aria-hidden="true">
         <div class="tray-panel">
-          <div class="tray-head">SELECT CARTRIDGE</div>
+          <div id="cart-tray-head" class="tray-head">SELECT CARTRIDGE</div>
           <div id="tray-carts"></div>
-          <div id="tray-error" class="hidden"></div>
+          <div id="tray-error" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="tray-hint">DRAG UP TO LOAD &middot; DRAG DOWN TO RECYCLE</div>
           <div class="tray-safety">RECYCLE CLEARS THE RACK ONLY &middot; REPOSITORY FILES STAY ON DISK</div>
         </div>
@@ -220,6 +221,7 @@
               <span class="battery-option-caption">EJECT BATTERY</span>
             </button>
           </div>
+          <div id="battery-tray-error" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="tray-hint battery-tray-hint">SELECT A PACK &middot; ESC TO CLOSE</div>
         </div>
       </div>

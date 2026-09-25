@@ -51,6 +51,19 @@ export function upsertCartridge(values, value, limit = MAX_CARTRIDGES) {
   return { items, accepted: true };
 }
 
+export function isRefusedCartridgeError(error) {
+  const message = String(error instanceof Error ? error.message : error?.message ?? error ?? "");
+  return /NOT A GIT REPOSITORY/.test(message);
+}
+
+export function rackFocusIndex(paths, focusPath = null, fallbackIndex = null) {
+  if (!Array.isArray(paths) || !paths.length) return -1;
+  const same = focusPath == null ? -1 : paths.indexOf(focusPath);
+  if (same >= 0) return same;
+  if (!Number.isInteger(fallbackIndex) || fallbackIndex < 0) return -1;
+  return Math.min(fallbackIndex, paths.length - 1);
+}
+
 export function cartridgeDragIntent(
   deltaY,
   {

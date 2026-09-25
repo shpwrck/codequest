@@ -2428,16 +2428,44 @@ html, body {
 .cart-card.add { background: #1c1d38; }
 .cart-card.add .cc-label { background: transparent; border-style: dashed; color: #9ec3ff; }
 .cart-card.add, .cart-card.eject { cursor: pointer; }
-#tray-error {
-  margin-top: 12px;
+/* Message lines stay rendered while empty so their live regions are already
+   in the accessibility tree when a message arrives. */
+#tray-error,
+#battery-tray-error {
   font-size: 7px;
   letter-spacing: 1px;
   color: #ff5a70;
   animation: errBlink 1s steps(2) infinite;
 }
-#tray-error.hidden { display: none; }
-#tray-error.notice { color: #67dc87; }
+#tray-error:not(:empty),
+#battery-tray-error:not(:empty) { margin-top: 12px; }
+#tray-error.notice,
+#battery-tray-error.notice { color: #67dc87; }
 @keyframes errBlink { 50% { opacity: .45; } }
+
+/* Device status strip: the visible, announced surface for shell messages
+   raised while no tray is open (startup, power, boot, and battery faults). */
+#device-message {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 55;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 8px 12px 7px;
+  font: 8px/1.6 'Press Start 2P', monospace;
+  letter-spacing: 1px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  color: #ff7187;
+  background: var(--ink);
+  border: 2px solid #ff5a70;
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 rgba(16,17,36,.55), 0 8px 24px rgba(0,0,0,.38);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+#device-message:empty { opacity: 0; }
+#device-message.notice { color: #67dc87; border-color: #38b764; }
 
 /* ============================ QUIZ MODE ============================ */
 #scr-menu { background: var(--navy); }
