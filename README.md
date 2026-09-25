@@ -326,6 +326,11 @@ an active question takes two B presses within 90 ticks.
 
 ## Architecture
 
+Maintainers: the [architecture guide](docs/architecture.md) walks through the
+runtime, the learning model, and the scene machine, and the
+[save-format reference](docs/reference/save-format.md) documents every
+cartridge save key and its compatibility rules.
+
 Gameplay and device presentation have a hard boundary:
 
 | Path | Responsibility |
