@@ -78,7 +78,9 @@ export function pulseHarmonics(eighths, count = 48) {
  * the engine's newest tick still maps between `minLead` and `maxLead` ahead of
  * `now`; outside that window, in either direction, it anchors again. Engine
  * overruns (which only ever lose engine time) and audio-clock stalls therefore
- * cost one short jump instead of lag that builds up until every note is late. */
+ * cost one short jump instead of lag that builds up until every note is late.
+ * A jump back maps new ticks earlier than notes already planned; the speaker
+ * drops that planned material rather than let it start after later ticks. */
 export function createTickClock({
   lead = SCHEDULE_LEAD_SECONDS,
   minLead = MIN_LEAD_SECONDS,
@@ -176,6 +178,8 @@ export function createSpeaker({
   let volume = readStoredVolume(storage);
   const clock = createTickClock();
   const pulseWaves = new Map();
+  /* Every note each voice has scheduled that may still sound, oldest first:
+   * `{ source, gate, start, end }`, where `end` is when its gate reaches 0. */
   const sounding = new Map();
 
   /** Creates or resumes the audio context. Call only from a user gesture. */
@@ -226,18 +230,49 @@ export function createSpeaker({
     return noiseBuffer;
   }
 
-  function stopVoice(voice, at) {
-    const playing = sounding.get(voice);
-    if (!playing) return;
-    sounding.delete(voice);
-    if (playing.end <= at) return;
-    playing.gate.gain.cancelScheduledValues(at);
-    playing.gate.gain.setValueAtTime(1, at);
-    playing.gate.gain.linearRampToValueAtTime(0, at + RELEASE_SECONDS);
+  /* A note that has not started by `at` never sounds. Callers pass `at` no
+   * earlier than now, so the note has not started yet either. */
+  function cancel(playing, at) {
+    playing.end = playing.start;
+    playing.gate.disconnect();
     try {
-      playing.source.stop(at + RELEASE_SECONDS * 2);
+      playing.source.stop(at);
     } catch (_) {
       /* Already stopped. */
+    }
+  }
+
+  /* Ends everything `voice` has scheduled at `at`: a note sounding then is
+   * released, and a note planned to start at or after `at` never starts. */
+  function stopVoice(voice, at) {
+    for (const playing of sounding.get(voice) ?? []) {
+      if (playing.start >= at) {
+        if (playing.end > playing.start) cancel(playing, at);
+        continue;
+      }
+      // Silent by then, or already released no later than this would.
+      if (playing.end <= at + RELEASE_SECONDS) continue;
+      playing.end = at + RELEASE_SECONDS;
+      playing.gate.gain.cancelScheduledValues(at);
+      playing.gate.gain.setValueAtTime(1, at);
+      playing.gate.gain.linearRampToValueAtTime(0, at + RELEASE_SECONDS);
+      try {
+        playing.source.stop(at + RELEASE_SECONDS * 2);
+      } catch (_) {
+        /* Already stopped. */
+      }
+    }
+  }
+
+  /* A batch planned after the clock jumped back can start before material
+   * already planned from earlier ticks. That material, on every voice, never
+   * starts, so notes keep engine-tick order. With a steady or later map every
+   * earlier tick already starts before `at`, so this changes nothing. */
+  function yieldTo(at) {
+    for (const voice of VOICES) {
+      for (const playing of sounding.get(voice) ?? []) {
+        if (playing.start > at && playing.end > playing.start) cancel(playing, at);
+      }
     }
   }
 
@@ -300,11 +335,17 @@ export function createSpeaker({
     gate.connect(master);
     source.start(start);
     source.stop(end + RELEASE_SECONDS);
+    const playing = { source, gate, start, end };
+    const now = context.currentTime;
+    const pending = (sounding.get(voice) ?? []).filter((entry) => entry.end > Math.max(now, entry.start));
+    pending.push(playing);
+    sounding.set(voice, pending);
     source.onended = () => {
-      if (sounding.get(voice)?.source === source) sounding.delete(voice);
+      const list = sounding.get(voice);
+      const index = list ? list.indexOf(playing) : -1;
+      if (index >= 0) list.splice(index, 1);
       gate.disconnect();
     };
-    sounding.set(voice, { source, gate, end });
   }
 
   function silence() {
@@ -322,7 +363,9 @@ export function createSpeaker({
       return 0;
     }
     let scheduled = 0;
-    for (const { note, at, sounds } of planBatch(clock, batch, context.currentTime)) {
+    const plan = planBatch(clock, batch, context.currentTime);
+    if (plan.length) yieldTo(Math.min(...plan.map((step) => step.at)));
+    for (const { note, at, sounds } of plan) {
       if (!sounds) {
         stopVoice(note.voice, at);
         continue;
