@@ -52,30 +52,39 @@ score. Every question assesses one of five concept lenses: **purpose**,
   answer first most of the time (11 of 12 in a live run against this
   repository), and the cursor starts on the first choice. Choices are shown in
   a stable per-question shuffle, and every retry moves every choice.
-- **Misses come back.** A missed question returns three questions later, and a
-  batch cannot close until its misses are retried. Answering it correctly is a
-  *redemption*, recorded separately from a first-try success. Missed questions
-  also survive across launches until you redeem them; correct answers retire
-  their questions for good. The rule is on screen: the header shows batch
-  progress (`TRIAL 2/7`, the batch growing with each miss), a returning
-  question is labeled `RETRY` before you answer it, and the miss's lesson card
-  says when it comes back (`BACK IN 3`, or `NEXT RUN` when the ward breaks).
+- **Misses come back.** A missed question returns after three other
+  questions, in the next batch if needed, so the retry never comes straight
+  after its lesson card. A correct retry in the same launch clears the pending
+  review but counts as *relearning*, not mastery, because you just read the
+  answer. Every miss returns once more in a later launch; answering it then is
+  a *redemption* that earns mastery evidence and retires the question.
+  First-try correct answers retire their questions for good. The rule is on
+  screen: the header shows batch progress (`TRIAL 2/7`, the batch growing with
+  each miss), a returning question is labeled `RETRY` before you answer it,
+  and the miss's lesson card says when it comes back (`BACK IN 3`, `LATER`
+  while the deck waits for the Oracle's next questions, or `NEXT RUN` when
+  the ward breaks).
 - **Difficulty deepens the concepts, not the pressure.** Initiate batches
   (level 1) focus on purpose and roles, Adept batches (2–3) on flows and
   tradeoffs, and Oracle-bound batches (4+) on invariants, including **PREDICT**
   questions that describe an undocumented change or failure and ask what the
   design implies. There are no timers.
 - **Mastery is visible.** Each lens has three mastery runes that wake at 1, 3,
-  and 5 pieces of evidence (first-try successes plus redemptions). Waking one
-  is the loudest moment of a run: its own banner (`ROLES RUNE I`) outranks
-  every score banner, the new rune blinks on the lesson card, and it has its
-  own chime. The Codex shows the runes with pending reviews, and pages through
-  the lesson journal: question, answer, and rationale.
+  and 5 pieces of evidence (first-try successes plus later-launch
+  redemptions). Rune II also needs 60% of your last five graded answers on the
+  lens right (same-launch retry successes are not graded), and rune III needs
+  80% and no pending review, so volume alone cannot hide a current
+  misconception. A rune held back by those gates shows *cracked* (review due)
+  instead of going dark. Waking one is the loudest moment of a run: its own
+  banner (`ROLES RUNE I`) outranks every score banner, the new rune blinks on
+  the lesson card, and it has its own chime. The Codex shows the runes with
+  pending reviews, and pages through the lesson journal: question, answer, and
+  rationale.
 - **Every ending is a debrief.** A level-up recaps the batch's first-try
   successes and names the lenses the next batch focuses on. When the run ends,
   the result screen adds a learning ledger to the score: first-try successes,
-  redemptions, reviews still open, and the lens whose runes woke this run (or
-  a pointer to the Codex while reviews remain).
+  corrected misses (`REDEEMED`), reviews still open, and the lens whose runes
+  woke this run (or a pointer to the Codex while reviews remain).
 - **Generation adapts to you.** Each request names your weakest lens and the
   questions you have already been asked, so new batches target your gaps
   without repeating themselves.
@@ -210,9 +219,11 @@ inside it: `/games/demo` uses `/games/demo.sav`. Quiz saves retain validated AI
 question batches, retired (correctly answered) questions, questions awaiting
 review, and per-lens mastery. Legacy saves, including Claude-era batches and
 questions without rationales, load without conversion. Committing an answer
-records it immediately on a background writer: a correct answer retires the
-question for later runs and launches, while a miss keeps it queued for review
-until you redeem it. Ejecting or recycling a cartridge does not delete its save.
+records it immediately on a background writer: a first-try correct answer
+retires the question for later runs and launches, while a miss keeps it queued
+for review until you redeem it in a later launch (a same-launch correct retry
+queues it once more for that check). Ejecting or recycling a cartridge does not
+delete its save.
 
 Loading alone does not modify the selected repository. Quest mode can run the
 repository's own lint, build, or test scripts, so those commands have whatever

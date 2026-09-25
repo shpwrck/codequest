@@ -870,7 +870,7 @@ where
 
 /// The engine's question loader: a fresh verified batch, without questions
 /// the player has already retired. Missed questions stay playable and arrive
-/// as reviews, exactly as a cartridge reload queues them.
+/// as same-launch reviews (see [`questions::playable_new_questions`]).
 fn load_new_questions_with<F>(
     path: &std::path::Path,
     level: u32,
@@ -1172,7 +1172,7 @@ pub fn run() {
 #[cfg(test)]
 mod question_policy_tests {
     use super::*;
-    use learning::{AnswerEvidence, Concept};
+    use learning::{AnswerEvidence, Concept, Review};
     use questions::tests::question;
 
     #[test]
@@ -2295,7 +2295,7 @@ mod question_policy_tests {
             question: question.to_string(),
             concept,
             correct,
-            review: false,
+            review: Review::Fresh,
         }
     }
 
@@ -2342,7 +2342,7 @@ mod question_policy_tests {
         );
         let review = &spec.questions[0];
         assert_eq!(review.question, explained.q);
-        assert!(review.review);
+        assert_eq!(review.review, Review::Spaced);
         assert_eq!(review.concept, Some(Concept::Responsibility));
         assert_eq!(review.rationales, explained.rationales());
         assert_eq!(review.choices, explained.choice_texts());
@@ -2392,7 +2392,7 @@ mod question_policy_tests {
         .unwrap();
         let missed = engine_cartridge(build_cartridge(&repo).unwrap()).unwrap();
         assert_eq!(missed.questions.len(), 1);
-        assert!(missed.questions[0].review);
+        assert_eq!(missed.questions[0].review, Review::Spaced);
         assert!(
             missed.questions[0].rationales.is_empty(),
             "legacy questions have no rationales"
@@ -2446,9 +2446,10 @@ mod question_policy_tests {
         assert_eq!(loaded[0].question, missed.q);
         assert_eq!(loaded[0].concept, missed.lens());
         assert_eq!(loaded[0].rationales, missed.rationales());
-        assert!(
+        assert_eq!(
             loaded[0].review,
-            "a regenerated missed stem returns as a review, as a reload queues it"
+            Review::InSession,
+            "a regenerated missed stem returns as a review; it was missed in this launch"
         );
 
         let failing = |_: &std::path::Path, _: u32, _: usize, _: AiProvider| {
@@ -2506,8 +2507,13 @@ mod question_policy_tests {
             questions::persist_answer_evidence(path, evidence).unwrap();
         });
         let cartridge = repo.to_string_lossy().to_string();
+        // The redemption is a spaced check from a later launch.
         let evidence = |correct| AnswerEvidence {
-            review: correct,
+            review: if correct {
+                Review::Spaced
+            } else {
+                Review::Fresh
+            },
             ..answer(
                 "WHY WRITE SAVES ATOMICALLY?",
                 Some(Concept::Invariant),

@@ -247,13 +247,17 @@ the pedagogy map and runtime traceability:
 - Shuffled choices: `learning::presentation_order` gives each question a stable
   order and moves every choice on each retry, so answer position is never a
   cue.
-- Spaced retry: a survivable miss inserts a review copy after up to three
-  intervening questions (`RETRY_GAP`) inside the current batch, and the batch
-  cannot complete until it is retried. A correct review is a redemption.
+- Spaced retry: a survivable miss inserts a review copy after exactly three
+  other questions (`RETRY_GAP`), carrying into the next batch when the current
+  one ends sooner. A correct same-launch retry is relearning
+  (`learning::Review::InSession`); only a correct answer when the miss returns
+  in a later launch (`Review::Spaced`) is a redemption.
 - Lens mastery: evidence (first-try successes plus redemptions) wakes three
-  runes per lens at 1, 3, and 5 (`learning::MASTERY_THRESHOLDS`). The save
-  retires correct answers, keeps misses queued as reviews across launches, and
-  stores mastery per cartridge.
+  runes per lens at 1, 3, and 5 (`learning::MASTERY_THRESHOLDS`); rune II also
+  needs 60% and rune III 80% of the newest five graded outcomes correct, and
+  rune III no pending review (`LensRecord::stage_with`). Gated runes draw
+  cracked. The save retires first-try and spaced successes, keeps misses and
+  relearned questions queued across launches, and stores mastery per cartridge.
 - Oracle Codex: the `codex` handler, reached through the quiz menu's
   `open-codex` signal and drawn by the `oracle-codex` template, shows lens
   mastery with pending-review counts and rereads every lesson.

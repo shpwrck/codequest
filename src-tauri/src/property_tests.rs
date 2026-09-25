@@ -17,7 +17,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::engine::{quiz_question_fits, wrap_text};
-use crate::learning::{self, AnswerEvidence, Concept, LensRecord, Mastery, MASTERY_THRESHOLDS};
+use crate::learning::{
+    self, AnswerEvidence, Concept, LensRecord, Mastery, Review, MASTERY_GATE_WINDOW,
+    MASTERY_THRESHOLDS, RECENT_CAPACITY,
+};
 use crate::provenance;
 use crate::questions::{self, QChoice, QQuestion, SavedQuestionBatch, SavedQuizProgress};
 use crate::save;
@@ -228,46 +231,131 @@ fn thresholds_reached(evidence: u32) -> usize {
         .count()
 }
 
+const REVIEWS: [Review; 3] = [Review::Fresh, Review::InSession, Review::Spaced];
+
+fn arbitrary_review(rng: &mut Rng) -> Review {
+    *rng.pick(&REVIEWS)
+}
+
+/// A lens record with arbitrary counts and an arbitrary recent window,
+/// including garbage above the window's length.
+fn arbitrary_lens_record(rng: &mut Rng) -> LensRecord {
+    LensRecord {
+        first_try: rng.edgy_u32(),
+        redeemed: rng.edgy_u32(),
+        missed: rng.edgy_u32(),
+        relearned: rng.edgy_u32(),
+        recent: rng.next_u64() as u8,
+        recent_len: rng.range(0, usize::from(RECENT_CAPACITY)) as u8,
+    }
+}
+
+/// The documented gate rule, written from the percentages: rune I is never
+/// gated; rune II needs 60% of the window right; rune III needs 80% and no
+/// open miss. An empty window (a legacy record) passes both accuracy gates.
+fn gated_stage(volume: usize, (right, of): (u8, u8), outstanding: usize) -> usize {
+    let at_least = |percent: u32| of == 0 || u32::from(right) * 100 >= u32::from(of) * percent;
+    match volume {
+        0 | 1 => volume,
+        _ if !at_least(60) => 1,
+        2 => 2,
+        _ if outstanding > 0 || !at_least(80) => 2,
+        _ => 3,
+    }
+}
+
 #[test]
-fn lens_stage_matches_the_declared_thresholds_and_never_falls() {
+fn lens_stage_matches_the_declared_thresholds_and_its_gates() {
     for (case, mut rng) in cases(0x57A6, CASES) {
-        let record = LensRecord {
-            first_try: rng.edgy_u32(),
-            redeemed: rng.edgy_u32(),
-            missed: rng.edgy_u32(),
-        };
-        let context = format!("case {case}: {record:?}");
+        let record = arbitrary_lens_record(&mut rng);
+        let outstanding = rng.range(0, 3);
+        let context = format!("case {case}: {record:?} with {outstanding} open");
         let evidence = record.evidence();
         assert_eq!(
             evidence,
             record.first_try.saturating_add(record.redeemed),
-            "{context}"
+            "relearning is never evidence, {context}"
         );
-        assert_eq!(record.stage(), thresholds_reached(evidence), "{context}");
-        assert!(record.stage() <= MASTERY_THRESHOLDS.len(), "{context}");
+        let volume = record.volume_stage();
+        assert_eq!(volume, thresholds_reached(evidence), "{context}");
+        assert!(volume <= MASTERY_THRESHOLDS.len(), "{context}");
 
-        for (correct, review) in [(true, false), (true, true), (false, false), (false, true)] {
-            let mut next = record;
-            next.record(&AnswerEvidence {
-                question: "WHY?".into(),
-                concept: Some(Concept::Invariant),
-                correct,
-                review,
-            });
-            let step = format!("{context} after correct={correct} review={review}");
-            assert!(next.stage() >= record.stage(), "stage fell, {step}");
-            assert_eq!(next.stage(), thresholds_reached(next.evidence()), "{step}");
-            if !correct {
-                assert_eq!(next.evidence(), evidence, "a miss is not evidence, {step}");
-                assert_eq!(next.missed, record.missed.saturating_add(1), "{step}");
-            } else if evidence < u32::MAX {
-                assert_eq!(next.evidence(), evidence + 1, "{step}");
-                let crossed = MASTERY_THRESHOLDS.contains(&(evidence + 1));
+        let window = record.recent_accuracy(MASTERY_GATE_WINDOW);
+        let expected_of = MASTERY_GATE_WINDOW.min(record.recent_len);
+        let mask = (1u16 << expected_of) - 1;
+        assert_eq!(
+            window,
+            (
+                (u16::from(record.recent) & mask).count_ones() as u8,
+                expected_of
+            ),
+            "the window reads only the newest outcomes, {context}"
+        );
+        let stage = record.stage_with(outstanding);
+        assert_eq!(stage, gated_stage(volume, window, outstanding), "{context}");
+        assert!(stage <= volume, "a gate never adds a rune, {context}");
+        assert_eq!(
+            stage.min(1),
+            volume.min(1),
+            "rune I is never gated, {context}"
+        );
+        assert_eq!(
+            record.cracks_with(outstanding),
+            volume - stage,
+            "every held-back rune shows cracked, {context}"
+        );
+        assert!(
+            record.stage_with(outstanding + 1) <= stage,
+            "another open miss never lights a rune, {context}"
+        );
+
+        for correct in [true, false] {
+            for review in REVIEWS {
+                let mut next = record;
+                next.record(&AnswerEvidence {
+                    question: "WHY?".into(),
+                    concept: Some(Concept::Invariant),
+                    correct,
+                    review,
+                });
+                let step = format!("{context} after correct={correct} review={review:?}");
+                assert!(next.volume_stage() >= volume, "volume fell, {step}");
                 assert_eq!(
-                    next.stage(),
-                    record.stage() + usize::from(crossed),
-                    "a rune wakes exactly at a threshold, {step}"
+                    next.volume_stage(),
+                    thresholds_reached(next.evidence()),
+                    "{step}"
                 );
+                let graded = !(correct && review == Review::InSession);
+                if graded {
+                    assert_eq!(
+                        next.recent_len,
+                        (record.recent_len + 1).min(RECENT_CAPACITY),
+                        "{step}"
+                    );
+                    assert_eq!(next.recent & 1, u8::from(correct), "newest bit, {step}");
+                    assert_eq!(next.recent >> 1, record.recent & 0x7F, "{step}");
+                } else {
+                    assert_eq!(
+                        (next.recent, next.recent_len),
+                        (record.recent, record.recent_len),
+                        "a same-launch retry success is not graded, {step}"
+                    );
+                }
+                if !correct {
+                    assert_eq!(next.evidence(), evidence, "a miss is not evidence, {step}");
+                    assert_eq!(next.missed, record.missed.saturating_add(1), "{step}");
+                } else if review == Review::InSession {
+                    assert_eq!(next.evidence(), evidence, "relearning, {step}");
+                    assert_eq!(next.relearned, record.relearned.saturating_add(1), "{step}");
+                } else if evidence < u32::MAX {
+                    assert_eq!(next.evidence(), evidence + 1, "{step}");
+                    let crossed = MASTERY_THRESHOLDS.contains(&(evidence + 1));
+                    assert_eq!(
+                        next.volume_stage(),
+                        volume + usize::from(crossed),
+                        "a rune's volume wakes exactly at a threshold, {step}"
+                    );
+                }
             }
         }
     }
@@ -287,39 +375,62 @@ fn record_evidence_counts_every_answer_exactly_once() {
         let mut mastery = Mastery::new();
         let mut expected: BTreeMap<Concept, LensRecord> = BTreeMap::new();
         let mut lensed_answers = 0u32;
-        let mut stages: BTreeMap<Concept, usize> = BTreeMap::new();
+        let mut volumes: BTreeMap<Concept, usize> = BTreeMap::new();
         for step in 0..rng.range(0, 40) {
             let evidence = AnswerEvidence {
                 question: arbitrary_text(&mut rng, 12),
                 concept: arbitrary_concept(&mut rng),
                 correct: rng.chance(60),
-                review: rng.chance(40),
+                review: arbitrary_review(&mut rng),
             };
             learning::record_evidence(&mut mastery, &evidence);
             if let Some(concept) = evidence.concept {
                 lensed_answers += 1;
                 let model = expected.entry(concept).or_default();
-                match (evidence.correct, evidence.review) {
-                    (true, false) => model.first_try += 1,
-                    (true, true) => model.redeemed += 1,
-                    (false, _) => model.missed += 1,
+                let graded = match (evidence.correct, evidence.review) {
+                    (true, Review::Fresh) => {
+                        model.first_try += 1;
+                        Some(true)
+                    }
+                    (true, Review::InSession) => {
+                        model.relearned += 1;
+                        None
+                    }
+                    (true, Review::Spaced) => {
+                        model.redeemed += 1;
+                        Some(true)
+                    }
+                    (false, _) => {
+                        model.missed += 1;
+                        Some(false)
+                    }
+                };
+                if let Some(correct) = graded {
+                    model.recent = (model.recent << 1) | u8::from(correct);
+                    model.recent_len = (model.recent_len + 1).min(RECENT_CAPACITY);
                 }
-                let stage = mastery[&concept].stage();
-                let previous = stages.insert(concept, stage).unwrap_or(0);
-                assert!(stage >= previous, "case {case} step {step}: rune went dark");
+                // Volume only grows; the gated stage may crack, never the volume.
+                let volume = mastery[&concept].volume_stage();
+                let previous = volumes.insert(concept, volume).unwrap_or(0);
+                assert!(
+                    volume >= previous,
+                    "case {case} step {step}: rune went dark"
+                );
             }
         }
         assert_eq!(mastery, expected, "case {case}");
         let total = mastery
             .values()
-            .map(|record| record.first_try + record.redeemed + record.missed)
+            .map(|record| record.first_try + record.redeemed + record.missed + record.relearned)
             .sum::<u32>();
         assert_eq!(
             total, lensed_answers,
             "case {case}: an answer was double counted"
         );
         for record in mastery.values() {
-            assert_eq!(record.stage(), thresholds_reached(record.evidence()));
+            assert_eq!(record.volume_stage(), thresholds_reached(record.evidence()));
+            assert!(record.recent_len <= RECENT_CAPACITY, "case {case}");
+            assert!(record.stage_with(0) <= record.volume_stage(), "case {case}");
         }
     }
 }
@@ -336,8 +447,20 @@ const PROGRESS_STEMS: [&str; 6] = [
 #[test]
 fn quiz_progress_lets_the_latest_attempt_decide_and_never_double_counts() {
     for (case, mut rng) in cases(0x960F, CASES) {
+        /// Where the latest attempt left a question.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Place {
+            Retired,
+            Missed,
+            Relearned,
+        }
+        let identities = |list: &[String]| {
+            list.iter()
+                .map(|question| questions::question_identity(question))
+                .collect::<Vec<_>>()
+        };
         let mut progress = SavedQuizProgress::default();
-        let mut latest: HashMap<String, bool> = HashMap::new();
+        let mut latest: HashMap<String, Place> = HashMap::new();
         let mut expected_mastery = Mastery::new();
         for step in 0..rng.range(0, 30) {
             let stem = *rng.pick(&PROGRESS_STEMS);
@@ -345,53 +468,67 @@ fn quiz_progress_lets_the_latest_attempt_decide_and_never_double_counts() {
                 question: respelled(&mut rng, stem),
                 concept: arbitrary_concept(&mut rng),
                 correct: rng.chance(55),
-                review: rng.chance(40),
+                review: arbitrary_review(&mut rng),
             };
             progress.record(&evidence);
             let identity = questions::question_identity(&evidence.question);
             if !identity.is_empty() {
-                latest.insert(identity, evidence.correct);
+                let place = match (evidence.correct, evidence.review) {
+                    (false, _) => Place::Missed,
+                    (true, Review::InSession) => Place::Relearned,
+                    (true, Review::Fresh | Review::Spaced) => Place::Retired,
+                };
+                latest.insert(identity, place);
                 learning::record_evidence(&mut expected_mastery, &evidence);
             }
 
             let context = format!("case {case} step {step}: {progress:?}");
-            let answered = progress
-                .answered_questions
+            let lists = [
+                identities(&progress.answered_questions),
+                identities(&progress.missed_questions),
+                identities(&progress.relearned_questions),
+            ];
+            let sets = lists
                 .iter()
-                .map(|question| questions::question_identity(question))
+                .map(|list| list.iter().collect::<HashSet<_>>())
                 .collect::<Vec<_>>();
-            let missed = progress
-                .missed_questions
-                .iter()
-                .map(|question| questions::question_identity(question))
-                .collect::<Vec<_>>();
-            let answered_set = answered.iter().collect::<HashSet<_>>();
-            let missed_set = missed.iter().collect::<HashSet<_>>();
-            assert_eq!(answered_set.len(), answered.len(), "duplicate, {context}");
-            assert_eq!(missed_set.len(), missed.len(), "duplicate, {context}");
-            assert!(answered_set.is_disjoint(&missed_set), "{context}");
-            assert!(!answered_set.contains(&String::new()), "{context}");
-            assert!(!missed_set.contains(&String::new()), "{context}");
+            for (list, set) in lists.iter().zip(&sets) {
+                assert_eq!(set.len(), list.len(), "duplicate, {context}");
+                assert!(!set.contains(&String::new()), "{context}");
+            }
+            for (index, set) in sets.iter().enumerate() {
+                for other in &sets[index + 1..] {
+                    assert!(set.is_disjoint(other), "{context}");
+                }
+            }
         }
 
+        let with_place = |wanted: Place| {
+            latest
+                .iter()
+                .filter(|(_, place)| **place == wanted)
+                .map(|(identity, _)| identity.clone())
+                .collect::<HashSet<_>>()
+        };
         let retired = progress.retired();
-        let expected_retired = latest
-            .iter()
-            .filter(|(_, correct)| **correct)
-            .map(|(identity, _)| identity.clone())
+        let missed = identities(&progress.missed_questions)
+            .into_iter()
             .collect::<HashSet<_>>();
-        let expected_missed = latest
-            .iter()
-            .filter(|(_, correct)| !**correct)
-            .map(|(identity, _)| identity.clone())
+        let relearned = identities(&progress.relearned_questions)
+            .into_iter()
             .collect::<HashSet<_>>();
-        let missed = progress
-            .missed_questions
-            .iter()
-            .map(|question| questions::question_identity(question))
-            .collect::<HashSet<_>>();
-        assert_eq!(retired, expected_retired, "case {case}");
-        assert_eq!(missed, expected_missed, "case {case}");
+        assert_eq!(retired, with_place(Place::Retired), "case {case}");
+        assert_eq!(missed, with_place(Place::Missed), "case {case}");
+        assert_eq!(relearned, with_place(Place::Relearned), "case {case}");
+        assert_eq!(
+            progress
+                .question_attempts
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            &missed | &relearned,
+            "case {case}: only a question that still returns keeps its attempt count"
+        );
         assert_eq!(progress.mastery, expected_mastery, "case {case}");
 
         let saved = serde_json::to_value(&progress).unwrap();
@@ -845,6 +982,9 @@ fn arbitrary_mastery(rng: &mut Rng) -> Mastery {
                     first_try: rng.below(8) as u32,
                     redeemed: rng.below(8) as u32,
                     missed: rng.below(8) as u32,
+                    relearned: rng.below(8) as u32,
+                    recent: rng.next_u64() as u8,
+                    recent_len: rng.range(0, usize::from(RECENT_CAPACITY)) as u8,
                 },
             )
         })
@@ -874,10 +1014,12 @@ fn cartridge_queue_skips_retired_questions_and_orders_batches_by_level() {
                     .collect(),
             })
             .collect::<Vec<_>>();
-        // Saves from earlier builds may list one question in both lists.
+        // Saves from earlier builds (or hand edits) may list one question in
+        // several lists.
         let progress = SavedQuizProgress {
             answered_questions: listed_questions(&mut rng),
             missed_questions: listed_questions(&mut rng),
+            relearned_questions: listed_questions(&mut rng),
             mastery: arbitrary_mastery(&mut rng),
             ..SavedQuizProgress::default()
         };
@@ -890,6 +1032,14 @@ fn cartridge_queue_skips_retired_questions_and_orders_batches_by_level() {
             .map(|question| questions::question_identity(question))
             .filter(|identity| !identity.is_empty())
             .collect::<HashSet<_>>();
+        let relearned = progress
+            .relearned_questions
+            .iter()
+            .map(|question| questions::question_identity(question))
+            .filter(|identity| !identity.is_empty())
+            .collect::<HashSet<_>>();
+        // A missed or relearned question still returns, as a spaced check.
+        let spaced = &missed | &relearned;
         // Model: each identity once, at the level of the batch that first
         // generated it, in generation order.
         let mut seen = HashSet::new();
@@ -910,7 +1060,7 @@ fn cartridge_queue_skips_retired_questions_and_orders_batches_by_level() {
         expected_queue.sort_by_key(|(_, level)| *level);
         let expected_lessons = first_seen
             .iter()
-            .filter(|(identity, _)| retired.contains(identity) || missed.contains(identity))
+            .filter(|(identity, _)| retired.contains(identity) || spaced.contains(identity))
             .map(|(identity, _)| (identity.clone(), missed.contains(identity)))
             .collect::<Vec<_>>();
 
@@ -940,7 +1090,12 @@ fn cartridge_queue_skips_retired_questions_and_orders_batches_by_level() {
         );
         for question in &loaded.questions {
             let identity = questions::question_identity(&question.question);
-            assert_eq!(question.review, missed.contains(&identity), "{context}");
+            let expected = if spaced.contains(&identity) {
+                Review::Spaced
+            } else {
+                Review::Fresh
+            };
+            assert_eq!(question.review, expected, "{context}");
         }
 
         assert_eq!(
