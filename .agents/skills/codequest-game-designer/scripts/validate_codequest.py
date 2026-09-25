@@ -41,17 +41,19 @@ VISUAL_TEMPLATES = {
     "oracle-ascension",
     "oracle-aftermath",
     "oracle-progression",
+    "oracle-codex",
 }
 HANDLER_SIGNALS = {
     "repository-credits": {"continue", "elapsed"},
     "opening-fanfare": {"continue", "elapsed"},
     "title": {"continue"},
-    "quiz-menu": {"new-run", "back"},
+    "quiz-menu": {"new-run", "open-codex", "back"},
     "character-creation": {"hero-ready", "back"},
     "oracle": {"questions-ready", "back"},
     "concept-quiz": {"needs-question", "batch-complete", "hearts-empty", "back"},
     "level-up": {"questions-ready", "needs-question"},
     "game-over": {"replay"},
+    "codex": {"back"},
     "quest-select": {"quest-selected", "back"},
     "battle": {"victory", "defeat"},
     "victory": {"continue"},
@@ -66,6 +68,7 @@ GAME_HANDLERS = {
         "concept-quiz",
         "level-up",
         "game-over",
+        "codex",
     },
     "quest": {"quest-select", "battle", "victory", "defeat"},
 }

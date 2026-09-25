@@ -14,6 +14,7 @@ pub enum SceneHandler {
     ConceptQuiz,
     LevelUp,
     GameOver,
+    Codex,
     QuestSelect,
     Battle,
     Victory,
@@ -30,7 +31,9 @@ impl SceneHandler {
                 matches!(signal, Signal::Continue | Signal::Elapsed)
             }
             Handler::Title => signal == Signal::Continue,
-            Handler::QuizMenu => matches!(signal, Signal::NewRun | Signal::Back),
+            Handler::QuizMenu => {
+                matches!(signal, Signal::NewRun | Signal::OpenCodex | Signal::Back)
+            }
             Handler::CharacterCreation => matches!(signal, Signal::HeroReady | Signal::Back),
             Handler::Oracle => matches!(signal, Signal::QuestionsReady | Signal::Back),
             Handler::ConceptQuiz => matches!(
@@ -41,6 +44,7 @@ impl SceneHandler {
                 matches!(signal, Signal::QuestionsReady | Signal::NeedsQuestion)
             }
             Handler::GameOver => signal == Signal::Replay,
+            Handler::Codex => signal == Signal::Back,
             Handler::QuestSelect => matches!(signal, Signal::QuestSelected | Signal::Back),
             Handler::Battle => matches!(signal, Signal::Victory | Signal::Defeat),
             Handler::Victory | Handler::Defeat => signal == Signal::Continue,
@@ -55,6 +59,7 @@ pub enum SceneSignal {
     Continue,
     Back,
     NewRun,
+    OpenCodex,
     HeroReady,
     QuestionsReady,
     NeedsQuestion,
@@ -235,8 +240,14 @@ impl SceneMachineDefinition {
                     Handler::QuizMenu,
                     vec![
                         transition(Signal::NewRun, "character-creation", None),
+                        transition(Signal::OpenCodex, "codex", None),
                         transition(Signal::Back, "title", None),
                     ],
+                ),
+                scene(
+                    "codex",
+                    Handler::Codex,
+                    vec![transition(Signal::Back, "quiz-menu", None)],
                 ),
                 scene(
                     "character-creation",
@@ -489,6 +500,107 @@ mod tests {
         assert!(machine
             .handle(SceneEvent::Signal(SceneSignal::QuestionsReady))
             .is_some());
+    }
+
+    #[test]
+    fn quiz_template_routes_the_menu_to_the_codex_and_back() {
+        let mut machine =
+            SceneMachine::new(SceneMachineDefinition::template(SceneMachineTemplate::Quiz));
+        while machine.current_scene() != "quiz-menu" {
+            machine.handle(SceneEvent::Tick);
+            machine.handle(SceneEvent::Signal(SceneSignal::Continue));
+        }
+
+        assert!(machine.can_handle(SceneSignal::OpenCodex));
+        assert_eq!(
+            machine.handle(SceneEvent::Signal(SceneSignal::OpenCodex)),
+            Some(SceneChange {
+                source: "quiz-menu".into(),
+                target: "codex".into(),
+                handler: SceneHandler::Codex,
+            })
+        );
+        assert!(!machine.can_handle(SceneSignal::OpenCodex));
+        assert_eq!(
+            machine.handle(SceneEvent::Signal(SceneSignal::Continue)),
+            None,
+            "the codex is read-only and only offers its back route"
+        );
+        assert_eq!(
+            machine
+                .handle(SceneEvent::Signal(SceneSignal::Back))
+                .map(|change| change.target),
+            Some("quiz-menu".into())
+        );
+    }
+
+    #[test]
+    fn codex_scenes_can_only_emit_back() {
+        for signal in [
+            SceneSignal::Continue,
+            SceneSignal::NewRun,
+            SceneSignal::OpenCodex,
+            SceneSignal::Replay,
+        ] {
+            let error = SceneMachineDefinition::compile(
+                "codex",
+                vec![scene(
+                    "codex",
+                    SceneHandler::Codex,
+                    vec![route(signal, "codex")],
+                )],
+            )
+            .unwrap_err();
+            assert!(error.contains("cannot emit signal"), "{signal:?}: {error}");
+        }
+        SceneMachineDefinition::compile(
+            "menu",
+            vec![
+                scene(
+                    "menu",
+                    SceneHandler::QuizMenu,
+                    vec![route(SceneSignal::OpenCodex, "codex")],
+                ),
+                scene(
+                    "codex",
+                    SceneHandler::Codex,
+                    vec![route(SceneSignal::Back, "menu")],
+                ),
+            ],
+        )
+        .expect("the quiz menu may open a codex that returns to it");
+    }
+
+    #[test]
+    fn only_the_quiz_menu_can_open_the_codex() {
+        let error = SceneMachineDefinition::compile(
+            "title",
+            vec![
+                scene(
+                    "title",
+                    SceneHandler::Title,
+                    vec![route(SceneSignal::OpenCodex, "codex")],
+                ),
+                scene("codex", SceneHandler::Codex, vec![]),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(error.contains("cannot emit signal `OpenCodex`"));
+    }
+
+    #[test]
+    fn codex_names_are_stable_manifest_identifiers() {
+        assert_eq!(
+            toml::Value::try_from(SceneHandler::Codex).unwrap().as_str(),
+            Some("codex")
+        );
+        assert_eq!(
+            toml::Value::try_from(SceneSignal::OpenCodex)
+                .unwrap()
+                .as_str(),
+            Some("open-codex")
+        );
     }
 
     #[test]

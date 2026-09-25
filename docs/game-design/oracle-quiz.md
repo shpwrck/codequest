@@ -131,7 +131,8 @@ runes so the HUD reads as part of the illustrated world rather than debug text.
 | `convergence` | Join source energy and earned knowledge without spending the climax early. | Cyan enters from the left, gold from the right, and an incomplete Oracle eye forms around a dark seed. | Timed exit to `oracle-awakening`; A/Start skips to `title`. | `play-opening-fanfare` | `opening-convergence`, `opening-soundscape` |
 | `oracle-awakening` | Resolve the story in the existing hero image instead of using it as the whole intro. | The complete cyan-and-gold Oracle sigil ignites around the code-seer; the frame reaches the sequence's maximum contrast. | Timed or A/Start exit to `title`. | `play-opening-fanfare` | `opening-fanfare`, `opening-soundscape` |
 | `title` | Resolve the fanfare into an invitation from the Oracle. | A/Start begins; the redrawn Oracle motif and title remain readable without glow. | `quiz-menu` | `begin-from-title` | `title-mark`, `ui-soundscape` |
-| `quiz-menu` | Explain the run and offer a safe return. | D-pad selects; A/Start confirms; B returns; focus is visible by shape and color. | `character-creation` or `title` | `navigate-menu` | `menu-frame`, `ui-soundscape` |
+| `quiz-menu` | Explain the run, summarize the lesson journal, and offer a new run or the Codex. | D-pad selects; A/Start confirms; B returns to the title; the subtitle reads `LESSONS NN  REVIEW NN` (or `ALL CLEAR`) once lessons exist; focus is visible by shape and color. | `character-creation`, `codex`, or `title` | `navigate-menu` | `menu-frame`, `ui-soundscape` |
+| `codex` | Make learning evidence visible and give every miss an informed-retry path. | Page 0 shows each lens with three mastery runes (1/3/5 evidence) and an amber `!N` pending-review count; later pages reread one lesson each: lens, question, green answer, and rationale, with `REVIEW PENDING` in amber. Left/Up/L and Right/Down/R page with wrap; A/Start are inactive; B returns. | `quiz-menu` | `review-lessons` | `codex-frame`, `ui-soundscape` |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, path, and aura through disjoint, centered identity rows; the hero's visible feet stay grounded on the atelier stage; aura selects an authored hero colorway without procedural equipment overlays. | `oracle` | `customize-hero` | `hero-set`, `character-frame`, `ui-soundscape` |
 | `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data fills charge runes at 3/6/9 and bug hits break containment runes at 1/3/5. A/Start remain inactive; B abandons the wait safely. The top header holds truthful Oracle context and the bottom strip holds themed instruments plus controls. | Automatically enters `quiz` when a valid question is ready; B returns to `quiz-menu`. | `consult-oracle` | `hero-set`, `oracle-sanctum`, `oracle-soundscape`, `run-progression` |
 | `quiz` | Test one durable project concept. | D-pad selects; A commits; B abandons the run; ward, flow, score-rune, text, shape, animation, and sound states reveal consequence and reward. | `oracle`, `level-up`, `game-over`, or `quiz-menu` | `answer-question` | `hero-set`, `quiz-frame`, `quiz-soundscape`, `run-progression` |
@@ -216,6 +217,24 @@ and the selected provider retries.
 - **Feedback:** Move focus on the input edge and flash confirmation once.
   Navigation, confirm, cancel, and unavailable use distinct one-shot cues and
   never stack across a transition.
+
+### `review-lessons`
+
+- **Decision:** Study a lens or a missed lesson before the next run.
+- **Inputs:** D-pad and L/R page; B returns. A and Start are deliberately
+  inactive because the Codex is read-only.
+- **Rules:** Read the cartridge's lesson journal and per-lens mastery without
+  changing either. Mastery evidence is first-try successes plus redeemed misses;
+  a lens wakes its first, second, and third rune at exactly 1, 3, and 5
+  evidence, and misses never light a rune. Lessons appear oldest first; paging
+  wraps between the mastery page and the newest lesson. An empty journal says
+  `NO LESSONS YET` and explains that answering trials writes lessons.
+- **Instructional role:** Turns a wrong answer from lost health into a reread
+  explanation (the correct answer plus why it holds) and shows which lens needs
+  attention, so the retry is informed instead of a second guess.
+- **Feedback:** Pending reviews are an amber count beside the lens runes and an
+  amber `REVIEW PENDING` status on the lesson, never color alone. Legacy lessons
+  without a rationale say so explicitly.
 
 ### `begin-from-title`
 
@@ -314,6 +333,7 @@ and the selected provider retries.
 | `opening-fanfare` | Scene/VFX | `oracle-awakening` | Resolve the five-scene story in the complete Oracle crescendo. | Existing authored 240×160 plate; brightest cyan/gold only here; clean title handoff. | `awakening.png` retained as the climax; five-beat luminance and distinctness tested. |
 | `title-mark` | Logo/UI | `title` | Identify the cartridge and Oracle motif; idle and prompt-pulse states. | Legible at 240×160 without glow. | `oracle-title` implemented. |
 | `menu-frame` | UI | `quiz-menu` | Carry the cathedral/rune language into focused and idle menu states. | Focus differs by pointer, shape, and color; no unowned empty space. | `oracle-menu` implemented. |
+| `codex-frame` | UI | `codex` | Show lens mastery, pending reviews, and one lesson per page, plus empty-journal and missing-rationale states. | Mastery page sits inside the dormant archive frame; lesson pages overlay the trial chamber's panels while its portrait, brazier, and candles stay visible; worst-case copy is contained, disjoint, and readable against the brightest plate pixel under it. | `oracle-codex` implemented with native layout, exact rune-breakpoint, paging, and empty-state tests. |
 | `character-frame` | UI/scene | `character-creation` | Stage the customizable hero inside the same world with centered name, path, and aura rows plus loading, retry, and ready states. | Heading and rows are pairwise disjoint; labels and actions center in measured usable interiors; the hero's visible-alpha feet meet the stage support line; status is truthful. | `oracle-atelier` implemented with native layout assertions. |
 | `hero-set` | Sprite set | `character-creation`, `oracle`, `quiz`, `level-up`, `game-over` | Carry identity through the run with authored aura colorways plus idle, dodge, reward, and defeat variants. | Consistent silhouette across palettes/backgrounds; no procedural accessory or weapon overlays. | `oracle-hero` implemented with authored colorways, portrait, and defeat variants. |
 | `oracle-sanctum` | Scene/UI | `oracle` | Present Datafall, loading, retry, ready, and B-back as one place: moving hero, authored drops, staged data-charge and corruption-containment instruments, and a tier crest. | Fits 240×160; sprites stay contained and differ by silhouette/value/hue; top status remains distinct; raw counts and themed three-rune meters remain disjoint from centered controls at two digits. | `oracle-sanctum` implemented with authored drop sprites, themed threshold runes, exact breakpoint tests, and three visual tiers. |
@@ -347,6 +367,7 @@ engine does not load or play them yet.
 | `oracle-awakening` | Existing high-detail awakening composition becomes the earned final image. | Center luminance rises during the final hold, then clears cleanly to title. | Full Oracle cadence remains proposed. | Elapsed or A/Start lands on a fresh title frame. | Reaches the opening's brightest/densest state after four distinct scenes. | Existing plate retained; five-frame distinctness and luminance arc implemented/tested; audio proposed. |
 | `title` | Restrained Oracle motif and legible title at native scale. | One controlled eye/prompt pulse never competes with title. | Title loop and start cue remain proposed. | A/Start continues; unavailable cartridge state remains honest. | Returns to an Initiate baseline while preserving the Oracle promise. | Visual template implemented/tested; audio proposed. |
 | `quiz-menu` | Rune frame and shaped focus for both choices. | Focus moves on input edge. | Navigate, confirm, and cancel cues remain proposed. | Begin and back are explicit; held input cannot double-confirm. | New run previews the Initiate palette and reset. | Visual template implemented/tested; audio proposed. |
+| `codex` | Archive frame holds five lens rows and totals; lesson pages hold counter, lens runes, question, answer, and rationale in bounded panels. | Page turns are instant input-edge cuts; there is no idle animation to compete with reading. | Page and back cues remain proposed. | B returns to the menu; A/Start are intentionally inactive; paging wraps; the empty journal has explicit guidance. | Runes wake at 1/3/5 evidence per lens and pending reviews clear as misses are redeemed. | Visual template, legacy renderer, and breakpoint tests implemented; audio proposed. |
 | `character-creation` | Authored hero, pairwise-disjoint identity rows, a grounded stage placement, centered action copy, and Oracle status form one staged composition. | Aura changes the authored colorway; identity rows react immediately; begin has one clean handoff. | Trait and begin cues remain proposed. | Every row stays centered and contained; B returns; loading/retry/ready states are truthful. | Establishes identity that remains visible across the run. | Native interior, support-line, and sibling-bound assertions implemented; audio proposed. |
 | `oracle` | Sanctum, playfield, status, raw counts, themed charge/containment runes, controls, and tier crest remain distinct. | Exact 3/6/9 gains light charge runes; 1/3/5 hits break containment runes; Datafall and status retain owned exits. | Ambience and threshold cues remain proposed. | Questions-ready enters quiz; B abandons safely; all other controls are intentionally inactive. | Clean play preserves seals while collection fills runes; bond visuals retain all three tiers. | Native meter layout and exact first-breakpoint frame changes implemented/tested; audio proposed. |
 | `quiz` | Question, choices, hero token, ward runes, flow multiplier, Insight Rune meter, raw score, and tier frame remain readable; answer copy clears every ornament. | Cursor, commit, 45-tick review, ward loss, x2/x3 flow, 300/900/1800 rune crossings, and batch threshold have causal timing. | Quiz cues remain proposed. | Green/red answer copy plus ward/flow/rune banners appear without redundant result words; every automatic outcome routes visibly. | Score reward changes mechanically at streak thresholds and earned runes persist into results. | HUD siblings, ward states, exact scoring breakpoints, and choice/plate bounds implemented/tested; audio proposed. |
@@ -372,7 +393,8 @@ engine does not load or play them yet.
 | Answered-question continuity | Implemented | Answer commitment records question text under `quiz.progress`; cartridge reload compares normalized text and filters recorded questions while serialized save updates preserve the independent AI-batch namespace and read the legacy Claude key. |
 | Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
 | Concise answer review and reduced motion | Partially implemented | Green/red answer copy, shaped focus, stable level-up, and staged opening motion are implemented; a user-selectable reduced-motion setting remains proposed. |
-| Visual templates selected from manifest | Implemented | Eleven typed built-in templates are selected by `art[].template`; `oracle-awakening` selects five art-ID-addressed opening plates, other Oracle templates composite their native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
+| Visual templates selected from manifest | Implemented | Twelve typed built-in templates are selected by `art[].template`; `oracle-awakening` selects five art-ID-addressed opening plates, other Oracle templates composite their native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
+| Oracle Codex lesson journal | Implemented | The `codex` handler and `open-codex` menu signal route the menu to a read-only mastery-and-lesson journal; menus without the route keep `RETURN TO TITLE`. |
 | Whole-game sound design and playback | Configured/metadata; runtime proposed | Every scene references an audio requirement, but the current engine has no sound asset selection or playback system. |
 | Felt presentation progression | Visual runtime implemented; audio proposed | Initiate, Adept, and Oracle-bound change palette, circuit density, crest geometry, and reward/result presentation; native-frame tests verify a non-numeric final-tier channel. |
 
@@ -395,8 +417,8 @@ engine does not load or play them yet.
    user-facing reduced-motion setting remains.
 6. **Continuity pass:** Show the previous lesson and batch status during a wait
    using state the engine already owns.
-7. **Completed — Whole-game presentation pass:** Eleven typed built-in visual
-   templates cover all thirteen reachable scenes, beginning with the dormant
+7. **Completed — Whole-game presentation pass:** Twelve typed built-in visual
+   templates cover all fourteen reachable scenes, beginning with the dormant
    `copyright-card` and culminating in the fifth opening beat's Oracle
    crescendo.
 8. **Sound runtime pass:** Add bounded template-audio selection and playback,

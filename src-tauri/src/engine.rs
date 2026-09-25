@@ -10,7 +10,9 @@ use bevy::prelude::*;
 use crate::codequest::{CodeQuestConfig, GameType, VisualTemplate};
 use crate::external_tools;
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
-use crate::learning::{AnswerEvidence, Concept, Lesson, Mastery};
+use crate::learning::{
+    AnswerEvidence, Concept, LensRecord, Lesson, Mastery, RATIONALE_COLUMNS, RATIONALE_ROWS,
+};
 use crate::scene_machine::{
     SceneEvent, SceneHandler, SceneMachine, SceneMachineDefinition, SceneSignal,
 };
@@ -316,6 +318,61 @@ const AFTERMATH_CONTENT_BOX: UiBox = UiBox {
     width: 85,
     height: 116,
 };
+const CODEX_HEADING_BOX: UiBox = UiBox {
+    x: 62,
+    y: 40,
+    width: 116,
+    height: 7,
+};
+const CODEX_LENS_ROW_Y: i32 = 54;
+const CODEX_LENS_ROW_PITCH: i32 = 11;
+const CODEX_LENS_LABEL_X: i32 = 69;
+const CODEX_LENS_RUNES_X: i32 = 133;
+const CODEX_LENS_PENDING_X: i32 = 159;
+const CODEX_TOTALS_BOX: UiBox = UiBox {
+    x: 42,
+    y: 122,
+    width: 156,
+    height: 17,
+};
+const CODEX_PROMPT_BOX: UiBox = UiBox {
+    x: 42,
+    y: 141,
+    width: 156,
+    height: 16,
+};
+const CODEX_LESSON_HEADER_BOX: UiBox = UiBox {
+    x: 37,
+    y: 2,
+    width: 203,
+    height: 28,
+};
+const CODEX_QUESTION_BOX: UiBox = UiBox {
+    x: 17,
+    y: 31,
+    width: 197,
+    height: 38,
+};
+/// Lesson panels start clear of the trial plate's portrait frame and end
+/// before its brazier (question) or pillar (answer and rationale).
+const CODEX_ANSWER_BOX: UiBox = UiBox {
+    x: 17,
+    y: 71,
+    width: 212,
+    height: 15,
+};
+const CODEX_RATIONALE_BOX: UiBox = UiBox {
+    x: 17,
+    y: 88,
+    width: 212,
+    height: 66,
+};
+const CODEX_TEXT_X: i32 = 23;
+const CODEX_ANSWER_TEXT_X: i32 = 31;
+const CODEX_QUESTION_Y: i32 = 35;
+const CODEX_ANSWER_Y: i32 = 75;
+const CODEX_WHY_Y: i32 = 103;
+const CODEX_RATIONALE_Y: i32 = 116;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PresentationTier {
@@ -528,6 +585,7 @@ enum Screen {
     Quiz,
     LevelUp,
     GameOver,
+    Codex,
     QuestSelect,
     Battle,
     Victory,
@@ -546,6 +604,7 @@ impl From<SceneHandler> for Screen {
             SceneHandler::ConceptQuiz => Self::Quiz,
             SceneHandler::LevelUp => Self::LevelUp,
             SceneHandler::GameOver => Self::GameOver,
+            SceneHandler::Codex => Self::Codex,
             SceneHandler::QuestSelect => Self::QuestSelect,
             SceneHandler::Battle => Self::Battle,
             SceneHandler::Victory => Self::Victory,
@@ -952,6 +1011,8 @@ struct GameState {
     screen_ticks: u64,
     held: HashSet<Button>,
     menu_selected: usize,
+    /// Codex page: 0 is the mastery overview, `n` is journal lesson `n - 1`.
+    codex_page: usize,
     hero_row: usize,
     hero_name: usize,
     hero_class: usize,
@@ -982,6 +1043,7 @@ impl Default for GameState {
             screen_ticks: 0,
             held: HashSet::new(),
             menu_selected: 0,
+            codex_page: 0,
             hero_row: 0,
             hero_name: 0,
             hero_class: 0,
@@ -1017,6 +1079,9 @@ impl GameState {
             self.oracle_hero_x = 104;
             self.oracle_drops.clear();
             self.oracle_spawned = 0;
+        }
+        if screen == Screen::Codex && self.screen != Screen::Codex {
+            self.codex_page = 0;
         }
         self.screen = screen;
         self.screen_ticks = 0;
@@ -1165,6 +1230,49 @@ impl GameState {
         } else {
             OpeningBeat::Legacy
         }
+    }
+
+    fn lessons(&self) -> &[Lesson] {
+        self.cartridge
+            .as_ref()
+            .map_or(&[], |cartridge| cartridge.lessons.as_slice())
+    }
+
+    /// Lit mastery runes (0-3) for `concept` on the inserted cartridge.
+    fn mastery_stage(&self, concept: Concept) -> usize {
+        self.cartridge
+            .as_ref()
+            .and_then(|cartridge| cartridge.mastery.get(&concept))
+            .map_or(0, LensRecord::stage)
+    }
+
+    fn codex_page_count(&self) -> usize {
+        1 + self.lessons().len()
+    }
+
+    /// The journal lesson shown on the current Codex page, if any.
+    fn codex_lesson(&self) -> Option<(usize, &Lesson)> {
+        let index = self.codex_page.checked_sub(1)?;
+        self.lessons().get(index).map(|lesson| (index, lesson))
+    }
+
+    /// A truthful one-line journal summary for the quiz menu, offered only when
+    /// the menu can open the Codex that explains it.
+    fn journal_summary(&self) -> Option<String> {
+        let lessons = self.lessons();
+        if lessons.is_empty() || !self.can_signal(SceneSignal::OpenCodex) {
+            return None;
+        }
+        let pending = lessons.iter().filter(|lesson| lesson.outstanding).count();
+        Some(if pending == 0 {
+            format!("LESSONS {:02}  ALL CLEAR", lessons.len().min(99))
+        } else {
+            format!(
+                "LESSONS {:02}  REVIEW {:02}",
+                lessons.len().min(99),
+                pending.min(99)
+            )
+        })
     }
 }
 
@@ -1509,7 +1617,11 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             }
             Button::A | Button::Start => {
                 if state.menu_selected == 1 {
-                    state.signal(SceneSignal::Back);
+                    // The second option opens the Codex when this menu routes
+                    // to one and otherwise keeps its original return path.
+                    if !state.signal(SceneSignal::OpenCodex) {
+                        state.signal(SceneSignal::Back);
+                    }
                 } else {
                     state.hero_row = 0;
                     state.signal(SceneSignal::NewRun);
@@ -1604,6 +1716,23 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
         Screen::GameOver => {
             if matches!(button, Button::A | Button::B | Button::Start) {
                 state.signal(SceneSignal::Replay);
+            }
+        }
+        Screen::Codex => {
+            // Paging wraps between the mastery overview and the newest lesson.
+            // A and Start are deliberately inactive: the Codex is read-only.
+            let pages = state.codex_page_count();
+            match button {
+                Button::Left | Button::Up | Button::L => {
+                    cycle_index(&mut state.codex_page, pages, -1)
+                }
+                Button::Right | Button::Down | Button::R => {
+                    cycle_index(&mut state.codex_page, pages, 1)
+                }
+                Button::B => {
+                    state.signal(SceneSignal::Back);
+                }
+                _ => {}
             }
         }
         Screen::QuestSelect => {
@@ -1799,6 +1928,7 @@ fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
         Screen::Quiz => render_quiz(&mut frame, &state),
         Screen::LevelUp => render_level_up(&mut frame, &state),
         Screen::GameOver => render_game_over(&mut frame, &state),
+        Screen::Codex => render_codex(&mut frame, &state),
         Screen::QuestSelect => render_quest_select(&mut frame, &state),
         Screen::Battle => render_battle(&mut frame, &state),
         Screen::Victory => render_result(&mut frame, true),
@@ -2103,6 +2233,14 @@ fn render_title(frame: &mut Framebuffer, state: &GameState) {
     }
 }
 
+fn quiz_menu_second_option(state: &GameState) -> &'static str {
+    if state.can_signal(SceneSignal::OpenCodex) {
+        "OPEN THE CODEX"
+    } else {
+        "RETURN TO TITLE"
+    }
+}
+
 fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
     if state.uses_visual_template(VisualTemplate::Menu) {
         render_oracle_menu(frame, state);
@@ -2110,8 +2248,14 @@ fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     frame.centered_text(20, "REPO QUIZ", GOLD, 2);
+    if let Some(summary) = state.journal_summary() {
+        frame.centered_text(44, &summary, SKY, 1);
+    }
     frame.outline(34, 58, 172, 62, SKY);
-    for (index, label) in ["BEGIN RUN", "RETURN TO TITLE"].iter().enumerate() {
+    for (index, label) in ["BEGIN RUN", quiz_menu_second_option(state)]
+        .iter()
+        .enumerate()
+    {
         let y = 74 + index as i32 * 24;
         if state.menu_selected == index {
             frame.rect(43, y - 3, 154, 14, ROYAL);
@@ -2125,8 +2269,14 @@ fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
 fn render_oracle_menu(frame: &mut Framebuffer, state: &GameState) {
     frame.blit_rgb(ORACLE_GATEWAY);
     frame.centered_text_box(GATEWAY_MENU_HEADING_BOX, "CHOOSE YOUR PATH", PARCH, 1);
-    frame.centered_text_box(GATEWAY_MENU_SUBTITLE_BOX, "THE BOND BEGINS HERE", CYAN, 1);
-    for (index, label) in ["BEGIN THE TRIAL", "RETURN TO TITLE"].iter().enumerate() {
+    let subtitle = state
+        .journal_summary()
+        .unwrap_or_else(|| "THE BOND BEGINS HERE".into());
+    frame.centered_text_box(GATEWAY_MENU_SUBTITLE_BOX, &subtitle, CYAN, 1);
+    for (index, label) in ["BEGIN THE TRIAL", quiz_menu_second_option(state)]
+        .iter()
+        .enumerate()
+    {
         let option_box = GATEWAY_MENU_OPTION_BOXES[index];
         let text_box = GATEWAY_MENU_OPTION_TEXT_BOXES[index];
         let focused = state.menu_selected == index;
@@ -2970,6 +3120,279 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
     }
 }
 
+fn mastery_rune_color(stage: usize) -> Color {
+    match stage {
+        0 | 1 => CYAN,
+        2 => AMBER,
+        _ => MAGENTA,
+    }
+}
+
+fn pending_reviews(lessons: &[Lesson], concept: Concept) -> usize {
+    lessons
+        .iter()
+        .filter(|lesson| lesson.outstanding && lesson.concept == Some(concept))
+        .count()
+}
+
+fn codex_lesson_counter(index: usize, total: usize) -> String {
+    format!("LESSON {:02}/{:02}", (index + 1).min(999), total.min(999))
+}
+
+fn codex_lesson_status(lesson: &Lesson) -> (&'static str, Color) {
+    if lesson.outstanding {
+        ("REVIEW PENDING", AMBER)
+    } else {
+        ("LEARNED", CYAN)
+    }
+}
+
+/// Learned and pending-review halves of the Codex totals line.
+fn codex_totals(lessons: &[Lesson]) -> (String, String, Color) {
+    let pending = lessons.iter().filter(|lesson| lesson.outstanding).count();
+    let learned = format!("LEARNED {:02}", (lessons.len() - pending).min(99));
+    if pending == 0 {
+        (learned, "ALL CLEAR".into(), MIST)
+    } else {
+        (learned, format!("REVIEW {:02}", pending.min(99)), AMBER)
+    }
+}
+
+fn draw_codex_totals(frame: &mut Framebuffer, bounds: UiBox, lessons: &[Lesson]) {
+    let (learned, review, review_color) = codex_totals(lessons);
+    let width = text_width(&format!("{learned}  {review}"), 1);
+    let x = bounds.x + (bounds.width - width) / 2;
+    let y = bounds.y + (bounds.height - 7) / 2;
+    frame.text(x, y, &learned, CYAN, 1);
+    let review_x = x + (learned.chars().count() as i32 + 2) * GLYPH_ADVANCE;
+    frame.text(review_x, y, &review, review_color, 1);
+}
+
+fn draw_codex_panel(frame: &mut Framebuffer, bounds: UiBox) {
+    frame.rect(bounds.x, bounds.y, bounds.width, bounds.height, VOID);
+    frame.outline(bounds.x, bounds.y, bounds.width, bounds.height, CYAN_DIM);
+}
+
+/// Draws a lesson's lens label ending just left of its three mastery runes at
+/// `runes_x`; a lesson without a lens shows `GENERAL` and no runes.
+fn draw_codex_lens(
+    frame: &mut Framebuffer,
+    runes_x: i32,
+    y: i32,
+    concept: Option<Concept>,
+    state: &GameState,
+) {
+    let Some(concept) = concept else {
+        let label_x = runes_x + 19 - text_width("GENERAL", 1);
+        frame.text(label_x, y, "GENERAL", MIST, 1);
+        return;
+    };
+    let stage = state.mastery_stage(concept);
+    let label_x = runes_x - 6 - text_width(concept.label(), 1);
+    frame.text(label_x, y, concept.label(), PARCH, 1);
+    draw_oracle_rune_meter(frame, runes_x, y, stage, mastery_rune_color(stage));
+}
+
+fn draw_codex_rationale(frame: &mut Framebuffer, x: i32, y: i32, lesson: &Lesson) {
+    if lesson.rationale.trim().is_empty() {
+        frame.text(x, y, "NO RATIONALE WAS RECORDED", MIST, 1);
+    } else {
+        frame.wrapped_text(
+            x,
+            y,
+            &lesson.rationale,
+            PARCH,
+            RATIONALE_COLUMNS,
+            RATIONALE_ROWS,
+        );
+    }
+}
+
+fn render_codex(frame: &mut Framebuffer, state: &GameState) {
+    if state.uses_visual_template(VisualTemplate::Codex) {
+        render_oracle_codex(frame, state);
+        return;
+    }
+    let Some((index, lesson)) = state.codex_lesson() else {
+        render_codex_mastery(frame, state);
+        return;
+    };
+    frame.clear(NAVY);
+    frame.rect(0, 0, WIDTH as i32, 16, INK);
+    frame.text(
+        5,
+        4,
+        &codex_lesson_counter(index, state.lessons().len()),
+        SKY,
+        1,
+    );
+    draw_codex_lens(frame, 214, 4, lesson.concept, state);
+    let (status, status_color) = codex_lesson_status(lesson);
+    frame.text(5, 21, status, status_color, 1);
+    frame.rect(5, 31, 230, 38, INK);
+    frame.outline(5, 31, 230, 38, SKY);
+    frame.wrapped_text(
+        11,
+        35,
+        &lesson.question,
+        PARCH,
+        QUIZ_QUESTION_COLUMNS,
+        QUIZ_QUESTION_ROWS,
+    );
+    frame.rect(5, 72, 230, 15, INK);
+    frame.text(9, 76, ">", GOLD, 1);
+    frame.text(
+        21,
+        76,
+        &truncate(&lesson.answer, QUIZ_CHOICE_CHARS),
+        GREEN,
+        1,
+    );
+    frame.rect(5, 90, 230, 52, INK);
+    frame.outline(5, 90, 230, 52, MIST);
+    frame.text(11, 95, "WHY IT HOLDS", SKY, 1);
+    draw_codex_rationale(frame, 11, 107, lesson);
+    frame.text(5, 151, "L/R:PAGE", MIST, 1);
+    frame.text(199, 151, "B:BACK", MIST, 1);
+}
+
+fn render_codex_mastery(frame: &mut Framebuffer, state: &GameState) {
+    frame.clear(NAVY);
+    frame.rect(0, 0, WIDTH as i32, 16, INK);
+    frame.text(5, 4, "ORACLE CODEX", GOLD, 1);
+    frame.text(195, 4, "MASTERY", SKY, 1);
+    frame.outline(30, 24, 180, 82, SKY);
+    let lessons = state.lessons();
+    for (row, concept) in Concept::ALL.into_iter().enumerate() {
+        let y = 32 + row as i32 * 14;
+        let stage = state.mastery_stage(concept);
+        frame.text(
+            42,
+            y,
+            concept.label(),
+            if stage > 0 { PARCH } else { MIST },
+            1,
+        );
+        draw_oracle_rune_meter(frame, 128, y, stage, mastery_rune_color(stage));
+        let pending = pending_reviews(lessons, concept);
+        if pending > 0 {
+            frame.text(156, y, &format!("!{}", pending.min(99)), AMBER, 1);
+        }
+    }
+    if lessons.is_empty() {
+        frame.centered_text(116, "NO LESSONS YET", GOLD, 1);
+        frame.centered_text(130, "ANSWER TRIALS TO WRITE LESSONS", MIST, 1);
+    } else {
+        draw_codex_totals(
+            frame,
+            UiBox {
+                x: 0,
+                y: 116,
+                width: WIDTH as i32,
+                height: 7,
+            },
+            lessons,
+        );
+        frame.text(5, 151, "L/R:PAGE", MIST, 1);
+    }
+    frame.text(199, 151, "B:BACK", MIST, 1);
+}
+
+fn render_oracle_codex(frame: &mut Framebuffer, state: &GameState) {
+    let Some((index, lesson)) = state.codex_lesson() else {
+        render_oracle_codex_mastery(frame, state);
+        return;
+    };
+    frame.blit_rgb(ORACLE_TRIAL);
+    frame.blit_rgba(
+        ORACLE_PORTRAITS[state.hero_style],
+        HERO_PORTRAIT_SIZE,
+        HERO_PORTRAIT_SIZE,
+        8,
+        5,
+        1,
+    );
+    draw_codex_panel(frame, CODEX_LESSON_HEADER_BOX);
+    frame.text(
+        44,
+        7,
+        &codex_lesson_counter(index, state.lessons().len()),
+        CYAN,
+        1,
+    );
+    draw_codex_lens(frame, 214, 7, lesson.concept, state);
+    let (status, status_color) = codex_lesson_status(lesson);
+    frame.text(44, 20, status, status_color, 1);
+    frame.text(147, 20, "L/R:PAGE B:BACK", MIST, 1);
+
+    draw_codex_panel(frame, CODEX_QUESTION_BOX);
+    frame.wrapped_text(
+        CODEX_TEXT_X,
+        CODEX_QUESTION_Y,
+        &lesson.question,
+        PARCH,
+        QUIZ_QUESTION_COLUMNS,
+        QUIZ_QUESTION_ROWS,
+    );
+
+    draw_codex_panel(frame, CODEX_ANSWER_BOX);
+    draw_oracle_rune(frame, CODEX_TEXT_X, CODEX_ANSWER_Y, true, GREEN);
+    frame.text(
+        CODEX_ANSWER_TEXT_X,
+        CODEX_ANSWER_Y,
+        &truncate(&lesson.answer, QUIZ_CHOICE_CHARS),
+        GREEN,
+        1,
+    );
+
+    draw_codex_panel(frame, CODEX_RATIONALE_BOX);
+    frame.text(CODEX_TEXT_X, CODEX_WHY_Y, "WHY IT HOLDS", CYAN_DIM, 1);
+    draw_codex_rationale(frame, CODEX_TEXT_X, CODEX_RATIONALE_Y, lesson);
+}
+
+fn render_oracle_codex_mastery(frame: &mut Framebuffer, state: &GameState) {
+    frame.blit_rgb(ORACLE_CHRONICLE);
+    frame.centered_text_box(CODEX_HEADING_BOX, "ORACLE CODEX", AMBER, 1);
+    let lessons = state.lessons();
+    for (row, concept) in Concept::ALL.into_iter().enumerate() {
+        let y = CODEX_LENS_ROW_Y + row as i32 * CODEX_LENS_ROW_PITCH;
+        let stage = state.mastery_stage(concept);
+        frame.text(
+            CODEX_LENS_LABEL_X,
+            y,
+            concept.label(),
+            if stage > 0 { PARCH } else { MIST },
+            1,
+        );
+        draw_oracle_rune_meter(
+            frame,
+            CODEX_LENS_RUNES_X,
+            y,
+            stage,
+            mastery_rune_color(stage),
+        );
+        let pending = pending_reviews(lessons, concept);
+        if pending > 0 {
+            frame.text(
+                CODEX_LENS_PENDING_X,
+                y,
+                &format!("!{}", pending.min(99)),
+                AMBER,
+                1,
+            );
+        }
+    }
+    draw_codex_panel(frame, CODEX_TOTALS_BOX);
+    draw_codex_panel(frame, CODEX_PROMPT_BOX);
+    if lessons.is_empty() {
+        frame.centered_text_box(CODEX_TOTALS_BOX, "NO LESSONS YET", AMBER, 1);
+        frame.centered_text_box(CODEX_PROMPT_BOX, "ANSWER A TRIAL  B:BACK", MIST, 1);
+    } else {
+        draw_codex_totals(frame, CODEX_TOTALS_BOX, lessons);
+        frame.centered_text_box(CODEX_PROMPT_BOX, "L/R:READ LESSONS  B:BACK", MIST, 1);
+    }
+}
+
 fn render_quest_select(frame: &mut Framebuffer, state: &GameState) {
     frame.clear(NAVY);
     frame.rect(0, 0, WIDTH as i32, 22, INK);
@@ -3287,6 +3710,7 @@ fn title_lines(title: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::learning::MASTERY_THRESHOLDS;
     use crate::scene_machine::{
         SceneHandler, SceneMachineDefinition, SceneMachineTemplate, SceneSignal, SceneSpec,
         SceneTransition,
@@ -5980,6 +6404,18 @@ mod tests {
             previews.push(frame.pixels);
         }
 
+        let cartridge = state.cartridge.as_mut().unwrap();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        for (name, page) in [("oracle-codex-mastery", 0), ("oracle-codex-lesson", 2)] {
+            state.codex_page = page;
+            let mut frame = Framebuffer::default();
+            render_oracle_codex(&mut frame, &state);
+            maybe_write_preview(name, &frame.pixels);
+            previews.push(frame.pixels);
+        }
+        state.codex_page = 0;
+
         state.quiz.as_mut().unwrap().selected = 1;
         state.quiz.as_mut().unwrap().feedback = Some((false, QUIZ_FEEDBACK_TICKS));
         let mut review = Framebuffer::default();
@@ -6007,7 +6443,7 @@ mod tests {
         let distinct = previews.iter().collect::<HashSet<_>>();
         assert_eq!(
             distinct.len(),
-            13,
+            15,
             "every reachable scene needs its own authored composition"
         );
         assert!(previews.iter().all(|frame| frame.len() == FRAME_BYTES));
@@ -6216,6 +6652,877 @@ mod tests {
             },
         );
         assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    const WORST_LESSON_QUESTION: &str =
+        "WHICH GUARANTEE KEEPS THE ENGINE AND THE DEVICE SHELL FROM EVER DISAGREEING ABOUT THE ACTIVE SCENE?";
+    const WORST_LESSON_RATIONALE: &str =
+        "THE SHELL FORWARDS INPUT EDGES AND DRAWS FRAMES, SO ONLY THE ENGINE CAN MOVE THE SCENE MACHINE.";
+
+    fn journal_lessons() -> Vec<Lesson> {
+        vec![
+            Lesson {
+                question: "WHO OWNS THE GAME LOOP?".into(),
+                answer: "THE HEADLESS BEVY ENGINE".into(),
+                rationale: "THE SHELL ONLY DRAWS FRAMES AND FORWARDS BUTTON EDGES.".into(),
+                concept: Some(Concept::Responsibility),
+                outstanding: false,
+            },
+            Lesson {
+                question: WORST_LESSON_QUESTION.into(),
+                answer: "ONLY THE ENGINE CHANGES SCENES".into(),
+                rationale: WORST_LESSON_RATIONALE.into(),
+                concept: Some(Concept::Invariant),
+                outstanding: true,
+            },
+            Lesson {
+                question: "WHAT DID THIS OLDER SAVE ASK?".into(),
+                answer: "A QUESTION WITHOUT A LENS".into(),
+                rationale: String::new(),
+                concept: None,
+                outstanding: false,
+            },
+        ]
+    }
+
+    fn journal_mastery() -> Mastery {
+        Mastery::from([
+            (
+                Concept::Purpose,
+                LensRecord {
+                    first_try: 1,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Responsibility,
+                LensRecord {
+                    first_try: 2,
+                    redeemed: 1,
+                    missed: 1,
+                },
+            ),
+            (
+                Concept::Invariant,
+                LensRecord {
+                    first_try: 4,
+                    redeemed: 1,
+                    missed: 3,
+                },
+            ),
+            (
+                Concept::Tradeoff,
+                LensRecord {
+                    missed: 4,
+                    ..LensRecord::default()
+                },
+            ),
+        ])
+    }
+
+    fn journal_cartridge() -> CartridgeSpec {
+        let mut cartridge = quiz_cartridge();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        cartridge
+    }
+
+    fn press(engine: &mut GameEngine, button: Button) {
+        issue(
+            engine,
+            EngineCommand::Input {
+                button,
+                pressed: true,
+            },
+        );
+        issue(
+            engine,
+            EngineCommand::Input {
+                button,
+                pressed: false,
+            },
+        );
+    }
+
+    fn quiz_menu_engine(cartridge: CartridgeSpec) -> GameEngine {
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        engine
+    }
+
+    fn game_state(engine: &GameEngine) -> &GameState {
+        engine.app.world().resource::<GameState>()
+    }
+
+    #[test]
+    fn quiz_menu_opens_the_codex_when_the_scene_graph_routes_to_it() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        assert_eq!(
+            quiz_menu_second_option(game_state(&engine)),
+            "OPEN THE CODEX"
+        );
+
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(game_state(&engine).codex_page, 0);
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        assert_eq!(
+            game_state(&engine).menu_selected,
+            1,
+            "returning from the Codex keeps its menu option focused"
+        );
+
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(
+            game_state(&engine).codex_page,
+            0,
+            "every visit opens on the mastery overview"
+        );
+
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(
+            engine.screen(),
+            Screen::Title,
+            "B on the menu still returns to the title"
+        );
+    }
+
+    #[test]
+    fn dogfood_manifest_routes_its_menu_into_the_templated_codex() {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        let mut engine = quiz_menu_engine(cartridge);
+        maybe_write_preview("oracle-menu-journal", engine.frame());
+        press(&mut engine, Button::Down);
+        maybe_write_preview("oracle-menu-codex-focus", engine.frame());
+
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        let state = game_state(&engine);
+        assert!(state.uses_visual_template(VisualTemplate::Codex));
+        let mut expected = Framebuffer::default();
+        render_oracle_codex(&mut expected, state);
+        assert_eq!(engine.frame(), expected.pixels.as_slice());
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::Right);
+        let state = game_state(&engine);
+        assert_eq!(state.codex_lesson().map(|(index, _)| index), Some(1));
+        let mut expected = Framebuffer::default();
+        render_oracle_codex(&mut expected, state);
+        assert_eq!(engine.frame(), expected.pixels.as_slice());
+    }
+
+    #[test]
+    fn quiz_menu_without_a_codex_route_keeps_return_to_title() {
+        let route = |signal, target: &str| SceneTransition {
+            signal,
+            target: target.into(),
+            after_ticks: None,
+        };
+        let machine = SceneMachineDefinition::compile(
+            "title",
+            vec![
+                SceneSpec {
+                    id: "title".into(),
+                    handler: SceneHandler::Title,
+                    transitions: vec![route(SceneSignal::Continue, "quiz-menu")],
+                },
+                SceneSpec {
+                    id: "quiz-menu".into(),
+                    handler: SceneHandler::QuizMenu,
+                    transitions: vec![
+                        route(SceneSignal::NewRun, "character-creation"),
+                        route(SceneSignal::Back, "title"),
+                    ],
+                },
+                SceneSpec {
+                    id: "character-creation".into(),
+                    handler: SceneHandler::CharacterCreation,
+                    transitions: vec![route(SceneSignal::Back, "quiz-menu")],
+                },
+            ],
+        )
+        .unwrap();
+        let mut cartridge = journal_cartridge();
+        cartridge.machine = Box::new(machine);
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+
+        let state = game_state(&engine);
+        assert_eq!(quiz_menu_second_option(state), "RETURN TO TITLE");
+        assert_eq!(
+            state.journal_summary(),
+            None,
+            "a menu without the Codex keeps its original subtitle"
+        );
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Title);
+    }
+
+    #[test]
+    fn codex_pages_wrap_through_the_journal_without_changing_it() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(game_state(&engine).codex_page_count(), 4);
+        let _ = engine.take_effects();
+
+        for (button, expected_page) in [
+            (Button::Right, 1),
+            (Button::Right, 2),
+            (Button::Down, 3),
+            (Button::R, 0),
+            (Button::Left, 3),
+            (Button::Up, 2),
+            (Button::L, 1),
+            (Button::A, 1),
+            (Button::Start, 1),
+            (Button::Select, 1),
+        ] {
+            press(&mut engine, button);
+            assert_eq!(engine.screen(), Screen::Codex, "{button:?}");
+            assert_eq!(game_state(&engine).codex_page, expected_page, "{button:?}");
+        }
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        for _ in 0..30 {
+            engine.update();
+        }
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        assert_eq!(
+            game_state(&engine).codex_page,
+            2,
+            "a held direction turns exactly one page"
+        );
+
+        assert!(
+            engine.take_effects().is_empty(),
+            "reading the Codex requests and records nothing"
+        );
+        let cartridge = game_state(&engine).cartridge.as_ref().unwrap();
+        assert_eq!(cartridge.lessons, journal_lessons());
+        assert_eq!(cartridge.mastery, journal_mastery());
+
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn empty_codex_says_no_lessons_yet_and_cannot_page() {
+        let mut engine = quiz_menu_engine(quiz_cartridge());
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        for button in [Button::Right, Button::Left, Button::R, Button::Down] {
+            press(&mut engine, button);
+            assert_eq!(game_state(&engine).codex_page, 0);
+        }
+        assert!(
+            color_pixels_in_region(engine.frame(), GOLD, 0..WIDTH, 116..123) > 0,
+            "the legacy Codex names its empty journal"
+        );
+        maybe_write_preview("codex-legacy-empty", engine.frame());
+
+        let state = GameState {
+            cartridge: Some(oracle_template_cartridge()),
+            ..Default::default()
+        };
+        let mut empty = Framebuffer::default();
+        render_oracle_codex(&mut empty, &state);
+        maybe_write_preview("oracle-codex-empty", &empty.pixels);
+        let mut expected = Framebuffer::default();
+        expected.blit_rgb(ORACLE_CHRONICLE);
+        draw_codex_panel(&mut expected, CODEX_TOTALS_BOX);
+        expected.centered_text_box(CODEX_TOTALS_BOX, "NO LESSONS YET", AMBER, 1);
+        draw_codex_panel(&mut expected, CODEX_PROMPT_BOX);
+        expected.centered_text_box(CODEX_PROMPT_BOX, "ANSWER A TRIAL  B:BACK", MIST, 1);
+        for bounds in [CODEX_TOTALS_BOX, CODEX_PROMPT_BOX] {
+            let x = bounds.x as usize..(bounds.x + bounds.width) as usize;
+            let y = bounds.y as usize..(bounds.y + bounds.height) as usize;
+            assert_eq!(
+                frame_region(&empty.pixels, x.clone(), y.clone()),
+                frame_region(&expected.pixels, x, y),
+                "the empty journal shows an honest state and how to fill it"
+            );
+        }
+    }
+
+    #[test]
+    fn quiz_menu_summarizes_the_journal_when_the_codex_is_routable() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        assert_eq!(
+            game_state(&engine).journal_summary().as_deref(),
+            Some("LESSONS 03  REVIEW 01")
+        );
+
+        let mut state = engine.app.world_mut().resource_mut::<GameState>();
+        for lesson in &mut state.cartridge.as_mut().unwrap().lessons {
+            lesson.outstanding = false;
+        }
+        assert_eq!(
+            state.journal_summary().as_deref(),
+            Some("LESSONS 03  ALL CLEAR")
+        );
+        state.cartridge.as_mut().unwrap().lessons.clear();
+        assert_eq!(state.journal_summary(), None);
+    }
+
+    #[test]
+    fn codex_mastery_runes_wake_at_the_exact_evidence_thresholds_on_the_rendered_frame() {
+        let invariant_row = Concept::ALL
+            .iter()
+            .position(|concept| *concept == Concept::Invariant)
+            .unwrap() as i32;
+        for (name, renderer, runes_x, row_y) in [
+            (
+                "oracle",
+                render_oracle_codex_mastery as fn(&mut Framebuffer, &GameState),
+                CODEX_LENS_RUNES_X,
+                CODEX_LENS_ROW_Y + invariant_row * CODEX_LENS_ROW_PITCH,
+            ),
+            ("legacy", render_codex_mastery, 128, 32 + invariant_row * 14),
+        ] {
+            let mut meters = Vec::new();
+            for evidence in 0..=6u32 {
+                let mut cartridge = quiz_cartridge();
+                // Evidence mixes first-try successes and redemptions; misses
+                // never light a rune.
+                cartridge.mastery.insert(
+                    Concept::Invariant,
+                    LensRecord {
+                        first_try: evidence - evidence / 2,
+                        redeemed: evidence / 2,
+                        missed: 9,
+                    },
+                );
+                let state = GameState {
+                    cartridge: Some(cartridge),
+                    ..Default::default()
+                };
+                let mut frame = Framebuffer::default();
+                renderer(&mut frame, &state);
+                let x = runes_x as usize..(runes_x + 19) as usize;
+                let y = row_y as usize..(row_y + 7) as usize;
+                let lit = color_pixels_in_region(&frame.pixels, PARCH, x.clone(), y.clone()) / 5;
+                assert_eq!(
+                    lit,
+                    [0, 1, 1, 2, 2, 3, 3][evidence as usize],
+                    "{name}: {evidence} evidence must light the declared rune count"
+                );
+                let stage_color = [None, Some(CYAN), Some(AMBER), Some(MAGENTA)][lit];
+                if let Some(color) = stage_color {
+                    assert!(
+                        color_pixels_in_region(&frame.pixels, color, x.clone(), y.clone()) > 0,
+                        "{name}: stage {lit} uses its own rune color"
+                    );
+                }
+                meters.push(frame_region(&frame.pixels, x, y));
+            }
+            for (below, at) in [(0, 1), (2, 3), (4, 5)] {
+                assert_ne!(
+                    meters[below], meters[at],
+                    "{name}: crossing {MASTERY_THRESHOLDS:?} changes the meter"
+                );
+            }
+            for (at, above) in [(1, 2), (3, 4), (5, 6)] {
+                assert_eq!(
+                    meters[at], meters[above],
+                    "{name}: the meter holds between thresholds"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codex_lesson_pages_show_the_answer_and_mark_outstanding_reviews() {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            ..Default::default()
+        };
+        let status = (44..127, 20..27);
+        let answer = (
+            CODEX_ANSWER_BOX.x as usize..(CODEX_ANSWER_BOX.x + CODEX_ANSWER_BOX.width) as usize,
+            CODEX_ANSWER_BOX.y as usize..(CODEX_ANSWER_BOX.y + CODEX_ANSWER_BOX.height) as usize,
+        );
+        let rationale = (23..226, 116..139);
+        let render = |state: &GameState, page, legacy: bool| {
+            let mut state_frame = Framebuffer::default();
+            let mut paged = GameState {
+                cartridge: state.cartridge.clone(),
+                codex_page: page,
+                ..Default::default()
+            };
+            paged.hero_style = state.hero_style;
+            if legacy {
+                render_codex(&mut state_frame, &paged);
+            } else {
+                render_oracle_codex(&mut state_frame, &paged);
+            }
+            state_frame.pixels
+        };
+
+        let learned = render(&state, 1, false);
+        maybe_write_preview("oracle-codex-lesson-learned", &learned);
+        assert!(color_pixels_in_region(&learned, CYAN, status.0.clone(), status.1.clone()) > 0);
+        assert_eq!(
+            color_pixels_in_region(&learned, AMBER, status.0.clone(), status.1.clone()),
+            0
+        );
+        assert!(color_pixels_in_region(&learned, GREEN, answer.0.clone(), answer.1.clone()) > 0);
+
+        let pending = render(&state, 2, false);
+        assert!(
+            color_pixels_in_region(&pending, AMBER, status.0.clone(), status.1.clone()) > 0,
+            "an outstanding lesson reads REVIEW PENDING in amber"
+        );
+        assert!(
+            color_pixels_in_region(&pending, PARCH, rationale.0.clone(), rationale.1.clone()) > 0
+        );
+
+        let legacy_lesson = render(&state, 3, false);
+        maybe_write_preview("oracle-codex-lesson-no-rationale", &legacy_lesson);
+        assert!(
+            color_pixels_in_region(
+                &legacy_lesson,
+                MIST,
+                rationale.0.clone(),
+                rationale.1.clone()
+            ) > 0
+        );
+        assert_eq!(
+            color_pixels_in_region(&legacy_lesson, PARCH, rationale.0.clone(), rationale.1),
+            0,
+            "a lesson without a rationale says so instead of inventing one"
+        );
+
+        state.cartridge.as_mut().unwrap().codequest = None;
+        let plain = render(&state, 2, true);
+        maybe_write_preview("codex-legacy-lesson", &plain);
+        assert!(color_pixels_in_region(&plain, AMBER, 5..90, 21..28) > 0);
+        assert!(color_pixels_in_region(&plain, GREEN, 21..212, 76..83) > 0);
+        let mut plain_state = GameState {
+            cartridge: state.cartridge.clone(),
+            ..Default::default()
+        };
+        plain_state.codex_page = 0;
+        let mut plain_mastery = Framebuffer::default();
+        render_codex(&mut plain_mastery, &plain_state);
+        maybe_write_preview("codex-legacy-mastery", &plain_mastery.pixels);
+        assert_ne!(plain, plain_mastery.pixels);
+    }
+
+    fn brightest_plate_color(plate: &[u8; NATIVE_RGB_BYTES], bounds: LayoutBounds) -> Color {
+        let mut brightest = Color::rgb(0, 0, 0);
+        for y in bounds.y..bounds.y + bounds.height {
+            for x in bounds.x..bounds.x + bounds.width {
+                let offset = (y as usize * WIDTH + x as usize) * 3;
+                let color = Color::rgb(plate[offset], plate[offset + 1], plate[offset + 2]);
+                if relative_luminance(color) > relative_luminance(brightest) {
+                    brightest = color;
+                }
+            }
+        }
+        brightest
+    }
+
+    fn inset(bounds: UiBox) -> LayoutBounds {
+        LayoutBounds {
+            x: bounds.x + 1,
+            y: bounds.y + 1,
+            width: bounds.width - 2,
+            height: bounds.height - 2,
+        }
+    }
+
+    #[test]
+    fn codex_ui_stays_contained_disjoint_and_readable() {
+        let screen = LayoutBounds {
+            x: 0,
+            y: 0,
+            width: WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        // Measured usable interior of the chronicle plate's archive frame.
+        let archive = LayoutBounds {
+            x: 62,
+            y: 37,
+            width: 116,
+            height: 77,
+        };
+        let totals = inset(CODEX_TOTALS_BOX);
+        let prompt = inset(CODEX_PROMPT_BOX);
+        let header = inset(CODEX_LESSON_HEADER_BOX);
+        let question = inset(CODEX_QUESTION_BOX);
+        let answer = inset(CODEX_ANSWER_BOX);
+        let rationale = inset(CODEX_RATIONALE_BOX);
+        let portrait = LayoutBounds {
+            x: 8,
+            y: 5,
+            width: HERO_PORTRAIT_SIZE as i32,
+            height: HERO_PORTRAIT_SIZE as i32,
+        };
+
+        let heading = centered_text_box_bounds(CODEX_HEADING_BOX, "ORACLE CODEX", 1);
+        let widest_lens = Concept::ALL
+            .iter()
+            .map(|concept| concept.label())
+            .max_by_key(|label| label.len())
+            .unwrap();
+        let mut archive_children = vec![("mastery heading", heading, PARCH)];
+        for row in 0..Concept::ALL.len() as i32 {
+            let y = CODEX_LENS_ROW_Y + row * CODEX_LENS_ROW_PITCH;
+            archive_children.push((
+                "lens label",
+                text_bounds(CODEX_LENS_LABEL_X, y, widest_lens, 1),
+                PARCH,
+            ));
+            archive_children.push((
+                "lens runes",
+                LayoutBounds {
+                    x: CODEX_LENS_RUNES_X,
+                    y,
+                    width: 19,
+                    height: 7,
+                },
+                CYAN,
+            ));
+            archive_children.push((
+                "lens pending count",
+                text_bounds(CODEX_LENS_PENDING_X, y, "!99", 1),
+                AMBER,
+            ));
+        }
+        let worst_totals = "LEARNED 99  REVIEW 99";
+        let lesson_counter = text_bounds(44, 7, &codex_lesson_counter(998, 999), 1);
+        let lesson_lens = text_bounds(214 - 6 - text_width(widest_lens, 1), 7, widest_lens, 1);
+        let lesson_runes = LayoutBounds {
+            x: 214,
+            y: 7,
+            width: 19,
+            height: 7,
+        };
+        let general_lens = text_bounds(214 + 19 - text_width("GENERAL", 1), 7, "GENERAL", 1);
+        let lesson_status = text_bounds(44, 20, "REVIEW PENDING", 1);
+        let lesson_controls = text_bounds(147, 20, "L/R:PAGE B:BACK", 1);
+        let question_block = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_QUESTION_Y,
+            width: text_width(&"Q".repeat(QUIZ_QUESTION_COLUMNS), 1),
+            height: QUIZ_QUESTION_ROWS as i32 * LINE_HEIGHT - 1,
+        };
+        let answer_copy = text_bounds(
+            CODEX_ANSWER_TEXT_X,
+            CODEX_ANSWER_Y,
+            &"A".repeat(QUIZ_CHOICE_CHARS),
+            1,
+        );
+        let answer_rune = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_ANSWER_Y,
+            width: 5,
+            height: 7,
+        };
+        let rationale_heading = text_bounds(CODEX_TEXT_X, CODEX_WHY_Y, "WHY IT HOLDS", 1);
+        let rationale_block = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_RATIONALE_Y,
+            width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+            height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+        };
+        let missing_rationale = text_bounds(
+            CODEX_TEXT_X,
+            CODEX_RATIONALE_Y,
+            "NO RATIONALE WAS RECORDED",
+            1,
+        );
+        let menu_option =
+            centered_text_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1], "OPEN THE CODEX", 1);
+        let menu_subtitle =
+            centered_text_box_bounds(GATEWAY_MENU_SUBTITLE_BOX, "LESSONS 99  REVIEW 99", 1);
+
+        let mut contained = archive_children
+            .iter()
+            .map(|(name, child, _)| (*name, archive, *child))
+            .collect::<Vec<_>>();
+        contained.extend([
+            (
+                "totals",
+                totals,
+                centered_text_box_bounds(CODEX_TOTALS_BOX, worst_totals, 1),
+            ),
+            (
+                "empty journal",
+                totals,
+                centered_text_box_bounds(CODEX_TOTALS_BOX, "NO LESSONS YET", 1),
+            ),
+            (
+                "reading controls",
+                prompt,
+                centered_text_box_bounds(CODEX_PROMPT_BOX, "L/R:READ LESSONS  B:BACK", 1),
+            ),
+            (
+                "empty guidance",
+                prompt,
+                centered_text_box_bounds(CODEX_PROMPT_BOX, "ANSWER A TRIAL  B:BACK", 1),
+            ),
+            ("lesson counter", header, lesson_counter),
+            ("lesson lens", header, lesson_lens),
+            ("lesson lens runes", header, lesson_runes),
+            ("lesson without lens", header, general_lens),
+            ("lesson status", header, lesson_status),
+            ("lesson controls", header, lesson_controls),
+            ("lesson question", question, question_block),
+            ("lesson answer", answer, answer_copy),
+            ("lesson answer rune", answer, answer_rune),
+            ("rationale heading", rationale, rationale_heading),
+            ("rationale", rationale, rationale_block),
+            ("missing rationale", rationale, missing_rationale),
+            (
+                "menu codex option",
+                ui_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1]),
+                menu_option,
+            ),
+            (
+                "menu journal summary",
+                ui_box_bounds(GATEWAY_MENU_SUBTITLE_BOX),
+                menu_subtitle,
+            ),
+        ]);
+        for (name, container, child) in contained {
+            assert!(
+                bounds_contains(container, child),
+                "{name} {child:?} exceeds its container {container:?}"
+            );
+            assert!(
+                bounds_contains(screen, child),
+                "{name} {child:?} exceeds the native frame"
+            );
+        }
+        assert!(horizontal_centers_align(
+            ui_box_bounds(CODEX_HEADING_BOX),
+            heading
+        ));
+
+        for (index, (left_name, left, _)) in archive_children.iter().enumerate() {
+            for (right_name, right, _) in &archive_children[index + 1..] {
+                assert!(
+                    bounds_are_disjoint(*left, *right),
+                    "{left_name} {left:?} overlaps {right_name} {right:?}"
+                );
+            }
+        }
+        for (name, left, right) in [
+            (
+                "archive and totals",
+                archive,
+                ui_box_bounds(CODEX_TOTALS_BOX),
+            ),
+            (
+                "totals and prompt",
+                ui_box_bounds(CODEX_TOTALS_BOX),
+                ui_box_bounds(CODEX_PROMPT_BOX),
+            ),
+            (
+                "portrait and header",
+                portrait,
+                ui_box_bounds(CODEX_LESSON_HEADER_BOX),
+            ),
+            ("counter and lens", lesson_counter, lesson_lens),
+            ("counter and lensless label", lesson_counter, general_lens),
+            ("lens and runes", lesson_lens, lesson_runes),
+            ("counter and status", lesson_counter, lesson_status),
+            ("status and controls", lesson_status, lesson_controls),
+            (
+                "header and question",
+                ui_box_bounds(CODEX_LESSON_HEADER_BOX),
+                ui_box_bounds(CODEX_QUESTION_BOX),
+            ),
+            (
+                "question and answer",
+                ui_box_bounds(CODEX_QUESTION_BOX),
+                answer,
+            ),
+            ("answer rune and answer", answer_rune, answer_copy),
+            (
+                "answer and rationale",
+                ui_box_bounds(CODEX_ANSWER_BOX),
+                ui_box_bounds(CODEX_RATIONALE_BOX),
+            ),
+            (
+                "rationale heading and copy",
+                rationale_heading,
+                rationale_block,
+            ),
+        ] {
+            assert!(
+                bounds_are_disjoint(left, right),
+                "{name} overlap: {left:?} and {right:?}"
+            );
+        }
+
+        // Copy drawn straight onto a plate must clear every ornament: test it
+        // against the brightest plate pixel inside its own glyph cells.
+        let mut plate_copy = archive_children
+            .iter()
+            .map(|(name, bounds, color)| (*name, ORACLE_CHRONICLE, *bounds, *color))
+            .collect::<Vec<_>>();
+        plate_copy.push(("unlit lens", ORACLE_CHRONICLE, archive_children[1].1, MIST));
+        for (name, color) in [("amber rune", AMBER), ("magenta rune", MAGENTA)] {
+            plate_copy.push((name, ORACLE_CHRONICLE, archive_children[2].1, color));
+        }
+        for (name, plate, bounds, color) in plate_copy {
+            let fill = brightest_plate_color(plate, bounds);
+            let ratio = contrast_ratio(color, fill);
+            assert!(
+                ratio >= 4.5,
+                "{name} contrast {ratio:.2}:1 against plate fill {:?} is below 4.5:1",
+                (fill.0, fill.1, fill.2)
+            );
+        }
+        for (name, foreground, background) in [
+            ("legacy counter", SKY, INK),
+            ("legacy lens", PARCH, INK),
+            ("legacy status", AMBER, NAVY),
+            ("legacy learned", CYAN, NAVY),
+            ("legacy unlit lens", MIST, NAVY),
+            ("legacy pending", AMBER, NAVY),
+            ("lesson answer panel", GREEN, VOID),
+            ("lesson question panel", PARCH, VOID),
+            ("rationale heading panel", CYAN_DIM, VOID),
+            ("lesson status panel", AMBER, VOID),
+            ("lesson controls panel", MIST, VOID),
+            ("legacy answer", GREEN, INK),
+            ("legacy answer marker", GOLD, INK),
+            ("legacy empty journal", GOLD, NAVY),
+            ("legacy question", PARCH, INK),
+            ("legacy rationale heading", SKY, INK),
+        ] {
+            let ratio = contrast_ratio(foreground, background);
+            assert!(ratio >= 4.5, "{name} contrast {ratio:.2}:1 is below 4.5:1");
+        }
+    }
+
+    #[test]
+    fn codex_legacy_layout_keeps_worst_case_copy_inside_its_panels() {
+        let question_box = LayoutBounds {
+            x: 6,
+            y: 32,
+            width: 228,
+            height: 36,
+        };
+        let rationale_box = LayoutBounds {
+            x: 6,
+            y: 91,
+            width: 228,
+            height: 50,
+        };
+        let mastery_box = LayoutBounds {
+            x: 31,
+            y: 25,
+            width: 178,
+            height: 80,
+        };
+        for (name, container, child) in [
+            (
+                "question",
+                question_box,
+                LayoutBounds {
+                    x: 11,
+                    y: 35,
+                    width: text_width(&"Q".repeat(QUIZ_QUESTION_COLUMNS), 1),
+                    height: QUIZ_QUESTION_ROWS as i32 * LINE_HEIGHT - 1,
+                },
+            ),
+            (
+                "rationale heading",
+                rationale_box,
+                text_bounds(11, 95, "WHY IT HOLDS", 1),
+            ),
+            (
+                "rationale",
+                rationale_box,
+                LayoutBounds {
+                    x: 11,
+                    y: 107,
+                    width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+                    height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+                },
+            ),
+            (
+                "first lens",
+                mastery_box,
+                text_bounds(42, 32, "INVARIANTS", 1),
+            ),
+            (
+                "last pending count",
+                mastery_box,
+                text_bounds(156, 32 + 4 * 14, "!99", 1),
+            ),
+        ] {
+            assert!(
+                bounds_contains(container, child),
+                "{name} {child:?} exceeds {container:?}"
+            );
+        }
+        assert!(bounds_are_disjoint(
+            text_bounds(5, 4, &codex_lesson_counter(998, 999), 1),
+            text_bounds(214 - 6 - text_width("INVARIANTS", 1), 4, "INVARIANTS", 1),
+        ));
+        assert!(bounds_are_disjoint(
+            centered_text_bounds(116, "LEARNED 99  REVIEW 99", 1),
+            text_bounds(5, 151, "L/R:PAGE", 1),
+        ));
+    }
+
+    #[test]
+    fn codex_fixture_copy_is_worst_case_for_the_lesson_panels() {
+        assert_eq!(
+            wrap_text(WORST_LESSON_QUESTION, QUIZ_QUESTION_COLUMNS).len(),
+            QUIZ_QUESTION_ROWS
+        );
+        let rationale = wrap_text(WORST_LESSON_RATIONALE, RATIONALE_COLUMNS);
+        assert_eq!(rationale.len(), RATIONALE_ROWS);
+        assert_eq!(rationale[0].chars().count(), RATIONALE_COLUMNS);
+        assert!(crate::learning::rationale_fits(WORST_LESSON_RATIONALE));
+        for lesson in journal_lessons() {
+            assert!(
+                lesson.answer.chars().count() <= QUIZ_CHOICE_CHARS,
+                "lesson answers are committed quiz choices and share their limit"
+            );
+        }
     }
 
     #[test]
