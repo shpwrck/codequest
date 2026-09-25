@@ -27,6 +27,7 @@
         "Preserves existing scene, mechanic, and art IDs and keeps the manifest valid under the bundled validator.",
         "Recognizes that the engine already follows the system reduced-motion preference by freezing decorative motion without changing timing, and specifies the Oracle's resting composition rather than proposing a new setting.",
         "Recognizes the existing lesson card with -/+ verdict markers and per-choice rationales, and the spaced retry with redemption, and builds on them.",
+        "Recognizes the existing engine screen transcript (a polite live region that reads each screen whole, then its changes) instead of proposing screen-reader support as new work, and names the transcript sentences any new state needs.",
         "Classifies any remaining gap, such as an in-game reduced-motion toggle, as proposed engine work rather than a manifest field."
       ],
       "files": []

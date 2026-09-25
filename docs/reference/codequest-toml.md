@@ -235,7 +235,24 @@ writes the quiz lesson-card states, and
 `dogfood_manifest_routes_its_menu_into_the_templated_codex`,
 `empty_codex_says_no_lessons_yet_and_cannot_page`, and
 `codex_lesson_pages_show_the_answer_and_mark_outstanding_reviews` write the
-journal menu and the remaining Codex states.
+journal menu and the remaining Codex states. The remaining writers cover newer
+surfaces:
+
+- `the_header_counts_the_batch_and_labels_the_returning_retry`: batch progress,
+  the `BACK IN` note, and the `RETRY` header, templated and legacy.
+- `waking_a_lens_rune_banners_blinks_and_sounds_above_insight`: the lens-rune
+  wake banner.
+- `the_legacy_lesson_footer_carries_a_woken_rune_iii_banner_readably`: the
+  legacy lesson footer under a rune III banner.
+- `codex_mastery_runes_crack_at_the_exact_gate_breakpoints_on_the_rendered_frame`
+  and `the_lesson_footer_meter_shows_a_cracked_rune_for_an_open_miss`: cracked
+  mastery runes on the Codex and the trial lesson footer.
+- `the_oracle_line_stays_contained_disjoint_and_readable`: the Oracle recall
+  and failure line, templated and legacy.
+- `recalled_lessons_are_written_in_but_stay_static_under_reduced_motion`: a
+  recalled lesson typing in on the Oracle line.
+- `the_result_prompt_stays_lit_on_every_frame`: the Ascension and Aftermath
+  learning debriefs, templated and legacy.
 
 ## Schema v1 compatibility
 

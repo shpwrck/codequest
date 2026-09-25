@@ -108,7 +108,9 @@ The current progression model is visible as well as numeric:
 
 The game has no filler question deck. If the installed AI provider returns an
 invalid batch, the Oracle keeps Datafall playable and retries; press B to leave
-the wait safely.
+the wait safely. The Oracle's second header line says why generation failed
+and when it will retry (`TIMED OUT - RETRY IN 5S`), and otherwise recalls
+earlier lessons from the journal, outstanding misses first.
 
 Sound is engine-owned, like the framebuffer. Each tick the engine compares the
 observable game state with the previous tick and emits tick-stamped notes for a
@@ -258,8 +260,13 @@ only if it fits the display (four 31-character lines, 31 characters per choice,
 three 34-character rationale lines), uses a known lens, and asks no repository
 trivia: no file locations, counts, dates, versions, commits, branches, or
 authors. Ordinary nouns such as "file" or "path" are fine in a conceptual
-question. Valid questions survive a mixed batch; a short delivery is topped up
-until the batch holds six. Accepted batches are cached in the sibling save and
+question. Valid questions survive a mixed batch. When a delivery falls short,
+questions that failed only mechanical checks (length, a missing or overlong
+rationale, an unknown lens, or non-ASCII text) get one bounded repair call
+through the same CLI within the request's deadline, skipped when less than 10
+seconds remain, so a request costs at most two CLI calls. Trivia, malformed,
+and unrepaired questions are dropped, and a short delivery is topped up until
+the batch holds six. Accepted batches are cached in the sibling save and
 prefetched while the player continues.
 
 Set `CQA_CODEX_MODEL` or `CQA_CLAUDE_MODEL` to choose the model used by the

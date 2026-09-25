@@ -239,8 +239,11 @@ the pedagogy map and runtime traceability:
 - Concept lenses: every generated question names one of five lenses
   (`learning::Concept`: purpose, responsibility, interaction, invariant,
   tradeoff) and carries a rationale for every choice (payload v2 in
-  `questions.rs`). Acceptance drops a question without a known lens or with a
-  missing, overlong, or location-citing rationale.
+  `questions.rs`). A question without a known lens, with a missing or overlong
+  rationale, or with other mechanical failures (length, non-ASCII text) gets
+  one bounded repair call through the same provider when the batch falls
+  short, and is dropped only if that repair fails. Location-citing, trivia,
+  and malformed questions are dropped immediately.
 - Lesson card: after commitment the `concept-quiz` handler replaces the
   choices with the committed pick's rationale (the misconception) and then the
   answer's rationale, holds input for 45 ticks, and waits for A or Start.
@@ -271,6 +274,18 @@ the pedagogy map and runtime traceability:
   count.
 - Reduced motion: the engine follows the system's reduced-motion preference by
   freezing decorative motion while keeping scene timing, input, and data.
+- Screen transcript: `engine/transcript.rs` derives plain-language sentences
+  from the same state the renderers use and publishes them through
+  `engine_transcript` into a visually hidden, polite `aria-live` region
+  (`src/index.html`). It is republished only when its words change: a new
+  screen is read whole, then only in-screen changes such as focus moves, and
+  decorative motion is never announced. A new scene or handler needs
+  transcript sentences, which is proposed engine work that the manifest cannot
+  configure.
+- Oracle line: while generation waits, the Oracle's second header line names
+  a failed request's category with a retry countdown, or recalls journal
+  lessons (outstanding misses first) as retrieval practice that records no
+  evidence.
 
 When a design needs different thresholds, gaps, or feedback, name the constant
 or handler that would change and classify it as proposed engine work; the
@@ -330,8 +345,21 @@ sealed-lesson, and lesson layouts, despite its historical name. Lesson-card stat
 and the remaining Codex states come from
 `dogfood_manifest_routes_its_menu_into_the_templated_codex`,
 `empty_codex_says_no_lessons_yet_and_cannot_page`, and
-`codex_lesson_pages_show_the_answer_and_mark_outstanding_reviews`. Run them
-with the same variable when those surfaces change.
+`codex_lesson_pages_show_the_answer_and_mark_outstanding_reviews`. The quiz
+header's batch progress, `RETRY` label, and `BACK IN` note come from
+`the_header_counts_the_batch_and_labels_the_returning_retry`; the lens-rune
+wake banner from `waking_a_lens_rune_banners_blinks_and_sounds_above_insight`
+and the legacy footer under it from
+`the_legacy_lesson_footer_carries_a_woken_rune_iii_banner_readably`; cracked
+mastery runes from
+`codex_mastery_runes_crack_at_the_exact_gate_breakpoints_on_the_rendered_frame`
+and `the_lesson_footer_meter_shows_a_cracked_rune_for_an_open_miss`;
+the Oracle recall and failure line from
+`the_oracle_line_stays_contained_disjoint_and_readable` and
+`recalled_lessons_are_written_in_but_stay_static_under_reduced_motion`; and the
+Ascension and Aftermath learning debriefs from
+`the_result_prompt_stays_lit_on_every_frame`. Run them with the same variable
+when those surfaces change.
 
 When the repository includes `scripts/compile-oracle-assets.sh`, run it before
 the preview test so inspectable PNG sources and embedded runtime buffers cannot
