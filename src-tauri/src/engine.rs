@@ -10579,9 +10579,14 @@ mod tests {
                 break;
             }
         }
+        // The child sleeps 3 s, so finishing well inside that proves the abort
+        // did not wait it out. The bound leaves room for slow CI runners (a
+        // macOS runner exceeded half of QUEST_OUTPUT_GRACE); whether the child
+        // itself was stopped is checked through its marker below.
+        let abort_time = aborted.elapsed();
         assert!(
-            aborted.elapsed() < QUEST_OUTPUT_GRACE / 2,
-            "the abort stops the quest's children too, without waiting them out"
+            abort_time < Duration::from_secs(2),
+            "the abort did not wait out the quest's 3 s child ({abort_time:?})"
         );
 
         effect(EngineEffect::RunQuest {
