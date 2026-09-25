@@ -1,6 +1,7 @@
 /* CODE QUEST ADVANCE device adapter.
  * The browser owns only the shell. Bevy owns game state, timing, process
- * execution, and the fixed 240x160 RGBA framebuffer exposed by Rust. */
+ * execution, the fixed 240x160 RGBA framebuffer, and every sound the speaker
+ * plays; the shell only forwards input and presents what Rust emits. */
 import {
   CARTRIDGE_DRAG_THRESHOLD,
   MAX_CARTRIDGES,
@@ -16,6 +17,13 @@ import {
   leavesKeyToFocusedControl,
   trappedFocusTarget,
 } from "./device-shell.js";
+import {
+  VOLUME_LABELS,
+  VOLUME_LEVELS,
+  createSpeaker,
+  nextVolume,
+  stepVolume,
+} from "./speaker.js";
 
 "use strict";
 
@@ -70,6 +78,9 @@ import {
   const trayError = $("tray-error");
   const batteryTrayError = $("battery-tray-error");
   const deviceMessage = $("device-message");
+  const volumeWheels = [$("volume-wheel"), $("rear-volume-wheel")];
+  const volumeMeter = $("volume-meter");
+  const speaker = createSpeaker();
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
   const image = context.createImageData(WIDTH, HEIGHT);
@@ -84,6 +95,7 @@ import {
   let inserting = false;
   let trayReturnFocus = null;
   let framePending = false;
+  let audioPending = false;
   let bootTimer = null;
   let bootStartedAt = 0;
   let bootFinishing = false;
@@ -120,7 +132,37 @@ import {
     }
   }
 
+  /* The speaker drains engine notes on its own in-flight guard, so a slow
+   * audio poll never delays the next framebuffer read, or the reverse. */
+  async function pollAudio() {
+    if (audioPending) return;
+    audioPending = true;
+    try {
+      speaker.play(await invoke("engine_audio"));
+    } catch (error) {
+      console.error("CQA: failed to read Bevy audio", error);
+    } finally {
+      audioPending = false;
+    }
+  }
+
+  function renderVolume(level) {
+    const label = VOLUME_LABELS[level];
+    for (const wheel of volumeWheels) {
+      wheel.dataset.level = level;
+      wheel.setAttribute("aria-valuenow", String(VOLUME_LEVELS.indexOf(level)));
+      wheel.setAttribute("aria-valuetext", label);
+      wheel.setAttribute("aria-label", `Volume wheel, ${label}`);
+    }
+    volumeMeter.dataset.level = level;
+  }
+
+  function setVolume(level) {
+    renderVolume(speaker.setVolume(level));
+  }
+
   async function drawFrame() {
+    void pollAudio();
     if (!framePending) {
       framePending = true;
       try {
@@ -1038,6 +1080,10 @@ import {
       if (!event.repeat) trayOpen ? closeTray() : openTray();
       return;
     }
+    if (event.code === "KeyV") {
+      if (!event.repeat) setVolume(nextVolume(speaker.volume));
+      return;
+    }
     if (trayOpen && (event.key === "Escape" || event.code === "KeyS")) {
       closeTray();
       return;
@@ -1151,6 +1197,35 @@ import {
     setBatteryDoorOpen(true);
   });
 
+  /* Browsers only start audio from a user gesture. The first key press, the
+   * power switch, or any other press on the device wakes the speaker. */
+  for (const gesture of ["keydown", "pointerdown"]) {
+    window.addEventListener(gesture, () => speaker.unlock(), { capture: true });
+  }
+
+  for (const wheel of volumeWheels) {
+    wheel.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setVolume(nextVolume(speaker.volume));
+    });
+    wheel.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      if (event.deltaY !== 0) setVolume(stepVolume(speaker.volume, -event.deltaY));
+    }, { passive: false });
+    wheel.addEventListener("keydown", (event) => {
+      const direction = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[event.key];
+      if (direction) setVolume(stepVolume(speaker.volume, direction));
+      else if (event.key === "Home") setVolume(VOLUME_LEVELS[0]);
+      else if (event.key === "End") setVolume(VOLUME_LEVELS.at(-1));
+      else if (event.key === "Enter" || event.key === " ") setVolume(nextVolume(speaker.volume));
+      else return;
+      // A focused wheel owns its keys; they must not also reach the D-pad.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
   for (const switchControl of powerSwitches) {
     switchControl.addEventListener("pointerdown", (event) => {
       event.preventDefault();
@@ -1196,6 +1271,7 @@ import {
 
   async function initialize() {
     fit();
+    renderVolume(speaker.volume);
     setShellBackVisible(false);
     syncReducedMotion();
     window.matchMedia?.("(prefers-reduced-motion: reduce)")
@@ -1257,6 +1333,7 @@ import {
     }
     return async (command, args) => {
       if (command === "engine_frame") return frame.buffer;
+      if (command === "engine_audio") return { tick: 0, notes: [] };
       if (command === "app_revision") return "0000000";
       if (["engine_power", "engine_finish_boot", "engine_input", "engine_set_ai_provider", "engine_set_reduced_motion"].includes(command)) return null;
       if (command === "verify_ai_provider") return { provider: args?.provider, ready: true };

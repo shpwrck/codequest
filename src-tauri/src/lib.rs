@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod audio;
 mod codequest;
 mod engine;
 mod external_tools;
@@ -975,6 +976,11 @@ fn engine_frame(state: State<EngineState>) -> tauri::ipc::Response {
 }
 
 #[tauri::command]
+fn engine_audio(state: State<EngineState>) -> audio::AudioBatch {
+    state.0.drain_audio()
+}
+
+#[tauri::command]
 fn app_revision() -> &'static str {
     env!("CQA_APP_REVISION")
 }
@@ -1039,7 +1045,8 @@ pub fn run() {
             engine_finish_boot,
             engine_input,
             engine_set_reduced_motion,
-            engine_frame
+            engine_frame,
+            engine_audio
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
