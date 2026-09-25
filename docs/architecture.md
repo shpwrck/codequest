@@ -3,8 +3,8 @@
 This guide is for people and agents who change the code. It describes how the
 pieces fit, which module owns each decision, and the rules a change must keep.
 Function and type names are the ones in the source, so every claim can be
-checked with a search. Line numbers are left out on purpose: `engine.rs` moves
-often.
+checked with a search. Line numbers are left out on purpose: the engine
+modules move often.
 
 The README covers installation, controls, and the player-facing rules. The
 [Oracle quiz design](game-design/oracle-quiz.md) covers the pedagogy and the
@@ -47,7 +47,7 @@ Rules that follow from the boundary:
 | Module | Owns |
 |---|---|
 | `src-tauri/src/lib.rs` | Tauri commands, `AiProviderState` (selected vs verified provider), cartridge building (`build_cartridge`, `engine_cartridge`), provider calls (`ask_provider`, `command_output_with_timeout`), the generation pipeline (`ai_questions`), the question loader and answer recorder closures handed to the engine (`run`) |
-| `src-tauri/src/engine.rs` | `GameState`, the Bevy schedule, input handling, the quiz run (`QuizRun`, `RunLedger`), the question deck and batches, retry scheduling, the lesson journal in memory, effects, CPU rendering, `EngineRuntime` |
+| `src-tauri/src/engine/` | `GameState` (`state.rs`, Codex methods in `codex.rs`), the Bevy schedule and `EngineRuntime` (`runtime.rs`), input handling (`input.rs`), the quiz run (`QuizRun`, `RunLedger`) and retry scheduling (`quiz.rs`), the question deck and batches (`deck.rs`), effects (`commands.rs`), the per-tick step (`advance.rs`), CPU rendering (`render/`, one file per scene). `mod.rs` holds the shared imports and the crate-facing re-exports |
 | `src-tauri/src/engine/transcript.rs` | Screen sentences and `TranscriptChannel` |
 | `src-tauri/src/audio.rs` | `AudioSnapshot`, `AudioDirector`, cues, loops, `AudioQueue` |
 | `src-tauri/src/learning.rs` | `Concept` lenses, `Review`, `AnswerEvidence`, `LensRecord` and mastery gates, `Lesson`, `presentation_order`, rationale limits |
@@ -846,8 +846,9 @@ shutdown, and shell-path code.
 
 Where the Rust tests live:
 
-- `engine.rs` `mod tests`: scenario tests that drive a `GameEngine` with
-  commands and ticks and assert on screens, deck, frames, and audio.
+- the `mod tests` of each `engine/` module: scenario tests that drive a
+  `GameEngine` with commands and ticks and assert on screens, deck, frames,
+  and audio. Their shared fixtures and drivers are in `engine/test_support.rs`.
   `engine/transcript.rs` has the same kind of tests for the transcript.
 - `learning.rs`, `questions.rs`, `scene_machine.rs`, `codequest.rs`,
   `audio.rs`, `save.rs`, and `lib.rs` (`question_policy_tests`): unit tests of
