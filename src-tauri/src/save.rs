@@ -450,4 +450,27 @@ mod tests {
         );
         std::fs::remove_file(path_for(&cartridge_path)).unwrap();
     }
+
+    #[test]
+    fn a_save_from_a_newer_schema_is_refused_and_left_untouched() {
+        let cartridge_path = temporary_cartridge_path();
+        let save_path = path_for(&cartridge_path);
+        let newer = r#"{"schema_version":2,"data":{"quiz.progress":3}}"#;
+        std::fs::write(&save_path, newer).unwrap();
+
+        assert_eq!(
+            update(&cartridge_path, "quiz.progress", |count: &mut u32| {
+                *count += 1;
+            })
+            .unwrap_err(),
+            "UNSUPPORTED CARTRIDGE SAVE"
+        );
+        assert_eq!(
+            SaveFile::open_or_create(&cartridge_path).unwrap_err(),
+            "UNSUPPORTED CARTRIDGE SAVE"
+        );
+        assert_eq!(std::fs::read_to_string(&save_path).unwrap(), newer);
+
+        std::fs::remove_file(save_path).unwrap();
+    }
 }

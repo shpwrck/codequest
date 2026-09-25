@@ -308,4 +308,64 @@ mod tests {
             ["Ada Lovelace", "Grace Hopper"]
         );
     }
+
+    #[test]
+    fn the_first_of_several_project_notices_is_credited() {
+        assert_eq!(
+            copyright_notice_in("Copyright 2020 Original Author\nCopyright 2023 Later Fork\n")
+                .as_deref(),
+            Some("Copyright 2020 Original Author")
+        );
+    }
+
+    #[test]
+    fn every_prose_opening_after_copyright_is_not_a_notice() {
+        for word in [
+            "notice",
+            "notices",
+            "holder",
+            "holders",
+            "owner",
+            "owners",
+            "license",
+            "licenses",
+            "law",
+            "laws",
+            "statement",
+            "and",
+            "or",
+            "of",
+            "the",
+            "to",
+            "in",
+            "for",
+            "is",
+            "protection",
+        ] {
+            let prose = format!("Copyright {word} applies to this work.");
+            assert_eq!(copyright_notice_in(&prose), None, "{prose}");
+        }
+    }
+
+    #[test]
+    fn every_template_placeholder_is_not_a_notice() {
+        for placeholder in [
+            "[yyyy]",
+            "[year]",
+            "<year>",
+            "{yyyy}",
+            "{year}",
+            "yyyy",
+            "name of copyright owner",
+            "name of author",
+            "<copyright holders>",
+            "[fullname]",
+            "<owner>",
+        ] {
+            // A leading year makes the holder look real to the prose check,
+            // so only the placeholder check can reject these.
+            let template = format!("Copyright (c) 2024 {placeholder}");
+            assert_eq!(copyright_notice_in(&template), None, "{template}");
+        }
+    }
 }

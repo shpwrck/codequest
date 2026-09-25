@@ -308,6 +308,64 @@ fn windows_git_bash() -> Option<std::path::PathBuf> {
         .find(|candidate| candidate.is_file() && !is_windows_subsystem_launcher(candidate))
 }
 
+#[cfg(all(test, not(target_os = "windows")))]
+mod configured_program_tests {
+    use super::*;
+
+    const FIXTURE: &str = "external_tools::configured_program_tests::configured_programs_fixture";
+
+    /// Prints the program each launcher resolves to, one per line. Runs in a
+    /// child process so the parent can set the variables without racing
+    /// other tests.
+    #[test]
+    #[ignore = "child-process fixture for the configured-program test"]
+    fn configured_programs_fixture() {
+        let shell = quest_shell_command().expect("a shell is always available off Windows");
+        for command in [git_command(), claude_command(), codex_command(), shell] {
+            println!("PROGRAM={}", command.get_program().to_string_lossy());
+        }
+    }
+
+    fn resolved_programs(variables: &[(&str, &str)]) -> Vec<String> {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--ignored", "--exact", FIXTURE, "--nocapture"]);
+        for variable in ["CQA_GIT", "CQA_CLAUDE", "CQA_CODEX", "CQA_SHELL"] {
+            command.env_remove(variable);
+        }
+        command.envs(variables.iter().copied());
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("PROGRAM="))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn each_launcher_honors_only_its_own_nonempty_override() {
+        assert_eq!(
+            resolved_programs(&[
+                ("CQA_GIT", "/opt/git"),
+                ("CQA_CLAUDE", "/opt/claude"),
+                ("CQA_CODEX", "/opt/codex"),
+                ("CQA_SHELL", "/opt/shell"),
+            ]),
+            ["/opt/git", "/opt/claude", "/opt/codex", "/opt/shell"]
+        );
+        // An empty override is no override: each falls back to its default.
+        assert_eq!(
+            resolved_programs(&[
+                ("CQA_GIT", ""),
+                ("CQA_CLAUDE", ""),
+                ("CQA_CODEX", ""),
+                ("CQA_SHELL", ""),
+            ]),
+            ["git", "claude", "codex", "bash"]
+        );
+    }
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
     use super::*;
