@@ -67,6 +67,12 @@ or motion only when the silence/stillness has a purpose and a defined handoff.
   timing, input, and data use the real clock. Specify the resting composition
   each scene shows under that freeze, and keep state changes out of the
   decorative clock so they survive it.
+- In the CODE QUEST engine, screen readers already get every screen in words:
+  `engine/transcript.rs` derives plain-language sentences from renderer state
+  and the shell places them in a polite live region (`engine_transcript`). The
+  transcript is republished only when its words change, a new screen is read
+  whole, and in-screen changes such as focus moves are read on their own.
+  Specify the sentences a new scene or state needs; adding them is engine work.
 
 ### Sound design
 

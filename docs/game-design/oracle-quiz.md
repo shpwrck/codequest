@@ -206,7 +206,7 @@ runes so the HUD reads as part of the illustrated world rather than debug text.
 | `quiz-menu` | Explain the run, summarize the lesson journal, and offer a new run or the Codex. | D-pad selects; A/Start confirms; B returns to the title; the subtitle reads `LESSONS NN  REVIEW NN` (or `ALL CLEAR`) once lessons exist; focus is visible by shape and color. | `character-creation`, `codex`, or `title` | `navigate-menu` | `menu-frame`, `ui-soundscape` |
 | `codex` | Make learning evidence visible and give every miss an informed-retry path. | Page 0 shows each lens with three mastery runes (1/3/5 evidence) and an amber `!N` pending-review count; later pages reread one lesson each: lens, question, green answer, and rationale, with `REVIEW PENDING` in amber or `LEARNED` in cyan. Left/Up/L and Right/Down/R page with wrap; A/Start are inactive; B returns. | `quiz-menu` | `review-lessons` | `codex-frame`, `ui-soundscape` |
 | `character-creation` | Give the player identity while the first question request is already in flight. | Change name, path, and aura through disjoint, centered identity rows; the hero's visible feet stay grounded on the atelier stage; aura selects an authored hero colorway without procedural equipment overlays. | `oracle` | `customize-hero` | `hero-set`, `character-frame`, `ui-soundscape` |
-| `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data fills charge runes at 3/6/9 and bug hits break containment runes at 1/3/5. A/Start remain inactive; B abandons the wait safely. The top header holds truthful Oracle context and the bottom strip holds themed instruments plus controls. | Automatically enters `quiz` when a valid question is ready; B returns to `quiz-menu`. | `consult-oracle` | `hero-set`, `oracle-sanctum`, `oracle-soundscape`, `run-progression` |
+| `oracle` | Turn real generation latency into a safe, active interstitial. | Left/Right changes lanes; data fills charge runes at 3/6/9 and bug hits break containment runes at 1/3/5. A/Start remain inactive; B abandons the wait safely. The top header holds truthful Oracle context and the bottom strip holds themed instruments plus controls. The header's second line says why the last request failed and when it retries (`TIMED OUT - RETRY IN 5S`), or otherwise recalls one journal lesson (`REVIEW` or `RECALL`). | Automatically enters `quiz` when a valid question is ready; B returns to `quiz-menu`. | `consult-oracle` | `hero-set`, `oracle-sanctum`, `oracle-soundscape`, `run-progression` |
 | `quiz` | Test one durable project concept and explain the answer. | D-pad selects among shuffled choices; A commits; a lesson card then replaces the choices with the misconception and answer rationales and continues on A/Start after its 45-tick hold; B twice within 90 ticks leaves the run; ward, flow, score-rune, lens-rune, text, shape, and sound states reveal consequence and reward. The header shows batch progress (`TRIAL 2/7`, growing as misses insert retries), a returning review copy is labeled `RETRY` in amber before it is answered, and a miss's lesson card says when it returns (`BACK IN N`, `UP NEXT`, or `NEXT RUN`). | `oracle`, `level-up`, `game-over`, or `quiz-menu` | `answer-question` | `hero-set`, `quiz-frame`, `quiz-soundscape`, `run-progression` |
 | `level-up` | Recognize a completed batch, recap it, and establish a visibly stronger Oracle bond. | The heading reads `ORACLE BOND ASCENDS` when the level crosses into a new tier and `ORACLE BOND DEEPENS` within one; the recap box shows the batch's `1ST TRY a/b`; until the gate opens the footer names the next batch's lenses (`NEXT: FLOWS+TRADEOFFS`, from `Concept::focus_for_level`). A/Start continue once the manifest's `after_ticks` gate opens (60 ticks here), when the continue prompt appears; the scene continues on its own at 180 ticks. | `quiz` or `oracle` | `continue-after-reward` | `hero-set`, `reward-frame`, `progression-soundscape`, `run-progression` |
 | `game-over` | Close the run, show what was earned and learned, and make replay obvious. | Show final score, Insight Rune, tier, and level, then the run's learning ledger: `1ST TRY a/b`, `REDEEMED NN`, `REVIEW NN` (journal lessons still pending) or `ALL CLEAR`, and the lens whose mastery rose most this run with its rune stage, or `SEE CODEX` while reviews are open; the `A/B/START:MENU` prompt never blinks. A/B/Start returns to the menu and clearly resets progression. | `quiz-menu` | `replay-run` | `hero-set`, `result-frame`, `progression-soundscape`, `run-progression` |
@@ -245,7 +245,8 @@ dependency on generation.
 |---|---|---|---|---|
 | Arrival | Enter `oracle`. | Reset the hero to center, clear in-flight objects, and show the real selected-provider status. Keep the existing minimum dwell so instant results do not flash past. | Left/Right begins moving immediately; B returns to the quiz menu; all other controls remain inactive. | Implemented. |
 | Datafall | Request is in flight. | Authored cyan-and-gold crystal shards and asymmetric magenta corruption glyphs fall through deterministic lanes. Data and bug-hit counts persist across Oracle visits; three charge runes light at 3/6/9 data while three containment runes break at 1/3/5 hits. | Move into data to collect it automatically; move away from bugs. | Implemented and breakpoint-tested. |
-| Clouded vision | A batch returns empty or invalid. | `<PROVIDER> RETRYING` distinguishes the real retry delay without a fake percentage. Falling-object play continues. | Left/Right remain available. | Implemented. |
+| Clouded vision | A question request fails: no new questions, a rejected batch, or a provider error. | `<PROVIDER> RETRYING` distinguishes the real retry delay without a fake percentage. For the 5-second retry delay the header's second line names the failure's category in amber with a whole-second countdown (`<REASON> - RETRY IN NS`, the reason cut to 24 characters). Once the retry is in flight the line returns to recall, or reads `<REASON> - RETRYING` when the journal is empty. Falling-object play continues. | Left/Right remain available. | Implemented. |
+| Recall | The journal holds lessons and no failure is waiting out its delay. | The header's second line recalls one lesson with its lens and answer: an outstanding miss as amber `REVIEW`, a cleared lesson as cyan `RECALL`. Outstanding misses come first, each group newest first, and every wait starts from the top. Each lesson holds for 240 ticks (4 seconds) and types in at two characters per tick; under reduced motion it appears whole. | None; recall is read-only and records no evidence. | Implemented. |
 | Vision ready | A valid unanswered question exists. | `QUESTION READY` may appear during the minimum dwell, then the scene transitions automatically. | No confirmation required; held D-pad inputs cannot answer the quiz. | Implemented. |
 | Long wait | Scrying continues beyond the normal beat. | The same deterministic play loop continues under truthful status copy, with no invented scan steps. | Keep playing until the question arrives. | Implemented. |
 
@@ -346,13 +347,25 @@ and the selected provider retries.
   unanswered question exists; empty results retry. No Datafall state affects
   generation, difficulty, quiz score, wards, or wait duration. A B press exits
   on its input edge and clears the active run, so the wait is never inescapable.
-- **Instructional role:** None by design. Datafall keeps the real generation
-  wait active and honest; it never produces learning evidence, and its counts
-  never enter mastery.
+- **Instructional role:** Retrieval practice during the wait. Datafall itself
+  keeps the real generation wait active and honest, while the Oracle line
+  rereads journal lessons, outstanding misses first. Neither Datafall nor the
+  recall line produces learning evidence, and Datafall counts never enter
+  mastery.
 - **Feedback:** Data uses an authored cyan-and-gold crystal silhouette; bugs
   use an asymmetric magenta corruption silhouette. Keep `DATAFALL` and truthful
-  loading/retry/ready text in the top header. Compose raw two-digit counts,
-  three charging data runes, three breakable containment runes, and move/back
+  loading/retry/ready text in the top header. The header's second line, the
+  Oracle line, shows the failure's category while a failed request waits out
+  its 5-second delay: `TIMED OUT`, `CLI UNAVAILABLE`, `RATE LIMITED`,
+  `PROVIDER OVERLOADED`, `LOGIN NEEDED`, `BATTERIES UNVERIFIED`,
+  `NOT A GIT REPO`, `CALL FAILED`, `REJECTED BATCH`, `SAVE FAILED`,
+  `AI DISABLED`, `NO NEW QUESTIONS`, or `GENERATION FAILED`, followed by
+  `- RETRY IN NS`. Otherwise it recalls one journal lesson every 240 ticks
+  (`ORACLE_RECALL_TICKS`) as `REVIEW <LENS>: <ANSWER>` for an outstanding miss
+  and `RECALL <LENS>: <ANSWER>` for a cleared lesson, dropping the lens label
+  before any of the answer would be cut. It is omitted when there is neither a
+  journal nor a failure, and a ready question hides the failure. Compose raw
+  two-digit counts, three charging data runes, three breakable containment runes, and move/back
   controls in the bottom strip without collisions. Give each breakpoint, retry,
   ready state, and back action a distinct response while keeping ambience below
   quiz feedback.
@@ -505,6 +518,15 @@ scrolling, and settling motions show their end state. Scene timing, timing
 gates, input, sound, and data are unchanged, so each row's information and
 duration survive the reduced variant. There is no in-game toggle.
 
+The screen transcript also applies to every row. The engine
+(`src-tauri/src/engine/transcript.rs`) derives plain-language sentences from
+the same state the renderers use, and the shell places them in a visually
+hidden, polite live region through the `engine_transcript` command. The
+transcript is republished only when its words change, so decorative motion is
+never announced: a new screen is read whole, and a change within a screen,
+such as focus moving to another choice, is read on its own. A new scene or
+handler needs its own transcript sentences, which is engine work.
+
 ## Runtime traceability
 
 | Element | Status | Evidence or required work |
@@ -513,7 +535,7 @@ duration survive the reduced variant. There is no in-game toggle.
 | Scene graph | Configured/executable | Schema-v2 handlers and semantic transitions are validated, compiled, and executed by the engine. |
 | Mechanic and presentation graph | Mixed | Mechanics and `kind = "audio"` art entries remain validated metadata: the engine derives sound from state per trusted handler, and no manifest field selects or changes it. Typed visual templates are parsed, validated, and executed by scene renderers. |
 | First question request at cartridge acceptance | Implemented | Empty quiz cartridges call the question effect immediately when inserted. |
-| Question generation | Implemented | Each request carries the anonymized project brief (`repo_context.rs`: README, design notes, manifest summary, and up to 30 `COMPONENT n` skeletons with every path withheld) and the learner state (weakest lens, up to 24 earlier stems) to the selected CLI on stdin under a 120-second process-tree deadline. Payload v2 requires a known lens and a fitting, location-free rationale for every choice; failing questions are dropped individually, and a short delivery tops the open batch up to a full six. |
+| Question generation | Implemented | Each request carries the anonymized project brief (`repo_context.rs`: README, design notes, manifest summary, and up to 30 `COMPONENT n` skeletons with every path withheld) and the learner state (weakest lens, up to 24 earlier stems) to the selected CLI on stdin under a 120-second process-tree deadline. Payload v2 requires a known lens and a fitting, location-free rationale for every choice; when a delivery falls short, a question whose only failures are mechanical (question, choice, or rationale length, a missing rationale, an unknown lens, or non-ASCII text) gets one repair call through the same CLI, which uses what is left of the same deadline and is skipped when less than 10 seconds remain, so one request costs at most two CLI calls. A repair counts only if it keeps its answer index and passes the full policy. Trivia, malformed, and unrepaired questions are dropped individually, and a short delivery tops the open batch up to a full six. |
 | Level focus and transfer prompts | Implemented in the prompt | `Concept::focus_for_level` asks for at least four of six questions on the level's focus lenses, and level 4+ asks for at least two PREDICT questions. Acceptance checks that each question names a known lens; it does not enforce the focus share or the `PREDICT:` prefix. |
 | Repository authors, timeline, and explicit copyright extraction | Implemented | Cartridge preparation reads sanitized git shortlog/history data and scans bounded LICENSE/COPYRIGHT/NOTICE files. Commit authors are never treated as legal owners. |
 | Copyright and five-scene opening story | Implemented with asset-backed templates | Trusted Bevy handlers render the chronicle, source ember, archive answer, memory vault, convergence, and Oracle awakening before `Title`; manifest timing gates control per-scene auto-advance and direct skip while fanfare/title frames remain separate. |
@@ -525,8 +547,8 @@ duration survive the reduced variant. There is no in-game toggle.
 | Quiz result and reward input boundaries | Implemented | The 45-tick lesson hold replaces active controls and then waits for A/Start; B leaves an active question only through a 90-tick confirmation. Level-up continuation asks the scene graph (`can_signal`), so the manifest's `after_ticks` sets both the input hold and the continue prompt (60 ticks here); the scene continues on its own at 180 ticks. |
 | Lesson card, shuffled choices, and spaced retry | Implemented | Committed answers show the misconception and answer rationales in a composed lesson panel; display order follows `learning::presentation_order`; a survivable miss inserts a review copy after up to `RETRY_GAP` (3) questions inside the current batch; mastery and the lesson journal update on every commitment. Native layout, contrast, and flow tests cover worst-case copy (`lesson_cards_render_the_misconception_and_the_answer`, `a_missed_concept_is_journaled_retried_redeemed_and_reread_in_the_codex`). |
 | Learner persistence | Implemented | Each commitment updates `quiz.progress` in one atomic save update: a correct answer moves the question to the retired list, a miss to the missed list (the latest attempt decides), and lens mastery records first-try, redeemed, and missed counts. Cartridge load drops retired questions, queues missed ones as reviews, journals both, and plays lower-level batches first. Serialized updates preserve the independent AI-batch namespace; answered lists from earlier builds load as retired, and the legacy Claude batch key is still read. |
-| Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. A dedicated disabled explanation remains future work. |
-| Concise answer review and reduced motion | Implemented | Green/red lesson copy with `-`/`+` markers, shaped focus, stable level-up, and staged opening motion are implemented. The shell forwards the system's `prefers-reduced-motion` preference (`engine_set_reduced_motion`), and the engine freezes decorative motion while scene timing, input, and data stay identical (`reduced_motion_freezes_decorative_motion_but_keeps_scene_timing`). There is no in-game toggle. |
+| Truthful multi-state Oracle presentation | Implemented with asset-backed templates | Loading, retry, and ready copy derives from actual engine state; B provides recovery from a permanently unavailable generator. The Oracle line names each failure's category, such as `AI DISABLED`, `TIMED OUT`, or `REJECTED BATCH`, with a retry countdown, and otherwise recalls journal lessons (`failure_reasons_are_sanitized_to_one_short_device_line`, `the_oracle_line_stays_contained_disjoint_and_readable`). |
+| Concise answer review and reduced motion | Implemented | Green/red lesson copy with `-`/`+` markers, shaped focus, stable level-up, and staged opening motion are implemented. The shell forwards the system's `prefers-reduced-motion` preference (`engine_set_reduced_motion`), and the engine freezes decorative motion while scene timing, input, and data stay identical (`reduced_motion_freezes_decorative_motion_but_keeps_scene_timing`). There is no in-game toggle. The engine's screen transcript (`engine/transcript.rs`, published through `engine_transcript` into a polite live region) reads every screen to screen readers, whole on entry and then only its changes (`a_new_screen_is_read_whole_and_a_focus_move_reads_only_the_new_focus`, `every_screen_has_a_transcript_that_does_not_panic`). |
 | Visual templates selected from manifest | Implemented | Twelve typed built-in templates are selected by `art[].template`; `oracle-awakening` selects five art-ID-addressed opening plates, other Oracle templates composite their native illustrated plates and live state, unknown names fail validation, and untemplated cartridges keep their legacy renderers. |
 | Oracle Codex lesson journal | Implemented | The `codex` handler and `open-codex` menu signal route the menu to a read-only mastery-and-lesson journal; menus without the route keep `RETURN TO TITLE`. |
 | Whole-game sound design and playback | Implemented | The engine's audio director derives every cue and scene loop from per-tick state snapshots and publishes tick-stamped chip notes through the bounded `engine_audio` queue; the shell speaker plays them behind a gesture-gated context and the persisted volume wheel. Scenes still select audio by trusted handler, not by manifest template. |
@@ -547,11 +569,16 @@ duration survive the reduced variant. There is no in-game toggle.
    answer-review lock, enforce the level-up hold, display every accepted
    game-over input, and test runtime/template/manifest routes.
 5. **Completed — Feedback/accessibility pass:** Correctness labels and
-   markers, shaped focus, staged motion, native-scale assertions, and reduced
-   motion that follows the system preference are implemented.
-6. **In progress — Continuity pass:** Show the previous lesson and batch status
-   during a wait using state the engine already owns, beginning with a
-   Datafall recall line that is being implemented now.
+   markers, shaped focus, staged motion, native-scale assertions, reduced
+   motion that follows the system preference, and a screen transcript for
+   screen readers are implemented.
+6. **Completed — Continuity pass:** The waiting Oracle's second header line
+   uses state the engine already owns: while a failed request waits out its
+   retry delay it names the failure with a `RETRY IN NS` countdown, and
+   otherwise it recalls journal lessons every 240 ticks, outstanding misses
+   first (`REVIEW`), then cleared lessons (`RECALL <LENS>`). Reduced motion
+   shows each lesson whole instead of typing it in. Batch progress stays on
+   the quiz header (`TRIAL P/N`).
 7. **Completed — Whole-game presentation pass:** Twelve typed built-in visual
    templates cover all fourteen reachable scenes, beginning with the dormant
    `copyright-card` and culminating in the fifth opening beat's Oracle
