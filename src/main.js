@@ -38,6 +38,7 @@ import {
   const TURN_DURATION_MS = 520;
   const POWER_REJECTION_MS = 760;
   const MESSAGE_DURATION_MS = 4000;
+  const TRANSCRIPT_POLL_MS = 150;
   const PROVIDER_STORAGE_KEY = "cqa-ai-provider";
   const PROVIDERS = Object.freeze({
     codex: { label: "CODEX" },
@@ -78,6 +79,7 @@ import {
   const trayError = $("tray-error");
   const batteryTrayError = $("battery-tray-error");
   const deviceMessage = $("device-message");
+  const screenTranscript = $("engine-transcript");
   const volumeWheels = [$("volume-wheel"), $("rear-volume-wheel")];
   const volumeMeter = $("volume-meter");
   const speaker = createSpeaker();
@@ -96,6 +98,9 @@ import {
   let trayReturnFocus = null;
   let framePending = false;
   let audioPending = false;
+  let transcriptPending = false;
+  let transcriptPolledAt = -Infinity;
+  let transcriptSeq = 0;
   let bootTimer = null;
   let bootStartedAt = 0;
   let bootFinishing = false;
@@ -146,6 +151,28 @@ import {
     }
   }
 
+  /* The engine describes each screen for screen readers. The shell polls at a
+   * modest cadence behind its own in-flight guard and replaces the live
+   * region only when the engine publishes a new sequence number, so an
+   * unchanged screen is never announced twice. */
+  async function pollTranscript() {
+    const now = performance.now();
+    if (transcriptPending || now - transcriptPolledAt < TRANSCRIPT_POLL_MS) return;
+    transcriptPending = true;
+    transcriptPolledAt = now;
+    try {
+      const update = await invoke("engine_transcript", { since: transcriptSeq });
+      if (update && Number.isInteger(update.seq) && update.seq !== transcriptSeq) {
+        transcriptSeq = update.seq;
+        screenTranscript.textContent = update.text;
+      }
+    } catch (error) {
+      console.error("CQA: failed to read Bevy transcript", error);
+    } finally {
+      transcriptPending = false;
+    }
+  }
+
   function renderVolume(level) {
     const label = VOLUME_LABELS[level];
     for (const wheel of volumeWheels) {
@@ -163,6 +190,7 @@ import {
 
   async function drawFrame() {
     void pollAudio();
+    void pollTranscript();
     if (!framePending) {
       framePending = true;
       try {
@@ -1334,6 +1362,7 @@ import {
     return async (command, args) => {
       if (command === "engine_frame") return frame.buffer;
       if (command === "engine_audio") return { tick: 0, notes: [] };
+      if (command === "engine_transcript") return null;
       if (command === "app_revision") return "0000000";
       if (["engine_power", "engine_finish_boot", "engine_input", "engine_set_ai_provider", "engine_set_reduced_motion"].includes(command)) return null;
       if (command === "verify_ai_provider") return { provider: args?.provider, ready: true };

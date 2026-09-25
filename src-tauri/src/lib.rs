@@ -1010,6 +1010,13 @@ fn engine_audio(state: State<EngineState>) -> audio::AudioBatch {
     state.0.drain_audio()
 }
 
+/// The engine's screen transcript for the shell's live region, only when it
+/// is newer than the `since` sequence number the shell last presented.
+#[tauri::command]
+fn engine_transcript(state: State<EngineState>, since: u64) -> Option<engine::TranscriptUpdate> {
+    state.0.transcript_since(since)
+}
+
 #[tauri::command]
 fn app_revision() -> &'static str {
     env!("CQA_APP_REVISION")
@@ -1068,7 +1075,8 @@ pub fn run() {
             engine_input,
             engine_set_reduced_motion,
             engine_frame,
-            engine_audio
+            engine_audio,
+            engine_transcript
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
