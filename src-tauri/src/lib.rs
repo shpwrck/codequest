@@ -878,6 +878,7 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
             .collect(),
         questions,
         question_batch_ends,
+        question_batch_levels: Vec::new(),
         lessons: Vec::new(),
         mastery: learning::Mastery::new(),
     })
