@@ -15,6 +15,17 @@ use serde::{Deserialize, Serialize};
 pub const RATIONALE_COLUMNS: usize = 34;
 /// Lines a single rationale may occupy inside the lesson panel.
 pub const RATIONALE_ROWS: usize = 3;
+/// The longest rationale that always fits the lesson panel, however its
+/// words fall, provided no single word is longer than a line.
+///
+/// Word wrapping only moves a word down when it does not fit beside the
+/// line before it, so any two consecutive lines hold at least
+/// [`RATIONALE_COLUMNS`] characters of words between them. One line more
+/// than [`RATIONALE_ROWS`] therefore takes a whole column for each pair of
+/// lines (plus one character for an unpaired last line) and a space between
+/// every two lines: 71 characters for three lines of 34, so 70 always fit.
+pub const RATIONALE_MAX_CHARS: usize =
+    RATIONALE_COLUMNS * (RATIONALE_ROWS + 1) / 2 + (RATIONALE_ROWS + 1) % 2 + RATIONALE_ROWS - 1;
 /// Evidence counts that awaken a lens's first, second, and third mastery rune.
 pub const MASTERY_THRESHOLDS: [u32; 3] = [1, 3, 5];
 
@@ -276,6 +287,71 @@ mod tests {
         ));
         assert!(!rationale_fits("   "));
         assert!(!rationale_fits(&"TOO LONG ".repeat(20)));
+    }
+
+    #[test]
+    fn every_rationale_within_the_stated_maximum_fits_however_its_words_fall() {
+        let words = |lengths: &[usize]| {
+            lengths
+                .iter()
+                .zip(b'A'..)
+                .map(|(length, letter)| char::from(letter).to_string().repeat(*length))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(RATIONALE_MAX_CHARS, 70);
+
+        // The worst case: each pair of lines is filled so that the next word
+        // just misses (the third word is no shorter than the first, so it
+        // cannot join the second line). One character more than the maximum
+        // needs a 4th line; shortening any word by one brings it back to 3.
+        for first in 1..RATIONALE_COLUMNS {
+            for third in first..RATIONALE_COLUMNS {
+                let lengths = [
+                    first,
+                    RATIONALE_COLUMNS - first,
+                    third,
+                    RATIONALE_COLUMNS - third,
+                ];
+                let overflow = words(&lengths);
+                assert_eq!(overflow.len(), RATIONALE_MAX_CHARS + 1);
+                assert!(!rationale_fits(&overflow), "{overflow}");
+                for shortened in (0..lengths.len()).filter(|index| lengths[*index] > 1) {
+                    let mut lengths = lengths;
+                    lengths[shortened] -= 1;
+                    let text = words(&lengths);
+                    assert!(text.len() <= RATIONALE_MAX_CHARS);
+                    assert!(rationale_fits(&text), "{text}");
+                }
+            }
+        }
+
+        // A review's counterexample: 84 characters needed four lines. Cut to
+        // the stated maximum, it fits.
+        let reviewed =
+            "A BYPASS SPLITS THE RULES INCONSISTENTLY BETWEEN PRESENTATION AND ENGINE BOUNDARIES.";
+        assert!(!rationale_fits(reviewed));
+        let cut = &reviewed[..reviewed[..=RATIONALE_MAX_CHARS].rfind(' ').unwrap()];
+        assert!(rationale_fits(cut), "{cut}");
+
+        // Any other arrangement of words up to a line long.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        for _ in 0..20_000 {
+            let mut lengths = Vec::new();
+            loop {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let length = 1 + (state % RATIONALE_COLUMNS as u64) as usize;
+                let used = lengths.iter().map(|length| length + 1).sum::<usize>();
+                if used + length > RATIONALE_MAX_CHARS {
+                    break;
+                }
+                lengths.push(length);
+            }
+            let text = words(&lengths);
+            assert!(rationale_fits(&text), "{text}");
+        }
     }
 
     #[test]
