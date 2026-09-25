@@ -757,8 +757,12 @@ fn codex(out: &mut Transcript, state: &GameState) {
             let learned = lessons.len() - pending;
             // Both Codex layouts fit the legend, so it replaces the counts
             // whenever a rune is cracked.
-            out.say(if state.mastery_cracked() {
-                "Cracked runes mean a review is due".to_string()
+            out.say(if let Some(legend) = state.mastery_crack_legend() {
+                if legend == CODEX_CRACKED_LEGEND {
+                    "Cracked runes mean a review is due".to_string()
+                } else {
+                    "Cracked runes mean recent answers slipped".to_string()
+                }
             } else if pending == 0 {
                 format!("{learned} learned, all clear")
             } else {
@@ -966,6 +970,7 @@ mod tests {
                 outstanding: false,
                 misconception: None,
                 peeked: false,
+                spaced_check: false,
             },
             Lesson {
                 question: "WHAT MUST STAY TRUE WHEN A SCENE CHANGES?".into(),
@@ -975,6 +980,7 @@ mod tests {
                 outstanding: true,
                 misconception: None,
                 peeked: false,
+                spaced_check: false,
             },
         ];
         let mastery = Mastery::from([
@@ -1356,6 +1362,40 @@ mod tests {
                 question.choices[0], question.rationales[0]
             )
         );
+    }
+
+    #[test]
+    fn an_accuracy_only_crack_never_promises_a_review() {
+        let mut cartridge = oracle_cartridge();
+        (cartridge.lessons, cartridge.mastery) = journal();
+        for lesson in &mut cartridge.lessons {
+            lesson.outstanding = false;
+        }
+        // Nine successes, but only three of the newest five graded answers.
+        cartridge.mastery.insert(
+            Concept::Invariant,
+            LensRecord {
+                first_try: 9,
+                recent: 0b111,
+                recent_len: 8,
+                ..LensRecord::default()
+            },
+        );
+        let mut engine = powered(cartridge);
+        advance_to(&mut engine, Screen::QuizMenu);
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        let text = engine.transcript();
+        assert!(
+            text.contains("Invariants: 2 of 3 runes, 1 cracked. "),
+            "{text}"
+        );
+        assert!(
+            text.contains("Cracked runes mean recent answers slipped. "),
+            "{text}"
+        );
+        assert!(!text.contains("review is due"), "{text}");
     }
 
     #[test]

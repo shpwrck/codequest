@@ -1306,7 +1306,7 @@ pub fn run() {
         })
     });
     let (answered_question_recorder, _save_writer) = answer_recorder_with(|path, event| {
-        let _ = questions::persist_progress(path, event);
+        let _ = questions::persist_launch_progress(path, event);
     });
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -2677,6 +2677,7 @@ mod question_policy_tests {
             correct,
             review: Review::Fresh,
             picked: None,
+            picked_choice: None,
             peeked: false,
         }
     }
@@ -2965,6 +2966,7 @@ mod question_policy_tests {
                 Review::Fresh
             },
             picked: (!correct).then_some(2),
+            picked_choice: None,
             peeked,
             ..answer(
                 "WHY WRITE SAVES ATOMICALLY?",

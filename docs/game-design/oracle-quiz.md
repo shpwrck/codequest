@@ -323,9 +323,11 @@ and the selected provider retries.
   at exactly 1, 3, and 5 evidence; rune II also needs 60% of the newest five
   graded outcomes correct, and rune III 80% plus no pending review on the
   lens. A rune the gates hold back is drawn cracked, and while any rune is
-  cracked the totals row reads `CRACKED = REVIEW DUE` in amber. Lessons appear
+  cracked the totals row reads `CRACKED = REVIEW DUE` in amber, or
+  `CRACKED = LOW ACCURACY` when no cracked lens has a pending review. Lessons appear
   oldest first; paging wraps between the mastery page and the newest lesson.
-  A pending lesson opens sealed: it shows `YOU CHOSE`, the player's wrong
+  A pending lesson, or a relearned lesson whose spaced check is still due
+  (`CHECK PENDING`), opens sealed: it shows `YOU CHOSE`, the player's wrong
   pick, and the misconception it reveals (or `THINK, THEN A:REVEAL` for a miss
   recorded before picks were saved), and the answer panel reads
   `A:REVEAL ANSWER`. A reveals a pending lesson's answer; revealing before the

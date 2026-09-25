@@ -291,8 +291,24 @@ fn lens_stage_matches_the_declared_thresholds_and_its_gates() {
             ),
             "the window reads only the newest outcomes, {context}"
         );
+        // Evidence the register never saw (a save from an earlier build) is
+        // older than every recorded outcome: it fills the window's older
+        // slots as successes.
+        let recorded = if record.recent_len >= RECENT_CAPACITY {
+            evidence
+        } else {
+            (u16::from(record.recent) & ((1u16 << record.recent_len) - 1)).count_ones()
+        };
+        let earlier = (MASTERY_GATE_WINDOW - window.1)
+            .min(evidence.saturating_sub(recorded).min(u32::from(u8::MAX)) as u8);
+        let gated = (window.0 + earlier, window.1 + earlier);
+        assert_eq!(
+            record.gate_accuracy(),
+            (u32::from(gated.0), u32::from(gated.1)),
+            "{context}"
+        );
         let stage = record.stage_with(outstanding);
-        assert_eq!(stage, gated_stage(volume, window, outstanding), "{context}");
+        assert_eq!(stage, gated_stage(volume, gated, outstanding), "{context}");
         assert!(stage <= volume, "a gate never adds a rune, {context}");
         assert_eq!(
             stage.min(1),
@@ -318,6 +334,7 @@ fn lens_stage_matches_the_declared_thresholds_and_its_gates() {
                     correct,
                     review,
                     picked: (!correct).then_some(1),
+                    picked_choice: None,
                     peeked,
                 });
                 let step =
@@ -387,6 +404,7 @@ fn record_evidence_counts_every_answer_exactly_once() {
                 correct: rng.chance(60),
                 review: arbitrary_review(&mut rng),
                 picked: None,
+                picked_choice: None,
                 peeked: rng.chance(15),
             };
             learning::record_evidence(&mut mastery, &evidence);
@@ -481,14 +499,19 @@ fn quiz_progress_lets_the_latest_attempt_decide_and_never_double_counts() {
                 correct: rng.chance(55),
                 review: arbitrary_review(&mut rng),
                 picked: None,
+                picked_choice: None,
                 peeked: rng.chance(15),
             };
             progress.record(&evidence);
             let identity = questions::question_identity(&evidence.question);
             if !identity.is_empty() {
+                // Relearning never un-retires a question already retired.
+                let retired = latest.get(&identity) == Some(&Place::Retired);
                 let place = match (evidence.correct, evidence.review) {
                     (false, _) => Place::Missed,
+                    (true, _) if retired && evidence.peeked => Place::Retired,
                     (true, _) if evidence.peeked => Place::Relearned,
+                    (true, Review::InSession) if retired => Place::Retired,
                     (true, Review::InSession) => Place::Relearned,
                     (true, Review::Fresh | Review::Spaced) => Place::Retired,
                 };

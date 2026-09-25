@@ -134,6 +134,9 @@ pub struct AnswerEvidence {
     /// The source choice index the player picked, recorded only on a miss so
     /// the Codex can show the misconception it reveals.
     pub picked: Option<usize>,
+    /// The text of the choice at `picked`. A stem repeated across batches can
+    /// list its choices in another order, so a reload finds the pick by text.
+    pub picked_choice: Option<String>,
     /// True when the player revealed this pending lesson's answer in the Codex
     /// before this attempt, so a correct answer is relearning, not evidence.
     pub peeked: bool,
@@ -208,10 +211,31 @@ impl LensRecord {
         ((self.recent & mask).count_ones() as u8, of)
     }
 
+    /// The accuracy the rune gates read: `(right, of)` over the newest
+    /// [`MASTERY_GATE_WINDOW`] graded outcomes.
+    ///
+    /// A save from an earlier build holds evidence the window never saw. Those
+    /// successes are older than every recorded outcome, so they fill the
+    /// window's older slots: an upgraded veteran's first miss weighs exactly
+    /// as it would on a record that saw every answer, not as its whole sample.
+    /// A record that saw every answer has none (all of its evidence is still
+    /// in the window until it fills), so this is its plain recent accuracy.
+    pub fn gate_accuracy(&self) -> (u32, u32) {
+        let (right, of) = self.recent_accuracy(MASTERY_GATE_WINDOW);
+        let unrecorded = if self.recent_len >= RECENT_CAPACITY {
+            0
+        } else {
+            let (recorded, _) = self.recent_accuracy(RECENT_CAPACITY);
+            self.evidence().saturating_sub(u32::from(recorded))
+        };
+        let earlier = u32::from(MASTERY_GATE_WINDOW - of).min(unrecorded);
+        (u32::from(right) + earlier, u32::from(of) + earlier)
+    }
+
     /// Lit mastery runes (0-3) for a lens with `outstanding` open misses.
     ///
     /// Volume sets the ceiling, then two gates read the newest
-    /// [`MASTERY_GATE_WINDOW`] graded outcomes:
+    /// [`MASTERY_GATE_WINDOW`] graded outcomes (see [`Self::gate_accuracy`]):
     /// - rune II stays lit only while recent accuracy is at least 60%;
     /// - rune III also needs at least 80% and no open miss on the lens.
     ///
@@ -219,8 +243,7 @@ impl LensRecord {
     /// both accuracy gates; only the open-miss gate applies to it.
     pub fn stage_with(&self, outstanding: usize) -> usize {
         let mut stage = self.volume_stage();
-        let (right, of) = self.recent_accuracy(MASTERY_GATE_WINDOW);
-        let (right, of) = (u32::from(right), u32::from(of));
+        let (right, of) = self.gate_accuracy();
         if stage >= 2 && of > 0 && right * 5 < of * 3 {
             stage = 1;
         }
@@ -294,6 +317,10 @@ pub struct Lesson {
     /// True once the player revealed this pending lesson's answer in the
     /// Codex; the next attempt then counts as relearning, not evidence.
     pub peeked: bool,
+    /// True while a relearned question waits in the deck for its spaced
+    /// check. The lesson reads as learned, but the Codex seals its answer like
+    /// a pending review's, so the check is never open-book.
+    pub spaced_check: bool,
 }
 
 /// Whether a rationale fits the lesson panel without truncation.
@@ -377,6 +404,7 @@ mod tests {
             correct: false,
             review: Review::Fresh,
             picked: Some(2),
+            picked_choice: None,
             peeked: false,
         };
         record_evidence(&mut mastery, &evidence);
@@ -537,6 +565,52 @@ mod tests {
             2,
             "an open miss still cracks rune III"
         );
+    }
+
+    #[test]
+    fn an_upgraded_veterans_first_miss_weighs_as_one_answer_among_its_history() {
+        let mut veteran: LensRecord =
+            serde_json::from_str(r#"{"first_try":20,"redeemed":0,"missed":0}"#).unwrap();
+        veteran.record(&answer(Review::Fresh, false));
+        assert_eq!(veteran.volume_stage(), 3);
+        assert_eq!(
+            veteran.gate_accuracy(),
+            (4, 5),
+            "earlier successes fill the window"
+        );
+        assert_eq!(
+            (veteran.stage_with(1), veteran.cracks_with(1)),
+            (2, 1),
+            "one open miss cracks rune III only, as on a record that saw every answer"
+        );
+        let mut seen_all = LensRecord::default();
+        for _ in 0..20 {
+            seen_all.record(&answer(Review::Fresh, true));
+        }
+        seen_all.record(&answer(Review::Fresh, false));
+        assert_eq!(veteran.stage_with(1), seen_all.stage_with(1));
+        // Further misses still pull the gates down.
+        veteran.record(&answer(Review::Fresh, false));
+        veteran.record(&answer(Review::Fresh, false));
+        assert_eq!(veteran.gate_accuracy(), (2, 5));
+        assert_eq!(veteran.stage_with(0), 1);
+    }
+
+    #[test]
+    fn gate_accuracy_is_plain_recent_accuracy_for_a_record_that_saw_every_answer() {
+        let mut record = LensRecord::default();
+        for (index, correct) in [true, true, false, true, true, true, false, true, true]
+            .into_iter()
+            .enumerate()
+        {
+            record.record(&answer(Review::Fresh, correct));
+            let (right, of) = record.recent_accuracy(MASTERY_GATE_WINDOW);
+            assert_eq!(
+                record.gate_accuracy(),
+                (u32::from(right), u32::from(of)),
+                "after answer {index}"
+            );
+        }
     }
 
     #[test]
