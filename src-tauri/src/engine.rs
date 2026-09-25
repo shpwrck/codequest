@@ -8522,4 +8522,78 @@ mod tests {
         let lines = wrap_text("alpha beta supercalifragilistic", 8);
         assert!(lines.iter().all(|line| line.chars().count() <= 8));
     }
+
+    /// The whole learning loop across the quiz and the Codex: a miss is
+    /// journaled as a pending review, returns after the retry gap, is redeemed,
+    /// and the Codex rereads the same journal and mastery the quiz wrote.
+    #[test]
+    fn a_missed_concept_is_journaled_retried_redeemed_and_reread_in_the_codex() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let missed = current_question(&engine);
+        commit(&mut engine, false);
+        {
+            let cartridge = engine_state(&engine).cartridge.as_ref().unwrap();
+            let lesson = cartridge
+                .lessons
+                .iter()
+                .find(|lesson| lesson.question == missed.question)
+                .expect("committing a miss journals the lesson");
+            assert!(lesson.outstanding, "a miss is pending review");
+            assert_eq!(lesson.answer, missed.choices[missed.answer]);
+            assert_eq!(lesson.rationale, missed.rationales[missed.answer]);
+            assert_eq!(cartridge.mastery[&Concept::Responsibility].missed, 1);
+        }
+        finish_lesson(&mut engine);
+
+        for _ in 0..RETRY_GAP {
+            assert!(!current_question(&engine).review);
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        let retry = current_question(&engine);
+        assert!(retry.review, "the miss returns after the retry gap");
+        assert_eq!(retry.question, missed.question);
+        commit(&mut engine, true);
+        {
+            let state = engine_state(&engine);
+            assert!(state.quiz.as_ref().unwrap().redeemed);
+            let cartridge = state.cartridge.as_ref().unwrap();
+            let lesson = cartridge
+                .lessons
+                .iter()
+                .find(|lesson| lesson.question == missed.question)
+                .unwrap();
+            assert!(!lesson.outstanding, "redemption clears the pending review");
+            let record = cartridge.mastery[&Concept::Responsibility];
+            assert_eq!((record.missed, record.redeemed), (1, 1));
+        }
+        finish_lesson(&mut engine);
+
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        let journal = engine_state(&engine)
+            .cartridge
+            .as_ref()
+            .unwrap()
+            .lessons
+            .clone();
+        if engine_state(&engine).menu_selected == 0 {
+            press(&mut engine, Button::Down);
+        }
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        for _ in 0..journal.len() {
+            press(&mut engine, Button::Right);
+            let (_, lesson) = engine_state(&engine)
+                .codex_lesson()
+                .expect("every journal page shows a lesson");
+            assert!(journal.contains(lesson));
+        }
+        assert_eq!(
+            engine_state(&engine).cartridge.as_ref().unwrap().lessons,
+            journal,
+            "reading the Codex never changes the journal"
+        );
+    }
 }
