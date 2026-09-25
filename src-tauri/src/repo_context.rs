@@ -316,7 +316,9 @@ fn ascii_line(line: &str) -> String {
 struct Redactor {
     /// Tracked file names, matched exactly (`Makefile`, `logo.svg`).
     files: HashSet<String>,
-    /// Lowercase tracked directory names, matched inside slashed words.
+    /// Lowercase tracked directory names, matched inside slashed words, and
+    /// on their own when a `-`, `_`, or `.` marks them as names
+    /// (`src-tauri`, `node_modules`) rather than prose (`packaging`).
     directories: HashSet<String>,
 }
 
@@ -335,18 +337,38 @@ impl Redactor {
         redactor
     }
 
+    fn names_tracked_directory(&self, name: &str) -> bool {
+        self.directories.contains(&name.to_ascii_lowercase())
+    }
+
+    /// Whether `name` is a tracked file, a slashed name through a tracked
+    /// file or directory, or a tracked directory whose name is marked.
+    fn names_tracked(&self, name: &str) -> bool {
+        self.files.contains(name)
+            || (name.contains('/')
+                && name.split('/').any(|segment| {
+                    self.files.contains(segment) || self.names_tracked_directory(segment)
+                }))
+            || (name.contains(['-', '_', '.']) && self.names_tracked_directory(name))
+    }
+
+    /// Whether `word` names a tracked location, alone or with punctuation or
+    /// a suffix attached (`Makefile's`, `` `src-tauri`-owned ``).
     fn names_tracked_location(&self, word: &str) -> bool {
         let core = word
             .trim_matches(|c: char| {
                 !c.is_ascii_alphanumeric() && !matches!(c, '.' | '/' | '_' | '-')
             })
             .trim_end_matches('.');
-        self.files.contains(core)
-            || (core.contains('/')
-                && core.split('/').any(|segment| {
-                    self.files.contains(segment)
-                        || self.directories.contains(&segment.to_ascii_lowercase())
-                }))
+        self.names_tracked(core)
+            || questions::name_pieces(word).any(|piece| {
+                self.names_tracked(piece)
+                    || questions::dash_prefixes(piece).any(|prefix| {
+                        self.files.contains(prefix)
+                            || (prefix.contains(['-', '_', '.'])
+                                && self.names_tracked_directory(prefix))
+                    })
+            })
     }
 
     /// Replaces every location word with a placeholder.
@@ -470,21 +492,222 @@ fn is_table_rule(trimmed: &str) -> bool {
             .all(|character| matches!(character, '|' | '-' | ':' | ' '))
 }
 
-/// Readable prose lines: no front matter, code fences, raw HTML, badge-only
-/// lines, table rules, link targets, or operational sections.
-fn markdown_prose(text: &str, redactor: &Redactor) -> Vec<String> {
+/// Byte offset of the closing run of exactly `run` backticks in `text`.
+fn closing_backticks(text: &str, run: usize) -> Option<usize> {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find('`') {
+        let start = from + offset;
+        let length = text[start..].len() - text[start..].trim_start_matches('`').len();
+        if length == run {
+            return Some(start);
+        }
+        from = start + length;
+    }
+    None
+}
+
+/// Byte offset of the first `<!--` in `text` outside a code span, so a
+/// documented `` `<!--` `` does not hide the prose after it.
+fn comment_opening(text: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find(['`', '<']) {
+        let at = from + offset;
+        let tail = &text[at..];
+        if tail.starts_with("<!--") {
+            return Some(at);
+        }
+        if tail.starts_with('`') {
+            let run = tail.len() - tail.trim_start_matches('`').len();
+            from = at + run + closing_backticks(&tail[run..], run).map_or(0, |end| end + run);
+        } else {
+            from = at + 1;
+        }
+    }
+    None
+}
+
+/// `line` without its HTML comments, which Markdown never displays.
+/// `in_comment` carries a comment that is still open across lines.
+fn strip_html_comments(line: &str, in_comment: &mut bool) -> String {
+    let mut visible = String::new();
+    let mut rest = line;
+    let mut just_opened = false;
+    loop {
+        if *in_comment {
+            // `<!-->` and `<!--->` close as soon as they open.
+            let empty = just_opened
+                .then(|| rest.strip_prefix('>').or_else(|| rest.strip_prefix("->")))
+                .flatten();
+            match empty.or_else(|| rest.find("-->").map(|end| &rest[end + 3..])) {
+                Some(after) => {
+                    *in_comment = false;
+                    rest = after;
+                }
+                None => return visible,
+            }
+        }
+        match comment_opening(rest) {
+            Some(start) => {
+                visible.push_str(&rest[..start]);
+                rest = &rest[start + 4..];
+                *in_comment = true;
+                just_opened = true;
+            }
+            None => {
+                visible.push_str(rest);
+                return visible;
+            }
+        }
+    }
+}
+
+/// A link reference definition (`[label]: destination "title"`), which
+/// Markdown resolves but never displays. Footnotes (`[^1]: ...`) and prose
+/// that only looks similar (`[Note]: read this first`) display.
+fn is_link_reference_definition(trimmed: &str) -> bool {
+    trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]:"))
+        .is_some_and(|(label, definition)| {
+            let definition = definition.trim_start();
+            let title = definition
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, title)| title.trim());
+            !label.trim().is_empty()
+                && !label.starts_with('^')
+                && !label.contains(['[', ']'])
+                && !definition.is_empty()
+                && (title.is_empty() || title.starts_with(['"', '\'', '(']))
+        })
+}
+
+/// The markup a prose document is written in, which decides what it hides.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Markup {
+    Markdown,
+    ReStructuredText,
+    AsciiDoc,
+}
+
+impl Markup {
+    fn for_path(path: &str) -> Self {
+        match extension(path).as_str() {
+            "rst" => Self::ReStructuredText,
+            "adoc" => Self::AsciiDoc,
+            _ => Self::Markdown,
+        }
+    }
+}
+
+/// Tracks the comments of reStructuredText and AsciiDoc, which, like HTML
+/// comments in Markdown, are never displayed.
+#[derive(Default)]
+struct HiddenMarkup {
+    /// The indent of the reStructuredText comment or link target whose
+    /// more deeply indented body is still being read.
+    explicit_markup: Option<usize>,
+    /// Inside an AsciiDoc `////` comment block.
+    in_comment_block: bool,
+}
+
+impl HiddenMarkup {
+    /// Whether `raw` is hidden from readers of a `markup` document.
+    fn hides(&mut self, raw: &str, markup: Markup) -> bool {
+        let trimmed = raw.trim();
+        match markup {
+            Markup::Markdown => false,
+            Markup::ReStructuredText => {
+                let indent = indent_of(raw);
+                if let Some(markup_indent) = self.explicit_markup {
+                    if trimmed.is_empty() || indent > markup_indent {
+                        return true;
+                    }
+                    self.explicit_markup = None;
+                }
+                // `.. comment`, `.. _target: url`, and `__ url` are hidden;
+                // directives (`.. note::`) and footnotes (`.. [1]`) display.
+                let explicit = trimmed == ".."
+                    || trimmed == "__"
+                    || trimmed.starts_with("__ ")
+                    || trimmed.strip_prefix(".. ").is_some_and(|body| {
+                        !body.contains("::") && !body.trim_start().starts_with('[')
+                    });
+                if explicit {
+                    self.explicit_markup = Some(indent);
+                }
+                explicit
+            }
+            Markup::AsciiDoc => {
+                if trimmed.len() >= 4 && trimmed.bytes().all(|byte| byte == b'/') {
+                    self.in_comment_block = !self.in_comment_block;
+                    return true;
+                }
+                self.in_comment_block
+                    || (trimmed.starts_with("//") && !trimmed.starts_with("///"))
+                    || is_asciidoc_attribute(trimmed)
+            }
+        }
+    }
+}
+
+/// An AsciiDoc attribute entry (`:name: value`), which configures the
+/// document instead of displaying text.
+fn is_asciidoc_attribute(trimmed: &str) -> bool {
+    trimmed
+        .strip_prefix(':')
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(name, value)| {
+            let name = name.trim_start_matches('!').trim_end_matches('!');
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                && (value.is_empty() || value.starts_with(' '))
+        })
+}
+
+/// The front matter delimiter a document opens with, if any: `---` (YAML)
+/// or `+++` (TOML).
+fn front_matter_delimiter(text: &str) -> Option<&'static str> {
+    match text.lines().next().map(str::trim_end) {
+        Some("---") => Some("---"),
+        Some("+++") => Some("+++"),
+        _ => None,
+    }
+}
+
+/// Readable prose lines: no front matter, comments, code fences, raw HTML,
+/// badge-only lines, table rules, link targets or definitions, or
+/// operational sections.
+fn markdown_prose(text: &str, markup: Markup, redactor: &Redactor) -> Vec<String> {
     let mut lines = Vec::new();
     let mut in_fence = false;
-    let mut in_front_matter = text.starts_with("---");
+    let mut in_comment = false;
+    let mut hidden = HiddenMarkup::default();
+    let mut front_matter = front_matter_delimiter(text);
     let mut skipped_section: Option<usize> = None;
     for (index, raw) in text.lines().enumerate() {
-        let trimmed = raw.trim();
-        if in_front_matter {
-            if index > 0 && trimmed == "---" {
-                in_front_matter = false;
+        if let Some(delimiter) = front_matter {
+            if index > 0 && raw.trim() == delimiter {
+                front_matter = None;
             }
             continue;
         }
+        let visible;
+        let raw = if in_fence || markup != Markup::Markdown {
+            raw
+        } else {
+            let was_in_comment = in_comment;
+            visible = strip_html_comments(raw, &mut in_comment);
+            if visible.trim().is_empty() && (was_in_comment || !raw.trim().is_empty()) {
+                continue;
+            }
+            visible.as_str()
+        };
+        if !in_fence && hidden.hides(raw, markup) {
+            continue;
+        }
+        let trimmed = raw.trim();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
             continue;
@@ -510,6 +733,7 @@ fn markdown_prose(text: &str, redactor: &Redactor) -> Vec<String> {
             || trimmed.starts_with("[![")
             || trimmed.starts_with("![")
             || is_table_rule(trimmed)
+            || (markup == Markup::Markdown && is_link_reference_definition(trimmed))
         {
             continue;
         }
@@ -529,7 +753,7 @@ fn markdown_prose(text: &str, redactor: &Redactor) -> Vec<String> {
 }
 
 /// Headings plus the first paragraph under each (and before the first).
-fn markdown_outline(text: &str, redactor: &Redactor) -> Vec<String> {
+fn markdown_outline(text: &str, markup: Markup, redactor: &Redactor) -> Vec<String> {
     let mut outline = Vec::new();
     let mut paragraph = String::new();
     let mut wants_paragraph = true;
@@ -539,7 +763,7 @@ fn markdown_outline(text: &str, redactor: &Redactor) -> Vec<String> {
             paragraph.clear();
         }
     };
-    for line in markdown_prose(text, redactor) {
+    for line in markdown_prose(text, markup, redactor) {
         let trimmed = line.trim();
         if is_heading(trimmed) {
             flush(&mut paragraph, &mut outline);
@@ -573,7 +797,7 @@ fn readme(repo: &Path, tracked: &[String], redactor: &Redactor) -> Option<Vec<St
     // Prefer Markdown, then the shortest name, then byte order.
     candidates.sort_by_key(|path| (!is_markdown(path), path.len(), path.as_str()));
     candidates.into_iter().find_map(|path| {
-        let prose = markdown_prose(&read_text(repo, path)?, redactor);
+        let prose = markdown_prose(&read_text(repo, path)?, Markup::for_path(path), redactor);
         (!prose.is_empty()).then_some(prose)
     })
 }
@@ -1233,7 +1457,8 @@ pub(crate) fn project_brief(repo: &Path, tracked: &[String]) -> String {
         if notes_budget < MIN_NOTE_BUDGET {
             break;
         }
-        let Some(outline) = read_text(repo, path).map(|text| markdown_outline(&text, &redactor))
+        let Some(outline) = read_text(repo, path)
+            .map(|text| markdown_outline(&text, Markup::for_path(path), &redactor))
         else {
             continue;
         };
@@ -1675,5 +1900,119 @@ mod tests {
             "A read/write lock guards e.g. the save; see Node.js."
         );
         assert_eq!(redactor.redact("let ratio = a / b;"), "let ratio = a / b;");
+    }
+
+    #[test]
+    fn redaction_sees_file_names_with_attached_suffixes() {
+        let redactor = Redactor::new(&[
+            "src-tauri/src/engine.rs".to_string(),
+            "src-tauri/Cargo.toml".to_string(),
+            "packaging/Containerfile".to_string(),
+            "node_modules/leftpad/index.js".to_string(),
+        ]);
+        assert_eq!(
+            redactor.clean(
+                "See engine.rs:120 for the loop; `Cargo.toml`'s features gate it; the _engine.rs_ module\u{2014}and `src-tauri`\u{2014}own state."
+            ),
+            "See [LOCATION] for the loop; [LOCATION] features gate it; the [LOCATION] module-and [LOCATION] state."
+        );
+        for word in [
+            "engine.rs::wrap_text",
+            "engine.rs:42:7,",
+            "**engine.rs**",
+            "Cargo.toml's",
+            "Containerfile's",
+            "Containerfile-based",
+            "src-tauri",
+            "src-tauri-owned",
+            "node_modules.",
+            "(src-tauri/src)",
+        ] {
+            assert_eq!(redactor.redact(word), "[LOCATION]", "{word}");
+        }
+        assert_eq!(
+            redactor.redact("The packaging step never reads a stage's output, e.g. its logs."),
+            "The packaging step never reads a stage's output, e.g. its logs."
+        );
+    }
+
+    #[test]
+    fn hidden_markup_never_reaches_the_brief() {
+        let repo = temporary_git_repo();
+        write(
+            &repo,
+            "README.md",
+            "# App\n\nDoes things.\n\n<!--\nstaging admin password: hunter2 (db-staging.corp.internal)\n```\n-->\n\nVisible <!-- inline secret --> prose, then `<!--` in code stays.\nText <!-- opens a secret\nthat spans lines --> and resumes.\n<!-- one-line secret -->\n<!---->Empty comments close at once.\n<!-->Degenerate comments close too.\n\n[internal]: https://wiki.corp.internal/runbook \"Reset keys with hunter2\"\n[^1]: Footnotes are displayed.\n[Note]: read this first.\n\nMore prose.\n",
+        );
+        write(
+            &repo,
+            "docs/architecture.md",
+            "+++\ntitle = \"toml front matter secret\"\n+++\n# Architecture\n\nThe engine owns every rule.\n",
+        );
+        let tracked = tracked_files(&repo);
+
+        let brief = project_brief(&repo, &tracked);
+
+        for shown in [
+            "Does things.",
+            "Visible prose, then `<!--` in code stays.",
+            "\nText\n and resumes.\n",
+            "\nEmpty comments close at once.\nDegenerate comments close too.\n",
+            "^1: Footnotes are displayed.",
+            "Note: read this first.",
+            "More prose.",
+            "DESIGN NOTE 1:\n# Architecture\nThe engine owns every rule.",
+        ] {
+            assert!(brief.contains(shown), "{shown} missing from:\n{brief}");
+        }
+        for hidden in [
+            "hunter2",
+            "staging",
+            "corp.internal",
+            "-->",
+            "secret",
+            "spans lines",
+            "internal",
+            "front matter",
+        ] {
+            assert!(!brief.contains(hidden), "{hidden} leaked into:\n{brief}");
+        }
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn restructured_text_and_asciidoc_comments_stay_hidden() {
+        let redactor = Redactor::default();
+        let rst = "Title\n=====\n\nShown first.\n\n.. a comment: hunter2\n   still the comment\n\n   and its second paragraph\n\n.. _wiki: https://wiki.corp.internal\n__ https://anonymous.corp.internal\n..\n   an empty-marker comment block\n\n.. note:: Directives display.\n\n   Their bodies display too.\n\n.. [1] Footnotes display.\n\nShown last.\n";
+        let prose = markdown_prose(rst, Markup::ReStructuredText, &redactor).join("\n");
+        for shown in [
+            "Shown first.",
+            ".. note:: Directives display.",
+            "Their bodies display too.",
+            ".. 1 Footnotes display.",
+            "Shown last.",
+        ] {
+            assert!(prose.contains(shown), "{shown} missing from:\n{prose}");
+        }
+        for hidden in ["hunter2", "comment", "paragraph", "corp.internal", "wiki"] {
+            assert!(!prose.contains(hidden), "{hidden} leaked into:\n{prose}");
+        }
+
+        let adoc = "= Title\n:author: Pat Secret\n:toc:\n\nShown first.\n// a hidden hunter2 note\n////\nA hidden block.\n////\n/// Three slashes display.\nShown last: a note.\n";
+        let prose = markdown_prose(adoc, Markup::AsciiDoc, &redactor).join("\n");
+        for shown in [
+            "= Title",
+            "Shown first.",
+            "/// Three slashes display.",
+            "Shown last: a note.",
+        ] {
+            assert!(prose.contains(shown), "{shown} missing from:\n{prose}");
+        }
+        for hidden in ["Secret", ":toc:", "hunter2", "hidden block"] {
+            assert!(!prose.contains(hidden), "{hidden} leaked into:\n{prose}");
+        }
+        assert_eq!(Markup::for_path("docs/guide.rst"), Markup::ReStructuredText);
+        assert_eq!(Markup::for_path("README.adoc"), Markup::AsciiDoc);
+        assert_eq!(Markup::for_path("README"), Markup::Markdown);
     }
 }

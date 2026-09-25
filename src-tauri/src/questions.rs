@@ -476,18 +476,57 @@ fn is_path(word: &str) -> bool {
         })
 }
 
-/// Whether one word names a path, a file, a bare file extension, or a
+/// Whether `name` is a path, a file name, a bare file extension, or a
 /// configuration dotfile.
-pub(crate) fn is_location_word(word: &str) -> bool {
-    let upper = word.to_ascii_uppercase();
-    let core = word_core(&upper);
-    core.chars()
+fn is_location_name(name: &str) -> bool {
+    name.chars()
         .any(|character| character.is_ascii_alphanumeric())
-        && (is_path(core)
-            || is_file_name(core)
-            || core
+        && (is_path(name)
+            || is_file_name(name)
+            || name
                 .strip_prefix('.')
                 .is_some_and(|name| DOTFILES.contains(&name)))
+}
+
+/// The name-shaped pieces of one word. Prose glues suffixes to names, so the
+/// word is split wherever a character cannot belong to a file name or path
+/// (`ENGINE.RS:42`, `` `CARGO.TOML`'S ``, `ENGINE.RS::WRAP`). Each piece is
+/// offered as written and again without emphasis underscores, joining
+/// dashes, or a sentence period at its ends (`_ENGINE.RS_`).
+pub(crate) fn name_pieces(word: &str) -> impl Iterator<Item = &str> {
+    word.split(|character: char| {
+        !character.is_ascii_alphanumeric() && !matches!(character, '.' | '/' | '_' | '-')
+    })
+    .flat_map(|piece| {
+        [
+            piece.trim_end_matches('.'),
+            piece
+                .trim_start_matches(['_', '-'])
+                .trim_end_matches(['_', '-', '.']),
+        ]
+    })
+    .filter(|piece| {
+        piece
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
+    })
+}
+
+/// Each prefix of `piece` that ends before a dash, so a file name joined to
+/// the next word by a dash (`ENGINE.RS-IT`, from a folded em dash) is seen.
+/// Only whole file names should be matched against these: cutting a slashed
+/// word would turn prose such as `REQUEST/APP-LEVEL` into a path.
+pub(crate) fn dash_prefixes(piece: &str) -> impl Iterator<Item = &str> {
+    piece.match_indices('-').map(|(end, _)| &piece[..end])
+}
+
+/// Whether one word names a path, a file, a bare file extension, or a
+/// configuration dotfile, alone or with punctuation or a suffix attached.
+pub(crate) fn is_location_word(word: &str) -> bool {
+    let upper = word.to_ascii_uppercase();
+    is_location_name(word_core(&upper))
+        || name_pieces(&upper)
+            .any(|piece| is_location_name(piece) || dash_prefixes(piece).any(is_file_name))
 }
 
 /// Whether `text` cites a location: a path, a file name, or an extension.
@@ -1367,6 +1406,11 @@ fn lens_guide(concept: Concept) -> &'static str {
     }
 }
 
+/// A rationale near [`learning::RATIONALE_MAX_CHARS`], shown to providers so
+/// they can gauge the limit rather than count blind.
+const RATIONALE_CALIBRATION: &str =
+    "A crash mid-write would tear the file; only a rename swaps it whole.";
+
 pub(crate) fn ai_question_prompt(
     project_name: &str,
     level: u32,
@@ -1416,8 +1460,12 @@ pub(crate) fn ai_question_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let rationale_max = learning::RATIONALE_MAX_CHARS;
+    let rationale_rows = learning::RATIONALE_ROWS;
+    let rationale_columns = learning::RATIONALE_COLUMNS;
+    let rationale_calibration = RATIONALE_CALIBRATION.len();
     format!(
-        "You write questions for a retro handheld quiz game that teaches how a software project is designed. Generate exactly {count} multiple-choice questions at difficulty level {level} ({tier}).\n\nLENSES: tag every question with exactly one concept lens:\n{lenses}\nFOCUS: at least {focus_count} of the {count} questions must use the {focus} lens.\n\n{transfer}CONCEPTS ONLY: test the project's architecture, purpose, domain model, component responsibilities, interactions, invariants, tradeoffs, design rationale, or enduring behavior. Every question must still make sense if the project were reorganized and all implementation locations changed.\n\nNEVER ask about file names, paths, directories, or extensions; where code lives; repository structure; counts, sizes, or lines; dates, times, or versions; branches or commits; authors or contributors; ordering or recency; or any other state-in-time fact. Never use those facts as choices or rationales.\n\nCHOICES: exactly 4 non-empty, distinct choices and exactly one correct answer. Each wrong choice must be a plausible misconception a newcomer to this project might really hold, similar in length and style to the correct choice; never a joke or an obviously absurd option. Vary which position holds the correct answer across the batch.\n\nRATIONALES: every choice has a \"why\" of at most 90 characters. For the correct choice, explain why it holds. For each wrong choice, name the misconception it represents and why it fails. A why must never cite file names, paths, or extensions.\n\nDISPLAY LIMITS (hard: anything longer is discarded, not shortened): plain ASCII only. Each question, including any prefix, must be at most 100 characters so it wraps into 4 lines of 31. Each choice text must be a short phrase of 2 to 5 words and at most 28 characters; put nuance in its why, never in the choice text. Calibrate on these lengths: \"The headless engine\" is 19 characters, \"Refuses the cartridge\" is 21, \"Keeps the repo untouched\" is 24. Before answering, count the characters of every question and choice and rewrite any that are too long. Do not truncate words or sentences. Do not repeat questions.\n\nLEARNER STATE:\n{weakest}\nALREADY ASKED (never repeat these or close paraphrases of them):\n{asked}\n\nRespond with ONLY a JSON array, no prose and no code fences, where N is the 0-based index of the correct choice:\n[{{\"q\":\"...\",\"concept\":\"{lens_names}\",\"choices\":[{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}}],\"answer\":N}}]\n\nPROJECT: {project_name}\n{project_brief}",
+        "You write questions for a retro handheld quiz game that teaches how a software project is designed. Generate exactly {count} multiple-choice questions at difficulty level {level} ({tier}).\n\nLENSES: tag every question with exactly one concept lens:\n{lenses}\nFOCUS: at least {focus_count} of the {count} questions must use the {focus} lens.\n\n{transfer}CONCEPTS ONLY: test the project's architecture, purpose, domain model, component responsibilities, interactions, invariants, tradeoffs, design rationale, or enduring behavior. Every question must still make sense if the project were reorganized and all implementation locations changed.\n\nNEVER ask about file names, paths, directories, or extensions; where code lives; repository structure; counts, sizes, or lines; dates, times, or versions; branches or commits; authors or contributors; ordering or recency; or any other state-in-time fact. Never use those facts as choices or rationales.\n\nCHOICES: exactly 4 non-empty, distinct choices and exactly one correct answer. Each wrong choice must be a plausible misconception a newcomer to this project might really hold, similar in length and style to the correct choice; never a joke or an obviously absurd option. Vary which position holds the correct answer across the batch.\n\nRATIONALES: every choice has a \"why\" of at most {rationale_max} characters, so it always wraps into {rationale_rows} lines of {rationale_columns}. Calibrate on this length: \"{RATIONALE_CALIBRATION}\" is {rationale_calibration} characters. For the correct choice, explain why it holds. For each wrong choice, name the misconception it represents and why it fails. A why must never cite file names, paths, or extensions.\n\nDISPLAY LIMITS (hard: anything longer is discarded, not shortened): plain ASCII only. Each question, including any prefix, must be at most 100 characters so it wraps into 4 lines of 31. Each choice text must be a short phrase of 2 to 5 words and at most 28 characters; put nuance in its why, never in the choice text. Calibrate on these lengths: \"The headless engine\" is 19 characters, \"Refuses the cartridge\" is 21, \"Keeps the repo untouched\" is 24. Before answering, count the characters of every question and choice and rewrite any that are too long. Do not truncate words or sentences. Do not repeat questions.\n\nLEARNER STATE:\n{weakest}\nALREADY ASKED (never repeat these or close paraphrases of them):\n{asked}\n\nRespond with ONLY a JSON array, no prose and no code fences, where N is the 0-based index of the correct choice:\n[{{\"q\":\"...\",\"concept\":\"{lens_names}\",\"choices\":[{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}}],\"answer\":N}}]\n\nPROJECT: {project_name}\n{project_brief}",
     )
 }
 
@@ -1861,6 +1909,17 @@ pub(crate) mod tests {
             "WHAT DID 4067E07 CHANGE?",
             "WHAT DOES THE README PROMISE?",
             "WHAT IS THE PROJECT STRUCTURE?",
+            "WHAT DOES ENGINE.RS:120 GUARD?",
+            "WHY DOES ENGINE.RS:42:7 PANIC?",
+            "WHAT DO `CARGO.TOML`'S FEATURES GATE?",
+            "WHAT DO CARGO.TOML'S FEATURES GATE?",
+            "WHAT DOES _ENGINE.RS_ OWN?",
+            "WHAT DOES **ENGINE.RS** OWN?",
+            "WHAT DOES ENGINE.RS::WRAP_TEXT DO?",
+            "WHY `ENGINE.RS`-IT OWNS STATE?",
+            "WHY ENGINE.RS-IT OWNS STATE?",
+            "WHAT DOES ENGINE.RS#L42 CHECK?",
+            "WHAT DOES `SRC/ENGINE`'S LOOP DO?",
         ];
         for text in trivia {
             assert!(
@@ -1883,6 +1942,73 @@ pub(crate) mod tests {
             &["SRC/ENGINE", "THE SHELL", "THE STYLES", "THE VIEW"],
         );
         assert!(!generated_question_is_acceptable(&path_answers));
+    }
+
+    #[test]
+    fn file_names_with_attached_suffixes_are_still_locations() {
+        for word in [
+            "engine.rs:120",
+            "engine.rs:42:7",
+            "`Cargo.toml`'s",
+            "Cargo.toml's",
+            "_engine.rs_",
+            "**engine.rs**",
+            "engine.rs::wrap_text",
+            "`engine.rs`-it",
+            "engine.rs-it",
+            "engine.rs#L42",
+            "`src/engine`'s",
+            "(see:engine.rs)",
+            ".gitignore'd",
+        ] {
+            assert!(is_location_word(word), "{word}");
+        }
+        for word in [
+            "don't",
+            "e.g.,",
+            "i.e.:",
+            "state...crashes",
+            "read/write",
+            "request/app-level",
+            "Node.js-based",
+            "Node.js's",
+            "self-contained",
+            "v1.2.3-rc",
+            "**bold**",
+        ] {
+            assert!(!is_location_word(word), "{word}");
+        }
+
+        let mut located_why = engine_state_question();
+        located_why.choices[2] = QChoice::Explained {
+            text: "THE STYLES".into(),
+            why: "STYLES NEVER DECIDE RULES; SEE ENGINE.RS:42 FOR THAT.".into(),
+        };
+        assert!(learning::rationale_fits(
+            located_why.choices[2].why().unwrap()
+        ));
+        assert!(!generated_question_is_acceptable(&located_why));
+    }
+
+    #[test]
+    fn rationales_at_the_prompts_stated_maximum_are_accepted() {
+        assert!(RATIONALE_CALIBRATION.is_ascii());
+        assert!(RATIONALE_CALIBRATION.len() <= learning::RATIONALE_MAX_CHARS);
+        assert!(RATIONALE_CALIBRATION.len() + 4 >= learning::RATIONALE_MAX_CHARS);
+        assert!(learning::rationale_fits(RATIONALE_CALIBRATION));
+        assert!(!cites_trivia(RATIONALE_CALIBRATION));
+
+        // Words chosen so each line break wastes as many columns as it can.
+        let worst = format!("A {} I {}", "B".repeat(33), "C".repeat(32));
+        assert_eq!(worst.len(), learning::RATIONALE_MAX_CHARS);
+        for (index, why) in [RATIONALE_CALIBRATION, &worst].into_iter().enumerate() {
+            let mut candidate = engine_state_question();
+            candidate.choices[index] = QChoice::Explained {
+                text: candidate.choice_texts()[index].clone(),
+                why: why.into(),
+            };
+            assert!(generated_question_is_acceptable(&candidate), "{why}");
+        }
     }
 
     #[test]
@@ -2511,7 +2637,12 @@ pub(crate) mod tests {
         assert!(prompt.contains(r#""choices":[{"text":"...","why":"..."}"#));
         assert!(prompt
             .contains("at least 4 of the 6 questions must use the purpose or responsibility lens"));
-        assert!(prompt.contains("\"why\" of at most 90 characters"));
+        assert!(prompt
+            .contains("\"why\" of at most 70 characters, so it always wraps into 3 lines of 34."));
+        assert!(prompt.contains(&format!(
+            "\"{RATIONALE_CALIBRATION}\" is {} characters.",
+            RATIONALE_CALIBRATION.len()
+        )));
         assert!(prompt.contains("name the misconception it represents"));
         assert!(prompt.contains("plausible misconception"));
         assert!(prompt.contains("similar in length"));
