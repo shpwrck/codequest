@@ -696,6 +696,15 @@ fn ask_provider(provider: AiProvider, prompt: &str, timeout: Duration) -> Result
     provider_reply(provider, &output)
 }
 
+/// Time one generation request may take, its repair pass included.
+const AI_QUESTION_TIMEOUT: Duration = Duration::from_secs(120);
+/// A repair pass is skipped when less than this is left of the budget.
+const MIN_REPAIR_TIME: Duration = Duration::from_secs(10);
+
+/// Generates up to `count` questions. When the reply falls short and some
+/// rejections failed only on mechanics (length, rationale, lens, ASCII), one
+/// repair call through the same provider gives them a second chance within
+/// what is left of [`AI_QUESTION_TIMEOUT`].
 fn ai_questions(
     path: &std::path::Path,
     level: u32,
@@ -716,8 +725,35 @@ fn ai_questions(
     let brief = repo_context::project_brief(path, &tracked_files(path));
     let learner = questions::load_learner_state(path).unwrap_or_default();
     let prompt = questions::bounded_ai_question_prompt(&name, level, count, &brief, &learner);
-    let result = ask_provider(provider, &prompt, Duration::from_secs(120))?;
-    questions::parse_generated_questions(&result, count)
+    let started = Instant::now();
+    let result = ask_provider(provider, &prompt, AI_QUESTION_TIMEOUT)?;
+    let mut batch = questions::parse_generated_batch(&result, count)?;
+    if let Some(repair) = batch.repair_request(count) {
+        let before = batch.accepted.len();
+        let remaining = AI_QUESTION_TIMEOUT.saturating_sub(started.elapsed());
+        let repaired = if remaining < MIN_REPAIR_TIME {
+            eprintln!(
+                "CODE QUEST question repair skipped: {}s of the budget left",
+                remaining.as_secs()
+            );
+            0
+        } else {
+            match ask_provider(provider, &repair.prompt, remaining) {
+                Ok(reply) => batch.merge_repairs(&repair, &reply, count),
+                Err(error) => {
+                    eprintln!("CODE QUEST question repair failed: {error}");
+                    0
+                }
+            }
+        };
+        eprintln!(
+            "CODE QUEST question repair: {before}/{count} accepted before, {}/{count} after ({repaired} of {} repairable repaired, {} rejected)",
+            batch.accepted.len(),
+            repair.originals.len(),
+            batch.rejected.len()
+        );
+    }
+    batch.into_questions()
 }
 
 fn generate_and_save_questions(
@@ -1358,6 +1394,65 @@ mod question_policy_tests {
     #[ignore = "child-process fixture for the failure-reason test"]
     fn silent_failure_fixture() {
         std::process::exit(7);
+    }
+
+    /// Measures the repair pass against the installed Claude CLI: first on
+    /// fixtures modeled on real over-length output, then on a full
+    /// generation for this repository. Point CQA_CLAUDE (and optionally
+    /// CQA_CLAUDE_MODEL) at the CLI and run with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "calls the real provider CLI"]
+    fn live_provider_repairs_rejected_questions() {
+        let provider = AiProvider::Claude;
+        let batch = questions::tests::over_length_batch();
+        let request = batch.repair_request(6).unwrap();
+        let started = Instant::now();
+        let reply = ask_provider(provider, &request.prompt, AI_QUESTION_TIMEOUT)
+            .unwrap_or_else(|error| panic!("repair call failed: {error}"));
+        let elapsed = started.elapsed();
+        let mut repaired = batch.clone();
+        let added = repaired.merge_repairs(&request, &reply, 6);
+        println!(
+            "LIVE REPAIR: {added} of {} fixture rejections repaired in {:.1}s ({} prompt bytes)",
+            request.originals.len(),
+            elapsed.as_secs_f64(),
+            request.prompt.len()
+        );
+        for question in &repaired.accepted[batch.accepted.len()..] {
+            println!("  REPAIRED: {} {:?}", question.q, question.choice_texts());
+        }
+        let reply_batch = questions::parse_generated_batch(&reply, 6).unwrap_or_default();
+        for rejected in &reply_batch.rejected {
+            println!(
+                "  STILL REJECTED: {} {:?}",
+                rejected.q,
+                questions::question_violations(rejected)
+            );
+        }
+        assert!(added > 0, "the provider repaired nothing:\n{reply}");
+
+        let runs = std::env::var("CQA_LIVE_RUNS")
+            .ok()
+            .and_then(|runs| runs.parse::<usize>().ok())
+            .unwrap_or(1);
+        let count = 12;
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        for run in 1..=runs {
+            let started = Instant::now();
+            let generated = ai_questions(repo, 2, count, Some(provider));
+            let elapsed = started.elapsed();
+            println!(
+                "LIVE GENERATION {run}: {} of {count} accepted in {:.1}s",
+                generated.as_ref().map_or(0, Vec::len),
+                elapsed.as_secs_f64()
+            );
+            assert!(
+                elapsed <= AI_QUESTION_TIMEOUT + Duration::from_secs(5),
+                "generation and repair stay within the budget"
+            );
+        }
     }
 
     #[test]
