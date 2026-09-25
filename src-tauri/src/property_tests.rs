@@ -309,7 +309,7 @@ fn lens_stage_matches_the_declared_thresholds_and_its_gates() {
             "another open miss never lights a rune, {context}"
         );
 
-        for correct in [true, false] {
+        for (correct, peeked) in [(true, false), (true, true), (false, false), (false, true)] {
             for review in REVIEWS {
                 let mut next = record;
                 next.record(&AnswerEvidence {
@@ -317,15 +317,19 @@ fn lens_stage_matches_the_declared_thresholds_and_its_gates() {
                     concept: Some(Concept::Invariant),
                     correct,
                     review,
+                    picked: (!correct).then_some(1),
+                    peeked,
                 });
-                let step = format!("{context} after correct={correct} review={review:?}");
+                let step =
+                    format!("{context} after correct={correct} review={review:?} peeked={peeked}");
+                let relearning = correct && (peeked || review == Review::InSession);
                 assert!(next.volume_stage() >= volume, "volume fell, {step}");
                 assert_eq!(
                     next.volume_stage(),
                     thresholds_reached(next.evidence()),
                     "{step}"
                 );
-                let graded = !(correct && review == Review::InSession);
+                let graded = !relearning;
                 if graded {
                     assert_eq!(
                         next.recent_len,
@@ -338,13 +342,13 @@ fn lens_stage_matches_the_declared_thresholds_and_its_gates() {
                     assert_eq!(
                         (next.recent, next.recent_len),
                         (record.recent, record.recent_len),
-                        "a same-launch retry success is not graded, {step}"
+                        "a relearning success is not graded, {step}"
                     );
                 }
                 if !correct {
                     assert_eq!(next.evidence(), evidence, "a miss is not evidence, {step}");
                     assert_eq!(next.missed, record.missed.saturating_add(1), "{step}");
-                } else if review == Review::InSession {
+                } else if relearning {
                     assert_eq!(next.evidence(), evidence, "relearning, {step}");
                     assert_eq!(next.relearned, record.relearned.saturating_add(1), "{step}");
                 } else if evidence < u32::MAX {
@@ -382,12 +386,19 @@ fn record_evidence_counts_every_answer_exactly_once() {
                 concept: arbitrary_concept(&mut rng),
                 correct: rng.chance(60),
                 review: arbitrary_review(&mut rng),
+                picked: None,
+                peeked: rng.chance(15),
             };
             learning::record_evidence(&mut mastery, &evidence);
             if let Some(concept) = evidence.concept {
                 lensed_answers += 1;
                 let model = expected.entry(concept).or_default();
                 let graded = match (evidence.correct, evidence.review) {
+                    // A success after a Codex peek is relearning.
+                    (true, _) if evidence.peeked => {
+                        model.relearned += 1;
+                        None
+                    }
                     (true, Review::Fresh) => {
                         model.first_try += 1;
                         Some(true)
@@ -469,12 +480,15 @@ fn quiz_progress_lets_the_latest_attempt_decide_and_never_double_counts() {
                 concept: arbitrary_concept(&mut rng),
                 correct: rng.chance(55),
                 review: arbitrary_review(&mut rng),
+                picked: None,
+                peeked: rng.chance(15),
             };
             progress.record(&evidence);
             let identity = questions::question_identity(&evidence.question);
             if !identity.is_empty() {
                 let place = match (evidence.correct, evidence.review) {
                     (false, _) => Place::Missed,
+                    (true, _) if evidence.peeked => Place::Relearned,
                     (true, Review::InSession) => Place::Relearned,
                     (true, Review::Fresh | Review::Spaced) => Place::Retired,
                 };

@@ -184,7 +184,8 @@ pub enum AudioScene {
     Battle,
     Victory,
     Defeat,
-    /// The read-only Oracle Codex: page turns only, no ambience under reading.
+    /// The Oracle Codex: page turns and answer reveals only, no ambience
+    /// under reading.
     Codex,
     /// A scene the sound design does not know yet. It is always silent.
     #[default]
@@ -268,6 +269,8 @@ pub struct AudioSnapshot {
     pub quest_selected: usize,
     /// The Codex page on screen (0 is the mastery overview).
     pub codex_page: usize,
+    /// A pressed on a pending Codex page and revealed its sealed answer.
+    pub codex_revealed: bool,
     pub run: Option<RunAudio>,
     pub data: u32,
     /// Data-charge runes lit (0-3).
@@ -1157,6 +1160,10 @@ fn scene_event(before: &AudioSnapshot, after: &AudioSnapshot) -> Option<Cue> {
         }
         AudioScene::Codex if after.codex_page != before.codex_page => {
             candidates.push(Cue::PageTurn(after.codex_page));
+        }
+        // Revealing a sealed answer reuses the soft rising reveal motif.
+        AudioScene::Codex if after.codex_revealed && !before.codex_revealed => {
+            candidates.push(Cue::QuestionReveal);
         }
         AudioScene::Oracle => datafall_events(before, after, &mut candidates),
         AudioScene::Quiz => quiz_events(before, after, &mut candidates),

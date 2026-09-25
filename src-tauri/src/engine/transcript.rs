@@ -659,16 +659,36 @@ fn codex(out: &mut Transcript, state: &GameState) {
     }
     out.say(spoken(codex_lesson_status(lesson).0));
     out.say(shown_question(&lesson.question));
+    let shown_rationale = |text: &str| {
+        wrap_text(text, RATIONALE_COLUMNS)
+            .into_iter()
+            .take(RATIONALE_ROWS)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if state.codex_answer_sealed(lesson) {
+        // The self-test page: the pick and its misconception, never the answer.
+        if let Some((pick, why)) = lesson.misconception.as_ref() {
+            out.say(format!("You chose: {}", shown_choice(pick)));
+            out.say(shown_rationale(why));
+        }
+        out.say("Answer sealed");
+        out.say("A reveals the answer, Left and Right turn pages, B goes back");
+        return;
+    }
     out.say(format!("Answer: {}", shown_choice(&lesson.answer)));
     if lesson.rationale.trim().is_empty() {
         out.say("No rationale was recorded");
     } else {
-        let rationale = wrap_text(&lesson.rationale, RATIONALE_COLUMNS)
-            .into_iter()
-            .take(RATIONALE_ROWS)
-            .collect::<Vec<_>>()
-            .join(" ");
-        out.say(format!("Why it holds: {rationale}"));
+        out.say(format!(
+            "Why it holds: {}",
+            shown_rationale(&lesson.rationale)
+        ));
+    }
+    if let (false, Some((pick, _))) = (lesson.outstanding, lesson.misconception.as_ref()) {
+        let line = codex_once_chose_line(pick);
+        let shown = line.strip_prefix(CODEX_ONCE_CHOSE).unwrap_or(&line);
+        out.say(format!("Once chose: {shown}"));
     }
     out.say("Left and Right turn pages, B goes back");
 }
@@ -820,6 +840,8 @@ mod tests {
                 rationale: "THE SHELL ONLY DRAWS FRAMES AND FORWARDS BUTTON EDGES.".into(),
                 concept: Some(Concept::Responsibility),
                 outstanding: false,
+                misconception: None,
+                peeked: false,
             },
             Lesson {
                 question: "WHAT MUST STAY TRUE WHEN A SCENE CHANGES?".into(),
@@ -827,6 +849,8 @@ mod tests {
                 rationale: String::new(),
                 concept: Some(Concept::Invariant),
                 outstanding: true,
+                misconception: None,
+                peeked: false,
             },
         ];
         let mastery = Mastery::from([
@@ -1236,15 +1260,58 @@ mod tests {
              Left and Right turn pages, B goes back."
         );
         press(&mut engine, Button::Right);
+        assert_eq!(
+            engine.transcript(),
+            "Oracle Codex, lesson 2 of 2. Invariants lens, 2 of 3 runes, 1 cracked. \
+             Review pending. WHAT MUST STAY TRUE WHEN A SCENE CHANGES? Answer sealed. \
+             A reveals the answer, Left and Right turn pages, B goes back.",
+            "a pending lesson without a recorded pick is sealed, never read out"
+        );
+        press(&mut engine, Button::A);
         let text = engine.transcript();
         assert!(
             text.starts_with(
                 "Oracle Codex, lesson 2 of 2. Invariants lens, 2 of 3 runes, 1 cracked. \
-                 Review pending."
+                 Pending peeked."
             ),
             "{text}"
         );
-        assert!(text.contains(" No rationale was recorded. "), "{text}");
+        assert!(
+            text.contains(" Answer: ONLY THE ENGINE CHANGES SCENES. No rationale was recorded. "),
+            "{text}"
+        );
+
+        // A pick recorded with the miss is read on the sealed page, and a
+        // learned lesson recalls the misconception it replaced.
+        let mut state = engine.app.world_mut().resource_mut::<GameState>();
+        let lessons = &mut state.cartridge.as_mut().unwrap().lessons;
+        let misconception = Some((
+            "THE WEB SHELL".to_string(),
+            "THE SHELL ONLY FORWARDS INPUT AND PAINTS FRAMES.".to_string(),
+        ));
+        lessons[1].peeked = false;
+        lessons[1].misconception = misconception.clone();
+        lessons[0].misconception = misconception;
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::Left);
+        let text = engine.transcript();
+        assert!(
+            text.contains(
+                " Review pending. WHAT MUST STAY TRUE WHEN A SCENE CHANGES? \
+                 You chose: THE WEB SHELL. THE SHELL ONLY FORWARDS INPUT AND PAINTS FRAMES. \
+                 Answer sealed. "
+            ),
+            "{text}"
+        );
+        press(&mut engine, Button::Left);
+        let text = engine.transcript();
+        assert!(
+            text.ends_with(
+                " FORWARDS BUTTON EDGES. Once chose: THE WEB SHELL. \
+                 Left and Right turn pages, B goes back."
+            ),
+            "{text}"
+        );
 
         let empty = GameState {
             screen: Screen::Codex,

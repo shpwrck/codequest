@@ -260,7 +260,10 @@ the pedagogy map and runtime traceability:
   relearned questions queued across launches, and stores mastery per cartridge.
 - Oracle Codex: the `codex` handler, reached through the quiz menu's
   `open-codex` signal and drawn by the `oracle-codex` template, shows lens
-  mastery with pending-review counts and rereads every lesson.
+  mastery with pending-review counts and rereads every lesson. Pending lessons
+  are self-tests: the player's wrong pick and its misconception show, the
+  answer stays sealed until A, and a redemption after a reveal counts as
+  relearning rather than evidence.
 - Difficulty as concept depth: `Concept::focus_for_level` sets each level's
   focus lenses, level 4+ requests PREDICT transfer questions, and each request
   names the player's weakest lens and earlier stems. These are prompt-level
@@ -321,8 +324,8 @@ CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
   oracle_templates_produce_nine_distinct_native_scene_frames --lib
 ```
 
-That test writes every reachable Oracle scene, including both Codex page
-layouts, despite its historical name. Lesson-card states come from
+That test writes every reachable Oracle scene, including the Codex mastery,
+sealed-lesson, and lesson layouts, despite its historical name. Lesson-card states come from
 `lesson_cards_render_the_misconception_and_the_answer`. The menu-to-Codex route
 and the remaining Codex states come from
 `dogfood_manifest_routes_its_menu_into_the_templated_codex`,

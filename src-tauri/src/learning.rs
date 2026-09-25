@@ -131,6 +131,28 @@ pub struct AnswerEvidence {
     pub correct: bool,
     /// Why the question was asked; see [`Review`].
     pub review: Review,
+    /// The source choice index the player picked, recorded only on a miss so
+    /// the Codex can show the misconception it reveals.
+    pub picked: Option<usize>,
+    /// True when the player revealed this pending lesson's answer in the Codex
+    /// before this attempt, so a correct answer is relearning, not evidence.
+    pub peeked: bool,
+}
+
+/// A learner-progress change the engine asks its host to persist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProgressEvent {
+    /// A committed answer.
+    Answered(AnswerEvidence),
+    /// The player revealed a pending lesson's answer in the Codex. The
+    /// question text is exactly as generated; saves normalize it for identity.
+    Peeked { question: String },
+}
+
+impl From<AnswerEvidence> for ProgressEvent {
+    fn from(evidence: AnswerEvidence) -> Self {
+        Self::Answered(evidence)
+    }
 }
 
 /// Accumulated evidence for one lens on one cartridge.
@@ -149,12 +171,14 @@ pub struct LensRecord {
     /// Wrong answers, counting every attempt.
     #[serde(default)]
     pub missed: u32,
-    /// Correct same-launch retries of a miss: relearning, not evidence.
+    /// Relearning, not evidence: correct same-launch retries of a miss, and
+    /// correct answers given after revealing the answer in the Codex.
     #[serde(default)]
     pub relearned: u32,
     /// The newest graded outcomes as a shift register: bit 0 is the newest,
-    /// and a set bit is a correct answer. Same-launch retry successes are not
-    /// graded here, because they follow the lesson card that gave the answer.
+    /// and a set bit is a correct answer. Relearning successes are not graded
+    /// here, because they follow a lesson card or Codex page that gave the
+    /// answer.
     #[serde(default)]
     pub recent: u8,
     /// How many bits of `recent` hold outcomes (0 to [`RECENT_CAPACITY`]).
@@ -164,7 +188,8 @@ pub struct LensRecord {
 
 impl LensRecord {
     /// Evidence of understanding: first-try successes plus redemptions in a
-    /// later launch. Same-launch relearning is excluded.
+    /// later launch made without revealing the answer first. Relearning is
+    /// excluded.
     pub fn evidence(&self) -> u32 {
         self.first_try.saturating_add(self.redeemed)
     }
@@ -217,10 +242,12 @@ impl LensRecord {
     }
 
     /// Routes one committed answer. A first-try success and a later-launch
-    /// redemption are evidence; a same-launch retry success is relearning.
-    /// Every graded outcome except that relearning enters the recent window.
+    /// redemption are evidence; a same-launch retry success, or any success
+    /// after a Codex peek, is relearning. Every graded outcome except that
+    /// relearning enters the recent window.
     pub fn record(&mut self, evidence: &AnswerEvidence) {
         match (evidence.correct, evidence.review) {
+            (true, _) if evidence.peeked => self.relearned = self.relearned.saturating_add(1),
             (true, Review::Fresh) => {
                 self.first_try = self.first_try.saturating_add(1);
                 self.push_recent(true);
@@ -259,6 +286,14 @@ pub struct Lesson {
     pub concept: Option<Concept>,
     /// True while the player's latest attempt at this question was wrong.
     pub outstanding: bool,
+    /// The wrong choice the player last picked and the misconception it
+    /// reveals (empty for legacy questions without rationales). A later
+    /// correct answer keeps it, so a learned lesson can recall it. `None` for
+    /// lessons recorded before picks were saved.
+    pub misconception: Option<(String, String)>,
+    /// True once the player revealed this pending lesson's answer in the
+    /// Codex; the next attempt then counts as relearning, not evidence.
+    pub peeked: bool,
 }
 
 /// Whether a rationale fits the lesson panel without truncation.
@@ -338,14 +373,23 @@ mod tests {
             concept: Some(Concept::Invariant),
             correct: false,
             review: Review::Fresh,
+            picked: Some(2),
+            peeked: false,
         };
         record_evidence(&mut mastery, &evidence);
         evidence.correct = true;
+        evidence.picked = None;
         evidence.review = Review::InSession;
         record_evidence(&mut mastery, &evidence);
         evidence.review = Review::Spaced;
         record_evidence(&mut mastery, &evidence);
         evidence.review = Review::Fresh;
+        record_evidence(&mut mastery, &evidence);
+        // Reading the answer in the Codex first turns a redemption, or even a
+        // fresh-looking success, into relearning.
+        evidence.peeked = true;
+        record_evidence(&mut mastery, &evidence);
+        evidence.review = Review::Spaced;
         record_evidence(&mut mastery, &evidence);
         record_evidence(
             &mut mastery,
@@ -363,14 +407,20 @@ mod tests {
                 first_try: 1,
                 redeemed: 1,
                 missed: 1,
-                relearned: 1,
+                // The same-launch retry and both successes after a peek.
+                relearned: 3,
                 // Newest first: Fresh success, Spaced success, then the miss.
-                // The same-launch relearning is not graded.
+                // Relearning is not graded.
                 recent: 0b011,
                 recent_len: 3,
             }
         );
         assert_eq!(record.evidence(), 2, "relearning is not evidence");
+        assert_eq!(
+            record.volume_stage(),
+            1,
+            "relearning never lights a rune by volume"
+        );
         assert_eq!(mastery.len(), 1);
     }
 
@@ -380,6 +430,7 @@ mod tests {
             concept: Some(Concept::Purpose),
             correct,
             review,
+            ..AnswerEvidence::default()
         }
     }
 

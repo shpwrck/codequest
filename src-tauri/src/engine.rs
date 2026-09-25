@@ -15,8 +15,8 @@ use crate::codequest::{CodeQuestConfig, GameType, VisualTemplate};
 use crate::external_tools;
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
 use crate::learning::{
-    self, AnswerEvidence, Concept, LensRecord, Lesson, Mastery, Review, RATIONALE_COLUMNS,
-    RATIONALE_ROWS,
+    self, AnswerEvidence, Concept, LensRecord, Lesson, Mastery, ProgressEvent, Review,
+    RATIONALE_COLUMNS, RATIONALE_ROWS,
 };
 use crate::scene_machine::{
     SceneEvent, SceneHandler, SceneMachine, SceneMachineDefinition, SceneSignal,
@@ -405,6 +405,10 @@ const CODEX_QUESTION_Y: i32 = 35;
 const CODEX_ANSWER_Y: i32 = 75;
 const CODEX_WHY_Y: i32 = 103;
 const CODEX_RATIONALE_Y: i32 = 116;
+/// A sealed lesson's self-test: the `YOU CHOSE` heading, then the pick and
+/// the first misconception row, each `CODEX_CHOSE_GAP` pixels apart.
+const CODEX_CHOSE_Y: i32 = 99;
+const CODEX_CHOSE_GAP: i32 = 11;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PresentationTier {
@@ -514,7 +518,9 @@ pub struct QuizQuestion {
 /// carries a short upper-case reason the waiting Oracle shows the player.
 pub type QuestionLoader =
     Arc<dyn Fn(String, u32, usize) -> Result<Vec<QuizQuestion>, String> + Send + Sync + 'static>;
-pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, AnswerEvidence) + Send + Sync + 'static>;
+/// Persists a learner-progress event (a committed answer or a Codex reveal)
+/// for the cartridge id it is given.
+pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, ProgressEvent) + Send + Sync + 'static>;
 
 pub fn quiz_question_fits(question: &str, choices: &[String], answer: usize) -> bool {
     !question.trim().is_empty()
@@ -698,6 +704,11 @@ enum EngineEffect {
     RecordAnsweredQuestion {
         cartridge_id: String,
         evidence: AnswerEvidence,
+    },
+    /// The player revealed a pending lesson's answer in the Codex.
+    MarkPeeked {
+        cartridge_id: String,
+        question: String,
     },
 }
 
@@ -1279,9 +1290,26 @@ fn lens_stage(mastery: &Mastery, lessons: &[Lesson], concept: Concept) -> usize 
 }
 
 /// Upserts the journal entry for a committed question, keyed by identity. A
-/// later correct attempt clears the entry's outstanding flag.
-fn record_lesson(lessons: &mut Vec<Lesson>, question: &QuizQuestion, correct: bool) {
+/// miss remembers the source choice `picked` and the misconception it reveals;
+/// a later correct attempt clears the outstanding flag but keeps that
+/// misconception. Every attempt clears the peeked flag.
+fn record_lesson(lessons: &mut Vec<Lesson>, question: &QuizQuestion, correct: bool, picked: usize) {
     let identity = question_identity(&question.question);
+    let existing = lessons
+        .iter()
+        .position(|entry| question_identity(&entry.question) == identity);
+    let misconception = if correct {
+        existing.and_then(|index| lessons[index].misconception.clone())
+    } else {
+        question.choices.get(picked).map(|choice| {
+            (
+                choice.clone(),
+                choice_rationale(question, picked)
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+    };
     let lesson = Lesson {
         question: question.question.clone(),
         answer: question
@@ -1294,12 +1322,11 @@ fn record_lesson(lessons: &mut Vec<Lesson>, question: &QuizQuestion, correct: bo
             .to_string(),
         concept: question.concept,
         outstanding: !correct,
+        misconception,
+        peeked: false,
     };
-    match lessons
-        .iter_mut()
-        .find(|entry| question_identity(&entry.question) == identity)
-    {
-        Some(entry) => *entry = lesson,
+    match existing {
+        Some(index) => lessons[index] = lesson,
         None => lessons.push(lesson),
     }
 }
@@ -1354,6 +1381,9 @@ struct GameState {
     menu_selected: usize,
     /// Codex page: 0 is the mastery overview, `n` is journal lesson `n - 1`.
     codex_page: usize,
+    /// True once A revealed the current Codex page's pending answer. Every
+    /// page turn and every visit seals it again.
+    codex_revealed: bool,
     hero_row: usize,
     hero_name: usize,
     hero_class: usize,
@@ -1403,6 +1433,7 @@ impl Default for GameState {
             held: HashSet::new(),
             menu_selected: 0,
             codex_page: 0,
+            codex_revealed: false,
             hero_row: 0,
             hero_name: 0,
             hero_class: 0,
@@ -1473,6 +1504,7 @@ impl GameState {
         }
         if screen == Screen::Codex && self.screen != Screen::Codex {
             self.codex_page = 0;
+            self.codex_revealed = false;
         }
         // Entering the menu focuses BEGIN (so Title then A cannot bounce back to
         // Title), except when returning from the Codex, which keeps its option.
@@ -1787,6 +1819,38 @@ impl GameState {
     fn codex_lesson(&self) -> Option<(usize, &Lesson)> {
         let index = self.codex_page.checked_sub(1)?;
         self.lessons().get(index).map(|lesson| (index, lesson))
+    }
+
+    /// Whether the Codex hides `lesson`'s answer: a pending review is a
+    /// self-test, sealed until A reveals it on this page.
+    fn codex_answer_sealed(&self, lesson: &Lesson) -> bool {
+        lesson.outstanding && !self.codex_revealed
+    }
+
+    /// Reveals the current Codex page's sealed answer. The first reveal of a
+    /// pending lesson marks it peeked, so its next attempt counts as
+    /// relearning, and asks the host to persist that. A page with nothing
+    /// sealed is left unchanged.
+    fn reveal_codex_answer(&mut self, effects: &mut Effects) {
+        let Some(index) = self
+            .codex_lesson()
+            .filter(|(_, lesson)| self.codex_answer_sealed(lesson))
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+        self.codex_revealed = true;
+        let Some(cartridge) = self.cartridge.as_mut() else {
+            return;
+        };
+        let lesson = &mut cartridge.lessons[index];
+        if !lesson.peeked {
+            lesson.peeked = true;
+            effects.0.push_back(EngineEffect::MarkPeeked {
+                cartridge_id: cartridge.id.clone(),
+                question: lesson.question.clone(),
+            });
+        }
     }
 
     /// A truthful one-line journal summary for the quiz menu, offered only when
@@ -2193,11 +2257,19 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
     };
     // The debrief's first-try tally follows the same grading as evidence.
     run.ledger.record(review.is_review(), correct);
+    // Revealing a pending answer in the Codex first makes a success
+    // relearning too (see `LensRecord::record`).
+    let peeked = cartridge
+        .lessons
+        .iter()
+        .any(|lesson| lesson.peeked && question_identity(&lesson.question) == identity);
     let evidence = AnswerEvidence {
         question: question.question.clone(),
         concept: question.concept,
         correct,
         review,
+        picked: (!correct).then_some(picked),
+        peeked,
     };
     // The lens-wake check reads the gated stage after both the evidence and
     // the journal entry land, since an open miss holds rune III back.
@@ -2205,7 +2277,7 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
         .concept
         .map(|concept| lens_stage(&cartridge.mastery, &cartridge.lessons, concept));
     learning::record_evidence(&mut cartridge.mastery, &evidence);
-    record_lesson(&mut cartridge.lessons, &question, correct);
+    record_lesson(&mut cartridge.lessons, &question, correct, picked);
     run.lens_woke = question
         .concept
         .zip(stage_before)
@@ -2552,6 +2624,7 @@ fn audio_snapshot(state: &GameState) -> AudioSnapshot {
         hero_style: state.hero_style,
         quest_selected: state.quest_selected,
         codex_page: state.codex_page,
+        codex_revealed: state.codex_revealed,
         run: state.quiz.as_ref().map(|run| RunAudio {
             question: run.question,
             selected: run.selected,
@@ -2829,9 +2902,12 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             }
         }
         Screen::Codex => {
-            // Paging wraps between the mastery overview and the newest lesson.
-            // A and Start are deliberately inactive: the Codex is read-only.
+            // Paging wraps between the mastery overview and the newest lesson,
+            // and every page turn seals a pending answer again. A and Start
+            // only reveal a pending lesson's sealed answer; elsewhere they are
+            // inactive. The Codex never changes the question deck.
             let pages = state.codex_page_count();
+            let page = state.codex_page;
             match button {
                 Button::Left | Button::Up | Button::L => {
                     cycle_index(&mut state.codex_page, pages, -1)
@@ -2839,10 +2915,16 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                 Button::Right | Button::Down | Button::R => {
                     cycle_index(&mut state.codex_page, pages, 1)
                 }
+                Button::A | Button::Start => {
+                    state.reveal_codex_answer(effects);
+                }
                 Button::B => {
                     state.signal(SceneSignal::Back);
                 }
                 _ => {}
+            }
+            if state.codex_page != page {
+                state.codex_revealed = false;
             }
         }
         Screen::QuestSelect => {
@@ -4766,10 +4848,69 @@ fn codex_lesson_counter(index: usize, total: usize) -> String {
 }
 
 fn codex_lesson_status(lesson: &Lesson) -> (&'static str, Color) {
-    if lesson.outstanding {
-        ("REVIEW PENDING", AMBER)
+    match (lesson.outstanding, lesson.peeked) {
+        (true, true) => ("PENDING PEEKED", AMBER),
+        (true, false) => ("REVIEW PENDING", AMBER),
+        (false, _) => ("LEARNED", CYAN),
+    }
+}
+
+/// The answer panel's prompt while a pending answer is sealed.
+const CODEX_REVEAL_PROMPT: &str = "A:REVEAL ANSWER";
+/// The self-test prompt for a sealed lesson that has no recorded pick.
+const CODEX_THINK_PROMPT: &str = "THINK, THEN A:REVEAL";
+const CODEX_CHOSE_HEADING: &str = "YOU CHOSE";
+const CODEX_ONCE_CHOSE: &str = "ONCE CHOSE: ";
+
+/// The player's recorded wrong pick, marked `-` so the misconception never
+/// depends on color alone.
+fn codex_pick_line(pick: &str) -> String {
+    format!("- {}", truncate(pick, QUIZ_CHOICE_CHARS))
+}
+
+/// A learned lesson's one-line reminder of the misconception it replaced. A
+/// pick too long for one rationale row is cut at a word boundary and marked
+/// `...`, so it never reads as a different, shorter choice.
+fn codex_once_chose_line(pick: &str) -> String {
+    let line = format!("{CODEX_ONCE_CHOSE}{pick}");
+    if line.chars().count() <= RATIONALE_COLUMNS {
+        return line;
+    }
+    let cut = wrap_text(&line, RATIONALE_COLUMNS - 3)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    format!("{cut}...")
+}
+
+/// Draws a sealed lesson's self-test at `y`: the player's pick and the
+/// misconception it reveals, or a prompt to recall the answer first when the
+/// save recorded no pick. The heading, the pick, and the misconception's first
+/// row start `gap` pixels apart.
+fn draw_codex_self_test(frame: &mut Framebuffer, x: i32, y: i32, gap: i32, lesson: &Lesson) {
+    let Some((pick, why)) = lesson.misconception.as_ref() else {
+        frame.text(x, y, CODEX_THINK_PROMPT, MIST, 1);
+        return;
+    };
+    frame.text(x, y, CODEX_CHOSE_HEADING, CYAN_DIM, 1);
+    frame.text(x, y + gap, &codex_pick_line(pick), RED, 1);
+    let why_y = y + 2 * gap;
+    if why.trim().is_empty() {
+        frame.text(x, why_y, CODEX_THINK_PROMPT, MIST, 1);
     } else {
-        ("LEARNED", CYAN)
+        frame.wrapped_text(x, why_y, why, MIST, RATIONALE_COLUMNS, RATIONALE_ROWS);
+    }
+}
+
+/// Draws the `ONCE CHOSE` reminder on a learned lesson's row below its
+/// rationale, when the lesson remembers a misconception.
+fn draw_codex_once_chose(frame: &mut Framebuffer, x: i32, rationale_y: i32, lesson: &Lesson) {
+    if lesson.outstanding {
+        return;
+    }
+    if let Some((pick, _)) = lesson.misconception.as_ref() {
+        let y = rationale_y + RATIONALE_ROWS as i32 * LINE_HEIGHT;
+        frame.text(x, y, &codex_once_chose_line(pick), MIST, 1);
     }
 }
 
@@ -4887,18 +5028,28 @@ fn render_codex(frame: &mut Framebuffer, state: &GameState) {
         QUIZ_QUESTION_ROWS,
     );
     frame.rect(5, 72, 230, 15, INK);
-    frame.text(9, 76, ">", GOLD, 1);
-    frame.text(
-        21,
-        76,
-        &truncate(&lesson.answer, QUIZ_CHOICE_CHARS),
-        GREEN,
-        1,
-    );
-    frame.rect(5, 90, 230, 52, INK);
-    frame.outline(5, 90, 230, 52, MIST);
-    frame.text(11, 95, "WHY IT HOLDS", SKY, 1);
-    draw_codex_rationale(frame, 11, 107, lesson);
+    if state.codex_answer_sealed(lesson) {
+        // The sealed self-test sits on the lesson card's void panel, where
+        // the misconception's red stays readable.
+        frame.text(9, 76, CODEX_REVEAL_PROMPT, MIST, 1);
+        frame.rect(5, 90, 230, 52, VOID);
+        frame.outline(5, 90, 230, 52, MIST);
+        draw_codex_self_test(frame, 11, 95, 10, lesson);
+    } else {
+        frame.text(9, 76, ">", GOLD, 1);
+        frame.text(
+            21,
+            76,
+            &truncate(&lesson.answer, QUIZ_CHOICE_CHARS),
+            GREEN,
+            1,
+        );
+        frame.rect(5, 90, 230, 52, INK);
+        frame.outline(5, 90, 230, 52, MIST);
+        frame.text(11, 95, "WHY IT HOLDS", SKY, 1);
+        draw_codex_rationale(frame, 11, 107, lesson);
+        draw_codex_once_chose(frame, 11, 107, lesson);
+    }
     frame.text(5, 151, "L/R:PAGE", MIST, 1);
     frame.text(199, 151, "B:BACK", MIST, 1);
 }
@@ -4991,6 +5142,12 @@ fn render_oracle_codex(frame: &mut Framebuffer, state: &GameState) {
     );
 
     draw_codex_panel(frame, CODEX_ANSWER_BOX);
+    draw_codex_panel(frame, CODEX_RATIONALE_BOX);
+    if state.codex_answer_sealed(lesson) {
+        frame.text(CODEX_TEXT_X, CODEX_ANSWER_Y, CODEX_REVEAL_PROMPT, MIST, 1);
+        draw_codex_self_test(frame, CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_CHOSE_GAP, lesson);
+        return;
+    }
     draw_oracle_rune(frame, CODEX_TEXT_X, CODEX_ANSWER_Y, true, GREEN);
     frame.text(
         CODEX_ANSWER_TEXT_X,
@@ -4999,10 +5156,9 @@ fn render_oracle_codex(frame: &mut Framebuffer, state: &GameState) {
         GREEN,
         1,
     );
-
-    draw_codex_panel(frame, CODEX_RATIONALE_BOX);
     frame.text(CODEX_TEXT_X, CODEX_WHY_Y, "WHY IT HOLDS", CYAN_DIM, 1);
     draw_codex_rationale(frame, CODEX_TEXT_X, CODEX_RATIONALE_Y, lesson);
+    draw_codex_once_chose(frame, CODEX_TEXT_X, CODEX_RATIONALE_Y, lesson);
 }
 
 fn render_oracle_codex_mastery(frame: &mut Framebuffer, state: &GameState) {
@@ -5221,7 +5377,11 @@ fn handle_effect(
         EngineEffect::RecordAnsweredQuestion {
             cartridge_id,
             evidence,
-        } => answered_question_recorder(cartridge_id, evidence),
+        } => answered_question_recorder(cartridge_id, ProgressEvent::Answered(evidence)),
+        EngineEffect::MarkPeeked {
+            cartridge_id,
+            question,
+        } => answered_question_recorder(cartridge_id, ProgressEvent::Peeked { question }),
     }
 }
 
@@ -8598,6 +8758,15 @@ mod tests {
         let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
         let missed = current_question(&engine);
         let first_slot = answer_slot(&engine);
+        let picked = engine_state(&engine)
+            .quiz
+            .as_ref()
+            .unwrap()
+            .display_order(missed.choices.len())[(first_slot + 1) % missed.choices.len()];
+        let misconception = Some((
+            missed.choices[picked].clone(),
+            missed.rationales[picked].clone(),
+        ));
 
         commit(&mut engine, false);
         {
@@ -8613,7 +8782,10 @@ mod tests {
                     rationale: missed.rationales[0].clone(),
                     concept: Some(Concept::Responsibility),
                     outstanding: true,
-                }]
+                    misconception: misconception.clone(),
+                    peeked: false,
+                }],
+                "the journal remembers the pick and the misconception it reveals"
             );
             assert_eq!(cartridge.mastery[&Concept::Responsibility].missed, 1);
         }
@@ -8646,6 +8818,10 @@ mod tests {
         assert!(
             !cartridge.lessons[0].outstanding,
             "redemption clears the miss"
+        );
+        assert_eq!(
+            cartridge.lessons[0].misconception, misconception,
+            "a learned lesson still recalls the misconception it replaced"
         );
         assert_eq!(
             cartridge.mastery[&Concept::Responsibility],
@@ -10159,6 +10335,8 @@ mod tests {
             rationale: String::new(),
             concept,
             outstanding,
+            misconception: None,
+            peeked: false,
         }
     }
 
@@ -11236,14 +11414,20 @@ mod tests {
         let cartridge = state.cartridge.as_mut().unwrap();
         cartridge.lessons = journal_lessons();
         cartridge.mastery = journal_mastery();
-        for (name, page) in [("oracle-codex-mastery", 0), ("oracle-codex-lesson", 2)] {
+        for (name, page, revealed) in [
+            ("oracle-codex-mastery", 0, false),
+            ("oracle-codex-lesson-sealed", 2, false),
+            ("oracle-codex-lesson", 2, true),
+        ] {
             state.codex_page = page;
+            state.codex_revealed = revealed;
             let mut frame = Framebuffer::default();
             render_oracle_codex(&mut frame, &state);
             maybe_write_preview(name, &frame.pixels);
             previews.push(frame.pixels);
         }
         state.codex_page = 0;
+        state.codex_revealed = false;
         // With a journal, the debrief names the lens that woke this run.
         let mut ledger = Framebuffer::default();
         render_oracle_aftermath(&mut ledger, &state);
@@ -11278,7 +11462,7 @@ mod tests {
         let distinct = previews.iter().collect::<HashSet<_>>();
         assert_eq!(
             distinct.len(),
-            15,
+            16,
             "every reachable scene needs its own authored composition"
         );
         assert!(previews.iter().all(|frame| frame.len() == FRAME_BYTES));
@@ -11810,6 +11994,11 @@ mod tests {
         "WHICH GUARANTEE KEEPS THE ENGINE AND THE DEVICE SHELL FROM EVER DISAGREEING ABOUT THE ACTIVE SCENE?";
     const WORST_LESSON_RATIONALE: &str =
         "THE SHELL FORWARDS INPUT EDGES AND DRAWS FRAMES, SO ONLY THE ENGINE CAN MOVE THE SCENE MACHINE.";
+    /// A full-width wrong pick and a three-row misconception: the sealed
+    /// page's worst case.
+    const WORST_LESSON_PICK: &str = "THE SHELL PICKS EACH NEXT SCENE";
+    const WORST_LESSON_MISCONCEPTION: &str =
+        "THE SHELL ONLY FORWARDS EDGES AND DRAWS FRAMES, SO IT NEVER HOLDS THE SCENE MACHINE STATE.";
 
     fn journal_lessons() -> Vec<Lesson> {
         vec![
@@ -11819,6 +12008,11 @@ mod tests {
                 rationale: "THE SHELL ONLY DRAWS FRAMES AND FORWARDS BUTTON EDGES.".into(),
                 concept: Some(Concept::Responsibility),
                 outstanding: false,
+                misconception: Some((
+                    "THE WEB SHELL THAT DRAWS FRAMES".into(),
+                    "THE SHELL ONLY PAINTS WHAT THE ENGINE HANDS IT.".into(),
+                )),
+                peeked: false,
             },
             Lesson {
                 question: WORST_LESSON_QUESTION.into(),
@@ -11826,6 +12020,8 @@ mod tests {
                 rationale: WORST_LESSON_RATIONALE.into(),
                 concept: Some(Concept::Invariant),
                 outstanding: true,
+                misconception: Some((WORST_LESSON_PICK.into(), WORST_LESSON_MISCONCEPTION.into())),
+                peeked: false,
             },
             Lesson {
                 question: "WHAT DID THIS OLDER SAVE ASK?".into(),
@@ -11833,6 +12029,8 @@ mod tests {
                 rationale: String::new(),
                 concept: None,
                 outstanding: false,
+                misconception: None,
+                peeked: false,
             },
         ]
     }
@@ -12075,6 +12273,140 @@ mod tests {
     }
 
     #[test]
+    fn a_reveals_a_pending_answer_once_and_every_page_turn_seals_it_again() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        let deck = game_state(&engine)
+            .cartridge
+            .as_ref()
+            .unwrap()
+            .questions
+            .iter()
+            .map(|question| (question.question.clone(), question.review))
+            .collect::<Vec<_>>();
+        let _ = engine.take_effects();
+        let answer_green = |engine: &GameEngine| {
+            color_pixels_in_region(
+                engine.frame(),
+                GREEN,
+                CODEX_ANSWER_BOX.x as usize..(CODEX_ANSWER_BOX.x + CODEX_ANSWER_BOX.width) as usize,
+                CODEX_ANSWER_BOX.y as usize
+                    ..(CODEX_ANSWER_BOX.y + CODEX_ANSWER_BOX.height) as usize,
+            )
+        };
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::Right);
+        assert_eq!(game_state(&engine).codex_lesson().unwrap().0, 1);
+        assert_eq!(answer_green(&engine), 0, "a pending page opens sealed");
+
+        press(&mut engine, Button::A);
+        assert!(game_state(&engine).codex_revealed);
+        assert!(answer_green(&engine) > 0, "A reveals the answer");
+        let effects = engine.take_effects();
+        assert_eq!(effects.len(), 1, "{effects:?}");
+        assert!(matches!(
+            &effects[0],
+            EngineEffect::MarkPeeked { question, .. } if question == WORST_LESSON_QUESTION
+        ));
+        assert!(game_state(&engine).lessons()[1].peeked);
+
+        press(&mut engine, Button::Start);
+        assert!(
+            engine.take_effects().is_empty(),
+            "a second reveal records nothing"
+        );
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::Left);
+        assert_eq!(game_state(&engine).codex_lesson().unwrap().0, 1);
+        assert_eq!(
+            answer_green(&engine),
+            0,
+            "turning back seals the answer again"
+        );
+        press(&mut engine, Button::A);
+        assert!(answer_green(&engine) > 0);
+        assert!(
+            engine.take_effects().is_empty(),
+            "a lesson is marked peeked once"
+        );
+
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert!(
+            !game_state(&engine).codex_revealed,
+            "every visit seals again"
+        );
+
+        let cartridge = game_state(&engine).cartridge.as_ref().unwrap();
+        let after = cartridge
+            .questions
+            .iter()
+            .map(|question| (question.question.clone(), question.review))
+            .collect::<Vec<_>>();
+        assert_eq!(after, deck, "the Codex never changes the question deck");
+        assert_eq!(cartridge.mastery, journal_mastery());
+    }
+
+    #[test]
+    fn a_redemption_after_a_codex_peek_counts_as_relearning() {
+        // A miss from an earlier launch returns as a spaced check, which
+        // would be a redemption; the player peeked at its answer first.
+        let mut missed = concept_question(0);
+        missed.review = Review::Spaced;
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = vec![missed.clone(), concept_question(1)];
+        record_lesson(&mut cartridge.lessons, &missed, false, 1);
+        cartridge.lessons[0].peeked = true;
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        for button in [Button::Start, Button::A, Button::Start] {
+            press(&mut engine, button);
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        assert_eq!(current_question(&engine).question, missed.question);
+        assert_eq!(current_question(&engine).review, Review::Spaced);
+        let before = engine_state(&engine).lens_record(Concept::Responsibility);
+        {
+            let lessons = engine_state(&engine).lessons();
+            assert!(lessons[0].outstanding && lessons[0].misconception.is_some());
+        }
+
+        let _ = engine.take_effects();
+        commit(&mut engine, true);
+        let state = engine_state(&engine);
+        let cartridge = state.cartridge.as_ref().unwrap();
+        let after = cartridge.mastery[&Concept::Responsibility];
+        assert_eq!(after.redeemed, before.redeemed, "no redemption evidence");
+        assert_eq!(after.relearned, before.relearned + 1);
+        assert_eq!(after.volume_stage(), before.volume_stage());
+        assert_eq!(
+            (after.recent, after.recent_len),
+            (before.recent, before.recent_len),
+            "a success after a peek is not graded"
+        );
+        let lesson = cartridge
+            .lessons
+            .iter()
+            .find(|lesson| lesson.question == missed.question)
+            .unwrap();
+        assert!(!lesson.outstanding && !lesson.peeked);
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                if evidence.correct && evidence.peeked && evidence.picked.is_none()
+        )));
+    }
+
+    #[test]
     fn empty_codex_says_no_lessons_yet_and_cannot_page() {
         let mut engine = quiz_menu_engine(quiz_cartridge());
         press(&mut engine, Button::Down);
@@ -12245,6 +12577,8 @@ mod tests {
             rationale: String::new(),
             concept: Some(Concept::Invariant),
             outstanding,
+            misconception: None,
+            peeked: false,
         };
         for (name, renderer, runes_x, row_y, totals) in [
             (
@@ -12356,7 +12690,8 @@ mod tests {
                     ..LensRecord::default()
                 },
             );
-            record_lesson(&mut cartridge.lessons, &lesson_question(), true);
+            let answer = lesson_question().answer;
+            record_lesson(&mut cartridge.lessons, &lesson_question(), true, answer);
         }
         let mut frame = Framebuffer::default();
         render_oracle_trial(&mut frame, &state);
@@ -12370,6 +12705,7 @@ mod tests {
             &mut state.cartridge.as_mut().unwrap().lessons,
             &lesson_question(),
             false,
+            (lesson_question().answer + 1) % 4,
         );
         let mut frame = Framebuffer::default();
         render_oracle_trial(&mut frame, &state);
@@ -12396,11 +12732,23 @@ mod tests {
             CODEX_ANSWER_BOX.y as usize..(CODEX_ANSWER_BOX.y + CODEX_ANSWER_BOX.height) as usize,
         );
         let rationale = (23..226, 116..139);
-        let render = |state: &GameState, page, legacy: bool| {
+        let whole_rationale = (
+            CODEX_RATIONALE_BOX.x as usize
+                ..(CODEX_RATIONALE_BOX.x + CODEX_RATIONALE_BOX.width) as usize,
+            CODEX_RATIONALE_BOX.y as usize
+                ..(CODEX_RATIONALE_BOX.y + CODEX_RATIONALE_BOX.height) as usize,
+        );
+        let once_chose_row = (
+            CODEX_TEXT_X as usize..226,
+            (CODEX_RATIONALE_Y + 3 * LINE_HEIGHT) as usize
+                ..(CODEX_RATIONALE_Y + 3 * LINE_HEIGHT + 7) as usize,
+        );
+        let render_page = |state: &GameState, page, legacy: bool, revealed: bool| {
             let mut state_frame = Framebuffer::default();
             let mut paged = GameState {
                 cartridge: state.cartridge.clone(),
                 codex_page: page,
+                codex_revealed: revealed,
                 ..Default::default()
             };
             paged.hero_style = state.hero_style;
@@ -12411,6 +12759,12 @@ mod tests {
             }
             state_frame.pixels
         };
+        let render =
+            |state: &GameState, page, legacy: bool| render_page(state, page, legacy, false);
+        let count =
+            |frame: &[u8], color, region: &(std::ops::Range<usize>, std::ops::Range<usize>)| {
+                color_pixels_in_region(frame, color, region.0.clone(), region.1.clone())
+            };
 
         let learned = render(&state, 1, false);
         maybe_write_preview("oracle-codex-lesson-learned", &learned);
@@ -12420,14 +12774,94 @@ mod tests {
             0
         );
         assert!(color_pixels_in_region(&learned, GREEN, answer.0.clone(), answer.1.clone()) > 0);
-
-        let pending = render(&state, 2, false);
-        assert!(
-            color_pixels_in_region(&pending, AMBER, status.0.clone(), status.1.clone()) > 0,
-            "an outstanding lesson reads REVIEW PENDING in amber"
+        assert_eq!(
+            render_page(&state, 1, false, true),
+            learned,
+            "a learned lesson has nothing to reveal"
         );
         assert!(
-            color_pixels_in_region(&pending, PARCH, rationale.0.clone(), rationale.1.clone()) > 0
+            count(&learned, MIST, &once_chose_row) > 0,
+            "a learned lesson recalls the misconception it replaced"
+        );
+
+        // A pending review is a self-test: the answer stays sealed and the
+        // player's own misconception is shown instead.
+        let sealed = render(&state, 2, false);
+        maybe_write_preview("oracle-codex-lesson-sealed", &sealed);
+        assert!(
+            color_pixels_in_region(&sealed, AMBER, status.0.clone(), status.1.clone()) > 0,
+            "an outstanding lesson reads REVIEW PENDING in amber"
+        );
+        assert_eq!(
+            count(&sealed, GREEN, &answer),
+            0,
+            "a pending answer is never shown before A"
+        );
+        assert_eq!(count(&sealed, GREEN, &whole_rationale), 0);
+        assert!(
+            count(&sealed, MIST, &answer) > 0,
+            "the answer panel says how to reveal"
+        );
+        assert!(
+            count(&sealed, RED, &whole_rationale) > 0,
+            "the pick is shown"
+        );
+        assert!(
+            count(&sealed, MIST, &whole_rationale) > 0,
+            "and its misconception"
+        );
+        assert_eq!(
+            count(&sealed, PARCH, &whole_rationale),
+            0,
+            "the answer's rationale stays sealed too"
+        );
+
+        let revealed = render_page(&state, 2, false, true);
+        maybe_write_preview("oracle-codex-lesson-revealed", &revealed);
+        assert!(count(&revealed, GREEN, &answer) > 0);
+        assert!(count(&revealed, PARCH, &rationale) > 0);
+        assert_eq!(
+            count(&revealed, RED, &whole_rationale),
+            0,
+            "revealing shows the answer layout"
+        );
+        assert_eq!(count(&revealed, MIST, &once_chose_row), 0);
+
+        let mut peeked = GameState {
+            cartridge: state.cartridge.clone(),
+            ..Default::default()
+        };
+        peeked.cartridge.as_mut().unwrap().lessons[1].peeked = true;
+        let peeked_page = render_page(&peeked, 2, false, true);
+        assert!(
+            color_pixels_in_region(&peeked_page, AMBER, status.0.clone(), status.1.clone()) > 0
+        );
+        assert_ne!(
+            frame_region(&peeked_page, status.0.clone(), status.1.clone()),
+            frame_region(&revealed, status.0.clone(), status.1.clone()),
+            "a peeked review reads PENDING PEEKED"
+        );
+
+        // A miss recorded before picks were saved still seals its answer.
+        let mut unrecorded = GameState {
+            cartridge: state.cartridge.clone(),
+            ..Default::default()
+        };
+        unrecorded.cartridge.as_mut().unwrap().lessons[1].misconception = None;
+        let think = render(&unrecorded, 2, false);
+        maybe_write_preview("oracle-codex-lesson-sealed-no-pick", &think);
+        assert_eq!(count(&think, GREEN, &answer), 0);
+        assert_eq!(count(&think, RED, &whole_rationale), 0);
+        let mut expected_think = Framebuffer::default();
+        expected_think.text(CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_THINK_PROMPT, MIST, 1);
+        let think_row = (
+            CODEX_TEXT_X as usize..226,
+            CODEX_CHOSE_Y as usize..(CODEX_CHOSE_Y + 7) as usize,
+        );
+        assert_eq!(
+            count(&think, MIST, &think_row),
+            count(&expected_think.pixels, MIST, &think_row),
+            "without a pick the page asks the player to think first"
         );
 
         let legacy_lesson = render(&state, 3, false);
@@ -12447,10 +12881,19 @@ mod tests {
         );
 
         state.cartridge.as_mut().unwrap().codequest = None;
-        let plain = render(&state, 2, true);
+        let plain = render_page(&state, 2, true, true);
         maybe_write_preview("codex-legacy-lesson", &plain);
         assert!(color_pixels_in_region(&plain, AMBER, 5..90, 21..28) > 0);
         assert!(color_pixels_in_region(&plain, GREEN, 21..212, 76..83) > 0);
+        let plain_sealed = render(&state, 2, true);
+        maybe_write_preview("codex-legacy-lesson-sealed", &plain_sealed);
+        assert_eq!(
+            color_pixels_in_region(&plain_sealed, GREEN, 0..WIDTH, 0..HEIGHT),
+            0,
+            "the legacy Codex seals a pending answer too"
+        );
+        assert!(color_pixels_in_region(&plain_sealed, RED, 6..234, 91..141) > 0);
+        assert!(color_pixels_in_region(&render(&state, 1, true), MIST, 11..215, 131..138) > 0);
         let mut plain_state = GameState {
             cartridge: state.cartridge.clone(),
             ..Default::default()
@@ -12586,6 +13029,26 @@ mod tests {
             "NO RATIONALE WAS RECORDED",
             1,
         );
+        let once_chose = LayoutBounds {
+            y: CODEX_RATIONALE_Y + RATIONALE_ROWS as i32 * LINE_HEIGHT,
+            height: 7,
+            ..rationale_block
+        };
+        let reveal_prompt = text_bounds(CODEX_TEXT_X, CODEX_ANSWER_Y, CODEX_REVEAL_PROMPT, 1);
+        let chose_heading = text_bounds(CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_CHOSE_HEADING, 1);
+        let think_prompt = text_bounds(CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_THINK_PROMPT, 1);
+        let pick_line = text_bounds(
+            CODEX_TEXT_X,
+            CODEX_CHOSE_Y + CODEX_CHOSE_GAP,
+            &codex_pick_line(WORST_LESSON_PICK),
+            1,
+        );
+        let misconception_block = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_CHOSE_Y + 2 * CODEX_CHOSE_GAP,
+            width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+            height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+        };
         let menu_option =
             centered_text_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1], "OPEN THE CODEX", 1);
         let menu_subtitle =
@@ -12633,6 +13096,12 @@ mod tests {
             ("rationale heading", rationale, rationale_heading),
             ("rationale", rationale, rationale_block),
             ("missing rationale", rationale, missing_rationale),
+            ("once chose", rationale, once_chose),
+            ("reveal prompt", answer, reveal_prompt),
+            ("you chose heading", rationale, chose_heading),
+            ("think prompt", rationale, think_prompt),
+            ("worst pick", rationale, pick_line),
+            ("worst misconception", rationale, misconception_block),
             (
                 "menu codex option",
                 ui_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1]),
@@ -12709,6 +13178,10 @@ mod tests {
                 rationale_heading,
                 rationale_block,
             ),
+            ("rationale and once chose", rationale_block, once_chose),
+            ("you chose heading and pick", chose_heading, pick_line),
+            ("think prompt and pick", think_prompt, pick_line),
+            ("pick and misconception", pick_line, misconception_block),
         ] {
             assert!(
                 bounds_are_disjoint(left, right),
@@ -12748,6 +13221,9 @@ mod tests {
             ("lesson status panel", AMBER, VOID),
             ("cracked legend panel", AMBER, VOID),
             ("lesson controls panel", MIST, VOID),
+            ("sealed pick panel", RED, VOID),
+            ("sealed misconception panel", MIST, VOID),
+            ("legacy once chose", MIST, INK),
             ("legacy answer", GREEN, INK),
             ("legacy answer marker", GOLD, INK),
             ("legacy empty journal", GOLD, NAVY),
@@ -12806,6 +13282,41 @@ mod tests {
                 },
             ),
             (
+                "once chose",
+                rationale_box,
+                text_bounds(11, 107 + 3 * LINE_HEIGHT, &"O".repeat(RATIONALE_COLUMNS), 1),
+            ),
+            (
+                "reveal prompt",
+                LayoutBounds {
+                    x: 6,
+                    y: 73,
+                    width: 228,
+                    height: 13,
+                },
+                text_bounds(9, 76, CODEX_REVEAL_PROMPT, 1),
+            ),
+            (
+                "you chose heading",
+                rationale_box,
+                text_bounds(11, 95, CODEX_CHOSE_HEADING, 1),
+            ),
+            (
+                "worst pick",
+                rationale_box,
+                text_bounds(11, 105, &codex_pick_line(WORST_LESSON_PICK), 1),
+            ),
+            (
+                "worst misconception",
+                rationale_box,
+                LayoutBounds {
+                    x: 11,
+                    y: 115,
+                    width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+                    height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+                },
+            ),
+            (
                 "first lens",
                 mastery_box,
                 text_bounds(42, 32, "INVARIANTS", 1),
@@ -12841,11 +13352,24 @@ mod tests {
         assert_eq!(rationale.len(), RATIONALE_ROWS);
         assert_eq!(rationale[0].chars().count(), RATIONALE_COLUMNS);
         assert!(crate::learning::rationale_fits(WORST_LESSON_RATIONALE));
+        assert_eq!(WORST_LESSON_PICK.chars().count(), QUIZ_CHOICE_CHARS);
+        let once = codex_once_chose_line(WORST_LESSON_PICK);
+        assert!(once.chars().count() <= RATIONALE_COLUMNS, "{once}");
+        assert!(once.ends_with("..."), "a cut pick is marked as cut: {once}");
+        assert_eq!(codex_once_chose_line("THE SHELL"), "ONCE CHOSE: THE SHELL");
+        assert_eq!(
+            wrap_text(WORST_LESSON_MISCONCEPTION, RATIONALE_COLUMNS).len(),
+            RATIONALE_ROWS
+        );
+        assert!(crate::learning::rationale_fits(WORST_LESSON_MISCONCEPTION));
         for lesson in journal_lessons() {
             assert!(
                 lesson.answer.chars().count() <= QUIZ_CHOICE_CHARS,
                 "lesson answers are committed quiz choices and share their limit"
             );
+            if let Some((pick, _)) = &lesson.misconception {
+                assert!(pick.chars().count() <= QUIZ_CHOICE_CHARS);
+            }
         }
     }
 
@@ -12873,7 +13397,20 @@ mod tests {
         assert_eq!(
             tap_cues(&mut engine, Button::A)[0],
             Some(Cue::Unavailable),
-            "A is deliberately inactive in the Codex"
+            "A is inactive on the mastery page"
+        );
+        let _ = tap_cues(&mut engine, Button::Left);
+        let _ = tap_cues(&mut engine, Button::Left);
+        assert!(game_state(&engine).codex_lesson().unwrap().1.outstanding);
+        assert_eq!(
+            tap_cues(&mut engine, Button::A)[0],
+            Some(Cue::QuestionReveal),
+            "revealing a sealed answer has its own cue"
+        );
+        assert_eq!(
+            tap_cues(&mut engine, Button::A)[0],
+            Some(Cue::Unavailable),
+            "a revealed page has nothing more for A to do"
         );
         for _ in 0..120 {
             engine.update();

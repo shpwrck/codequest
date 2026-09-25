@@ -135,7 +135,8 @@ always emits `back`, so a manifest without a Codex route behaves exactly as it
 did before the Codex existed. With the route, the menu subtitle also summarizes
 the lesson journal (for example `LESSONS 07  REVIEW 02`).
 
-The `codex` handler is a read-only lesson journal. Its first page shows every
+The `codex` handler is a lesson journal that never changes mastery or the
+question deck. Its first page shows every
 concept lens with three mastery runes that wake at exactly 1, 3, and 5 pieces
 of evidence (first-try successes plus misses redeemed in a later launch) and an
 amber count of that lens's lessons awaiting review. Rune II also needs 60% of
@@ -143,9 +144,13 @@ the lens's newest five graded answers correct, and rune III 80% plus no pending
 review; a rune those gates hold back is drawn cracked, and the totals row then
 reads `CRACKED = REVIEW DUE`. Each later page shows one lesson, oldest
 first: lens, question, correct answer, rationale, and whether a review is
-pending. Left, Up, and L page back; Right, Down, and R page forward; paging
-wraps between the mastery page and the newest lesson. A and Start are
-deliberately inactive, and B emits `back`. An empty journal renders an explicit
+pending. A pending lesson is a self-test: it shows the player's wrong pick and
+the misconception it reveals, and seals the answer. A reveals a pending
+lesson's answer; revealing before the review counts the next redemption as
+relearning, which is saved but is not evidence. Left, Up, and L page back;
+Right, Down, and R page forward; paging wraps between the mastery page and the
+newest lesson and seals the page again. A and Start are inactive on every
+other page, and B emits `back`. An empty journal renders an explicit
 `NO LESSONS YET` state. The built-in quiz template (used without a manifest)
 includes `quiz-menu` → `codex` → `quiz-menu`.
 
@@ -215,7 +220,8 @@ Initiate/Adept/Oracle-bound visual tier across the scenes that use them. Unknown
 template names are rejected instead of falling back silently.
 
 Renderer changes can emit all fourteen reachable Oracle scenes—including the
-five-beat opening story and both Codex page layouts—as native 240×160 PPM files
+five-beat opening story and the Codex mastery, sealed-lesson, and lesson
+layouts—as native 240×160 PPM files
 for visual review without packaging the application:
 
 ```bash

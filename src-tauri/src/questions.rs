@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::learning::{self, AnswerEvidence, Concept, Lesson, Mastery, Review};
+use crate::learning::{self, AnswerEvidence, Concept, Lesson, Mastery, ProgressEvent, Review};
 use crate::{engine, save};
 
 pub(crate) const AI_QUESTION_BATCHES_KEY: &str = "ai.question_batches";
@@ -114,8 +114,22 @@ impl QQuestion {
         }
     }
 
-    fn lesson(&self, outstanding: bool) -> Lesson {
+    /// The journal entry for this question. `pick` is the source index of the
+    /// player's last wrong choice, when the save recorded one; an index that
+    /// is out of range or names the answer is ignored.
+    fn lesson(&self, outstanding: bool, pick: Option<usize>, peeked: bool) -> Lesson {
         let correct = self.choices.get(self.answer);
+        let misconception = pick
+            .filter(|pick| *pick != self.answer)
+            .and_then(|pick| self.choices.get(pick))
+            .map(|choice| {
+                let why = if self.has_explained_choices() {
+                    choice.why().unwrap_or_default().trim()
+                } else {
+                    ""
+                };
+                (choice.text().to_string(), why.to_string())
+            });
         Lesson {
             question: self.q.clone(),
             answer: correct.map(QChoice::text).unwrap_or_default().to_string(),
@@ -125,6 +139,8 @@ impl QQuestion {
                 .to_string(),
             concept: self.lens(),
             outstanding,
+            misconception,
+            peeked: outstanding && peeked,
         }
     }
 }
@@ -154,30 +170,48 @@ pub(crate) struct SavedQuizProgress {
     #[serde(default)]
     pub(crate) mastery: Mastery,
     /// Committed attempts per normalized identity for each missed or
-    /// relearned question, so its choice rotation continues across launches. Saves from earlier
-    /// builds have none; their reviews start at attempt 1.
+    /// relearned question, so its choice rotation continues across launches.
+    /// Saves from earlier builds have none; their reviews start at attempt 1.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) question_attempts: BTreeMap<String, u32>,
+    /// The source choice index of each question's latest wrong pick, keyed by
+    /// question identity, so the Codex can show the misconception after a
+    /// reload. A later correct answer keeps the entry. Absent from older saves.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) missed_picks: BTreeMap<String, usize>,
+    /// Missed questions whose answer the player revealed in the Codex before
+    /// answering them again. The next attempt clears the entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) peeked_questions: Vec<String>,
 }
 
 impl SavedQuizProgress {
     /// Applies one committed answer. The latest attempt decides where a
     /// question lives, so the retired, missed, and relearned lists never
     /// share a question: a first-try or spaced success retires it, a
-    /// same-launch retry success relearns it, and a miss keeps it missed.
+    /// same-launch retry success or a success after a Codex peek relearns it,
+    /// and a miss keeps it missed. A miss remembers its pick, and every
+    /// attempt clears a peek.
     pub(crate) fn record(&mut self, evidence: &AnswerEvidence) {
         let identity = question_identity(&evidence.question);
         if identity.is_empty() {
             return;
         }
+        if let (false, Some(pick)) = (evidence.correct, evidence.picked) {
+            self.missed_picks.insert(identity.clone(), pick);
+        }
+        self.peeked_questions
+            .retain(|question| question_identity(question) != identity);
+        let relearning =
+            evidence.correct && (evidence.peeked || evidence.review == Review::InSession);
         let [answered, missed, relearned] = [
             &mut self.answered_questions,
             &mut self.missed_questions,
             &mut self.relearned_questions,
         ];
-        let (target, others) = match (evidence.correct, evidence.review) {
-            (true, Review::InSession) => (relearned, [answered, missed]),
-            (true, Review::Fresh | Review::Spaced) => (answered, [missed, relearned]),
+        let (target, others) = match (evidence.correct, relearning) {
+            (true, true) => (relearned, [answered, missed]),
+            (true, false) => (answered, [missed, relearned]),
             (false, _) => (missed, [answered, relearned]),
         };
         for other in others {
@@ -189,7 +223,7 @@ impl SavedQuizProgress {
         {
             target.push(evidence.question.clone());
         }
-        if evidence.correct && evidence.review != Review::InSession {
+        if evidence.correct && !relearning {
             // A retired question is never asked again.
             self.question_attempts.remove(&identity);
         } else {
@@ -204,12 +238,36 @@ impl SavedQuizProgress {
         learning::record_evidence(&mut self.mastery, evidence);
     }
 
+    /// Records that the player revealed a pending lesson's answer in the
+    /// Codex. Only a question that is still missed can be peeked.
+    pub(crate) fn record_peek(&mut self, question: &str) {
+        let identity = question_identity(question);
+        if identity.is_empty()
+            || !self.missed().contains(&identity)
+            || self.peeked().contains(&identity)
+        {
+            return;
+        }
+        self.peeked_questions.push(question.to_string());
+    }
+
+    pub(crate) fn apply(&mut self, event: &ProgressEvent) {
+        match event {
+            ProgressEvent::Answered(evidence) => self.record(evidence),
+            ProgressEvent::Peeked { question } => self.record_peek(question),
+        }
+    }
+
     fn missed(&self) -> HashSet<String> {
         identities(&self.missed_questions)
     }
 
     fn relearned(&self) -> HashSet<String> {
         identities(&self.relearned_questions)
+    }
+
+    fn peeked(&self) -> HashSet<String> {
+        identities(&self.peeked_questions)
     }
 
     /// Identities that must not be asked again.
@@ -1252,7 +1310,8 @@ fn quiz_progress(save: &save::SaveFile) -> SavedQuizProgress {
 }
 
 /// Records one committed answer: progress lists and lens mastery update in a
-/// single atomic save update.
+/// single atomic save update. The app records through [`persist_progress`].
+#[cfg(test)]
 pub(crate) fn persist_answer_evidence(
     path: &Path,
     evidence: &AnswerEvidence,
@@ -1261,6 +1320,16 @@ pub(crate) fn persist_answer_evidence(
         path,
         QUIZ_PROGRESS_KEY,
         |progress: &mut SavedQuizProgress| progress.record(evidence),
+    )
+}
+
+/// Records one learner-progress event (a committed answer or a Codex reveal)
+/// in a single atomic save update.
+pub(crate) fn persist_progress(path: &Path, event: &ProgressEvent) -> Result<(), String> {
+    save::update(
+        path,
+        QUIZ_PROGRESS_KEY,
+        |progress: &mut SavedQuizProgress| progress.apply(event),
     )
 }
 
@@ -1291,6 +1360,7 @@ pub(crate) fn cartridge_questions(
     let retired = progress.retired();
     let missed = progress.missed();
     let relearned = progress.relearned();
+    let peeked = progress.peeked();
     let mut seen = HashSet::new();
     let mut loaded = CartridgeQuestions {
         mastery: progress.mastery,
@@ -1308,7 +1378,11 @@ pub(crate) fn cartridge_questions(
             let outstanding = missed.contains(&identity);
             let spaced = outstanding || relearned.contains(&identity);
             if spaced || retired.contains(&identity) {
-                loaded.lessons.push(question.lesson(outstanding));
+                loaded.lessons.push(question.lesson(
+                    outstanding,
+                    progress.missed_picks.get(&identity).copied(),
+                    peeked.contains(&identity),
+                ));
             }
             if !retired.contains(&identity) {
                 playable.push(question.quiz_question(if spaced {
@@ -1677,6 +1751,8 @@ pub(crate) mod tests {
             concept,
             correct,
             review: Review::Fresh,
+            picked: None,
+            peeked: false,
         }
     }
 
@@ -2554,6 +2630,8 @@ pub(crate) mod tests {
                     rationale: String::new(),
                     concept: None,
                     outstanding: false,
+                    misconception: None,
+                    peeked: false,
                 },
                 Lesson {
                     question: "WHY KEEP THE DEVICE SHELL THIN?".into(),
@@ -2561,6 +2639,8 @@ pub(crate) mod tests {
                     rationale: String::new(),
                     concept: None,
                     outstanding: true,
+                    misconception: None,
+                    peeked: false,
                 },
                 Lesson {
                     question: explained.q.clone(),
@@ -2568,6 +2648,8 @@ pub(crate) mod tests {
                     rationale: RATIONALE.into(),
                     concept: Some(Concept::Responsibility),
                     outstanding: true,
+                    misconception: None,
+                    peeked: false,
                 },
             ]
         );
@@ -2689,6 +2771,124 @@ pub(crate) mod tests {
         assert!(loaded.questions.is_empty());
         assert_eq!(loaded.lessons.len(), 1);
         assert_eq!(progress.mastery[&Concept::Responsibility].redeemed, 1);
+    }
+
+    #[test]
+    fn a_saved_pick_and_peek_survive_a_reload_as_the_codex_self_test() {
+        let path = temporary_cartridge_path();
+        let mut explained = engine_state_question();
+        explained.choices[1] = QChoice::Explained {
+            text: "THE DEVICE SHELL".into(),
+            why: "MISCONCEPTION: THE SHELL ONLY DRAWS WHAT IT IS GIVEN.".into(),
+        };
+        let batches = vec![SavedQuestionBatch {
+            level: 1,
+            questions: vec![explained.clone()],
+        }];
+        let peek = ProgressEvent::Peeked {
+            question: explained.q.clone(),
+        };
+        let miss = AnswerEvidence {
+            picked: Some(1),
+            ..evidence(&explained.q, explained.lens(), false)
+        };
+
+        // A peek at a question that is not missed records nothing.
+        persist_progress(&path, &peek).unwrap();
+        assert!(load_quiz_progress(&path)
+            .unwrap()
+            .peeked_questions
+            .is_empty());
+
+        persist_progress(&path, &miss.clone().into()).unwrap();
+        let loaded = cartridge_questions(batches.clone(), load_quiz_progress(&path).unwrap());
+        let lesson = &loaded.lessons[0];
+        assert!(lesson.outstanding && !lesson.peeked);
+        assert_eq!(
+            lesson.misconception,
+            Some((
+                "THE DEVICE SHELL".to_string(),
+                "MISCONCEPTION: THE SHELL ONLY DRAWS WHAT IT IS GIVEN.".to_string()
+            )),
+            "the pick and its rationale come back after a reload"
+        );
+
+        persist_progress(&path, &peek).unwrap();
+        persist_progress(&path, &peek).unwrap();
+        let progress = load_quiz_progress(&path).unwrap();
+        assert_eq!(
+            progress.peeked_questions,
+            [explained.q.clone()],
+            "peeked once"
+        );
+        let loaded = cartridge_questions(batches.clone(), progress);
+        assert!(loaded.lessons[0].peeked, "a reload remembers the peek");
+
+        // A spaced check answered after the peek would have been a
+        // redemption; the peek demotes it to relearning.
+        let redeemed = AnswerEvidence {
+            review: Review::Spaced,
+            peeked: true,
+            ..evidence(&explained.q, explained.lens(), true)
+        };
+        persist_progress(&path, &redeemed.into()).unwrap();
+        let progress = load_quiz_progress(&path).unwrap();
+        assert!(progress.peeked_questions.is_empty());
+        let lens = progress.mastery[&Concept::Responsibility];
+        assert_eq!((lens.redeemed, lens.relearned), (0, 1));
+        assert_eq!(
+            progress.relearned_questions,
+            [explained.q.clone()],
+            "a peeked redemption does not retire the question"
+        );
+        let loaded = cartridge_questions(batches, progress);
+        assert_eq!(
+            loaded.questions[0].review,
+            Review::Spaced,
+            "it returns once more as a spaced check"
+        );
+        let lesson = &loaded.lessons[0];
+        assert!(!lesson.outstanding && !lesson.peeked);
+        assert_eq!(
+            lesson.misconception.as_ref().map(|(pick, _)| pick.as_str()),
+            Some("THE DEVICE SHELL"),
+            "a learned lesson keeps the misconception it replaced"
+        );
+        remove_save(&path);
+    }
+
+    #[test]
+    fn legacy_progress_without_picks_loads_and_ignores_bad_picks() {
+        let legacy: SavedQuizProgress = serde_json::from_str(
+            r#"{"answered_questions":[],"missed_questions":["WHAT SHOULD OWN GAMEPLAY STATE?"],
+                "mastery":{"responsibility":{"first_try":1,"redeemed":0,"missed":1}}}"#,
+        )
+        .unwrap();
+        assert!(legacy.missed_picks.is_empty() && legacy.peeked_questions.is_empty());
+        assert_eq!(legacy.mastery[&Concept::Responsibility].relearned, 0);
+        let batches = vec![SavedQuestionBatch {
+            level: 1,
+            questions: vec![engine_state_question()],
+        }];
+        let loaded = cartridge_questions(batches.clone(), legacy.clone());
+        assert_eq!(loaded.lessons[0].misconception, None);
+        assert!(loaded.lessons[0].outstanding);
+
+        for bad in [0, 9] {
+            let mut progress = legacy.clone();
+            progress
+                .missed_picks
+                .insert("WHAT SHOULD OWN GAMEPLAY STATE?".into(), bad);
+            let loaded = cartridge_questions(batches.clone(), progress);
+            assert_eq!(loaded.lessons[0].misconception, None, "pick {bad}");
+        }
+
+        let plain = legacy_question("WHO DRAWS FRAMES?", &["THE SHELL", "THE ENGINE", "X", "Y"]);
+        assert_eq!(
+            plain.lesson(true, Some(1), false).misconception,
+            Some(("THE ENGINE".to_string(), String::new())),
+            "a legacy question keeps the pick without inventing a rationale"
+        );
     }
 
     #[test]
