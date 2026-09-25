@@ -57,8 +57,9 @@ batch still closes on time. A correct same-launch retry is *relearning*
 `REDEEMED`, but it follows the lesson card that just showed the answer, so it
 lights no rune. Every missed question, including a relearned one, returns once
 as a spaced check in a later launch, and only a correct answer there retires
-it and counts as a redemption. Score, flow, survival, and Datafall counts are
-not evidence.
+it and counts as a redemption. A delivered question whose stem the lesson
+journal already holds is never a first try: it is graded as relearning too.
+Score, flow, survival, and Datafall counts are not evidence.
 
 **Mastery criterion:** Per lens, evidence (first-try successes plus
 later-launch redemptions) sets how many runes volume alone would wake: 1, 3,

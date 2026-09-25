@@ -208,7 +208,8 @@ questions without rationales, load without conversion. Committing an answer
 records it immediately on a background writer: a first-try correct answer
 retires the question for later runs and launches, while a miss keeps it queued
 for review until you redeem it in a later launch (a same-launch correct retry
-queues it once more for that check). Ejecting or recycling a cartridge does not delete its save.
+queues it once more for that check). Ejecting or recycling a cartridge does not
+delete its save.
 
 Loading alone does not modify the selected repository. Quest mode can run the
 repository's own lint, build, or test scripts, so those commands have whatever

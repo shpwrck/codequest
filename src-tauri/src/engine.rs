@@ -2009,11 +2009,26 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
         run.attempt.saturating_add(1),
     );
 
+    // A delivery can repeat a stem the journal already holds (a miss or a
+    // same-launch relearning is not retired, so the loader keeps it). Such a
+    // copy is not a first try: it counts as relearning, never as evidence.
+    let identity = question_identity(&question.question);
+    let review = match question.review {
+        Review::Fresh
+            if cartridge
+                .lessons
+                .iter()
+                .any(|lesson| question_identity(&lesson.question) == identity) =>
+        {
+            Review::InSession
+        }
+        review => review,
+    };
     let evidence = AnswerEvidence {
         question: question.question.clone(),
         concept: question.concept,
         correct,
-        review: question.review,
+        review,
     };
     learning::record_evidence(&mut cartridge.mastery, &evidence);
     record_lesson(&mut cartridge.lessons, &question, correct);
@@ -7433,6 +7448,32 @@ mod tests {
         assert_eq!(questions[due].question, missed.question);
         assert_eq!(questions[due].review, Review::InSession);
         assert_eq!(state.batch_ends, vec![6, 13]);
+    }
+
+    #[test]
+    fn a_delivered_repeat_of_a_journaled_stem_is_relearning_not_a_first_try() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        {
+            // A later delivery repeated the first stem as a "fresh" question.
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            state.cartridge.as_mut().unwrap().questions[1] = concept_question(0);
+        }
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        let _ = engine.take_effects();
+        assert_eq!(current_question(&engine).review, Review::Fresh);
+        commit(&mut engine, true);
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                if evidence.correct && evidence.review == Review::InSession
+        )));
+        let record = engine_state(&engine).lens_record(Concept::Responsibility);
+        assert_eq!((record.first_try, record.relearned), (0, 1), "{record:?}");
+        assert!(
+            !engine_state(&engine).quiz.as_ref().unwrap().redeemed,
+            "no REDEEMED banner for a copy that was never flagged as a review"
+        );
     }
 
     #[test]
