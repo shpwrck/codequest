@@ -11,11 +11,11 @@ mod repo_context;
 mod save;
 pub mod scene_machine;
 
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::process::{Command, Output, Stdio};
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -176,35 +176,43 @@ fn git_repo_command(path: &std::path::Path) -> Command {
     command
 }
 
+/// Longest any one repository query may run. Provenance queries walk history,
+/// and a huge repository or an unreachable network share must not hold a
+/// cartridge load or a question request indefinitely.
+const GIT_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn git_output_within(
+    path: &std::path::Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output, String> {
+    let mut command = git_repo_command(path);
+    command.args(args);
+    command_output_with_timeout(command, timeout, "GIT", None)
+}
+
+/// Stdout of a successful repository query, or `None` when git fails, cannot
+/// start, or exceeds [`GIT_TIMEOUT`].
+fn git_stdout(path: &std::path::Path, args: &[&str]) -> Option<String> {
+    git_output_within(path, args, GIT_TIMEOUT)
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn is_git_repo(path: &std::path::Path) -> bool {
-    git_repo_command(path)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    git_stdout(path, &["rev-parse", "--is-inside-work-tree"]).is_some()
 }
 
 fn repository_branch(path: &std::path::Path) -> String {
-    git_repo_command(path)
-        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
+    git_stdout(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .map(|branch| sanitized_metadata(&branch, 48))
         .filter(|branch| !branch.is_empty())
         .unwrap_or_else(|| "DETACHED HEAD".to_string())
 }
 
 fn repository_revision(path: &std::path::Path) -> String {
-    git_repo_command(path)
-        .args(["rev-parse", "--short=7", "HEAD"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
+    git_stdout(path, &["rev-parse", "--short=7", "HEAD"])
         .map(|revision| sanitized_metadata(&revision, 12).to_ascii_lowercase())
         .filter(|revision| !revision.is_empty())
         .unwrap_or_else(|| "-------".to_string())
@@ -220,7 +228,9 @@ fn explicit_copyright_notice(path: &std::path::Path) -> Option<String> {
 }
 
 fn repository_provenance(path: &std::path::Path) -> engine::RepositoryProvenance {
-    let authors = provenance::ranked_authors(&git_out(path, &["shortlog", "-sn", "--all"]), 3);
+    // Every query is bounded by the checked-out history rather than every ref,
+    // and by GIT_TIMEOUT; a query that runs out of time leaves its field empty.
+    let authors = provenance::ranked_authors(&git_out(path, &["shortlog", "-sn", "HEAD"]), 3);
     let years = |args: &[&str]| -> Vec<u16> {
         git_out(path, args)
             .lines()
@@ -231,12 +241,12 @@ fn repository_provenance(path: &std::path::Path) -> engine::RepositoryProvenance
     // latest, so large histories are not formatted commit by commit.
     let first_years = years(&[
         "log",
-        "--all",
         "--max-parents=0",
         "--format=%cd",
         "--date=format:%Y",
+        "HEAD",
     ]);
-    let latest_years = years(&["log", "--all", "-1", "--format=%cd", "--date=format:%Y"]);
+    let latest_years = years(&["log", "-1", "--format=%cd", "--date=format:%Y", "HEAD"]);
 
     engine::RepositoryProvenance {
         authors,
@@ -367,24 +377,79 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     })
 }
 
-#[tauri::command]
-async fn pick_cartridge(app: tauri::AppHandle) -> Result<Option<Cartridge>, String> {
-    let Some(path) = app
-        .dialog()
-        .file()
-        .set_title("SELECT CARTRIDGE (GIT REPO)")
-        .blocking_pick_folder()
-    else {
-        return Ok(None);
+/// How long a cartridge built for the folder picker stays reusable by the
+/// insertion the shell makes with its path.
+const PICKED_CARTRIDGE_REUSE: Duration = Duration::from_secs(30);
+
+/// The cartridge the folder picker just built. The shell inserts a picked
+/// cartridge by path, so reusing this build keeps an add from disk from
+/// walking the repository's history twice.
+#[derive(Clone, Default)]
+struct PickedCartridge(Arc<Mutex<Option<(Instant, Cartridge)>>>);
+
+impl PickedCartridge {
+    fn offer(&self, cartridge: Cartridge) {
+        if let Ok(mut picked) = self.0.lock() {
+            *picked = Some((Instant::now(), cartridge));
+        }
+    }
+
+    /// The picked build for `path` if it is still fresh. Any take clears the
+    /// slot, so a build is reused at most once.
+    fn take(&self, path: &str) -> Option<Cartridge> {
+        let (built, cartridge) = self.0.lock().ok()?.take()?;
+        (cartridge.path == path && built.elapsed() <= PICKED_CARTRIDGE_REUSE).then_some(cartridge)
+    }
+}
+
+/// Cartridge loads, applied to the engine one at a time in request order.
+#[derive(Default)]
+struct CartridgeLoads {
+    picked: PickedCartridge,
+    order: tauri::async_runtime::Mutex<()>,
+}
+
+/// Builds the cartridge at `path` (reusing a fresh picker build) and its
+/// engine spec. Runs git and reads the save, so it belongs off the UI thread.
+fn load_cartridge(
+    path: &str,
+    picked: &PickedCartridge,
+) -> Result<(Cartridge, engine::CartridgeSpec), String> {
+    let cartridge = match picked.take(path) {
+        Some(cartridge) => cartridge,
+        None => build_cartridge(std::path::Path::new(path))?,
     };
-    let path = path
-        .into_path()
-        .map_err(|_| "FOLDER PICKER RETURNED AN INVALID PATH".to_string())?;
-    build_cartridge(&path).map(Some)
+    let spec = engine_cartridge(cartridge.clone())?;
+    Ok((cartridge, spec))
 }
 
 #[tauri::command]
-fn cartridge_branch(path: String) -> Result<String, String> {
+async fn pick_cartridge(
+    app: tauri::AppHandle,
+    loads: State<'_, CartridgeLoads>,
+) -> Result<Option<Cartridge>, String> {
+    let picked = loads.picked.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_title("SELECT CARTRIDGE (GIT REPO)")
+            .blocking_pick_folder()
+        else {
+            return Ok(None);
+        };
+        let path = path
+            .into_path()
+            .map_err(|_| "FOLDER PICKER RETURNED AN INVALID PATH".to_string())?;
+        let cartridge = build_cartridge(&path)?;
+        picked.offer(cartridge.clone());
+        Ok(Some(cartridge))
+    })
+    .await
+    .map_err(|_| "CARTRIDGE LOAD FAILED".to_string())?
+}
+
+fn repository_branch_at(path: &str) -> Result<String, String> {
     let canon = std::fs::canonicalize(path).map_err(|_| "DIRECTORY NOT FOUND".to_string())?;
     if !is_git_repo(&canon) {
         return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
@@ -392,14 +457,15 @@ fn cartridge_branch(path: String) -> Result<String, String> {
     Ok(repository_branch(&canon))
 }
 
+#[tauri::command]
+async fn cartridge_branch(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || repository_branch_at(&path))
+        .await
+        .map_err(|_| "BRANCH UNAVAILABLE".to_string())?
+}
+
 fn git_out(path: &std::path::Path, args: &[&str]) -> String {
-    git_repo_command(path)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default()
+    git_stdout(path, args).unwrap_or_default()
 }
 
 /// Upper bound on tracked paths considered for the generation brief.
@@ -418,13 +484,30 @@ fn tracked_files(path: &std::path::Path) -> Vec<String> {
 const AI_PROBE_PROMPT: &str =
     "Reply with exactly CODEQUEST_READY and nothing else. Do not inspect files or use tools.";
 
-fn ai_prompt_command(provider: AiProvider, prompt: &str) -> Command {
+/// One provider request: the CLI invocation and the prompt it reads on stdin.
+/// Prompts never travel as arguments, so their size is not bound by command
+/// line limits and batch-file shims never see multi-line arguments.
+struct PromptCall {
+    command: Command,
+    input: Vec<u8>,
+}
+
+fn ai_prompt_call(provider: AiProvider, prompt: &str) -> PromptCall {
+    PromptCall {
+        command: ai_prompt_command(provider),
+        input: prompt.as_bytes().to_vec(),
+    }
+}
+
+/// The non-interactive CLI invocation for `provider`. Claude's print mode
+/// reads the prompt from stdin when no prompt argument is given; Codex reads
+/// its instructions from stdin when the prompt argument is `-`.
+fn ai_prompt_command(provider: AiProvider) -> Command {
     match provider {
         AiProvider::Claude => {
             let mut command = external_tools::claude_command();
             command.args([
                 "-p",
-                prompt,
                 "--output-format",
                 "json",
                 "--no-session-persistence",
@@ -454,7 +537,7 @@ fn ai_prompt_command(provider: AiProvider, prompt: &str) -> Command {
                     command.args(["--model", &model]);
                 }
             }
-            command.arg(prompt);
+            command.arg("-");
             command
         }
     }
@@ -477,54 +560,140 @@ fn ai_response_text(provider: AiProvider, stdout: &[u8]) -> Result<String, Strin
     }
 }
 
+/// Longest reason text an error string carries to the device.
+const ERROR_REASON_CHARS: usize = 60;
+
+/// A short, single-line, upper-case reason for an I/O failure.
+fn io_reason(error: &io::Error) -> String {
+    sanitized_metadata(&error.kind().to_string(), ERROR_REASON_CHARS).to_ascii_uppercase()
+}
+
+/// Why a finished call failed: the first line the program wrote to stderr,
+/// or its exit code when it wrote none.
+fn exit_reason(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(|line| sanitized_metadata(line, ERROR_REASON_CHARS))
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_ascii_uppercase())
+        .unwrap_or_else(|| match output.status.code() {
+            Some(code) => format!("EXIT CODE {code}"),
+            None => "STOPPED BY A SIGNAL".to_string(),
+        })
+}
+
+/// Reads `pipe` to its end on a detached thread. The result arrives on the
+/// returned channel, so a caller can stop waiting at a deadline instead of
+/// joining a reader that a surviving grandchild keeps blocked.
+fn read_to_end_in_background(
+    mut pipe: impl Read + Send + 'static,
+) -> mpsc::Receiver<io::Result<Vec<u8>>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = sender.send(pipe.read_to_end(&mut bytes).map(|_| bytes));
+    });
+    receiver
+}
+
+/// Runs `command` and collects its output within `timeout`. `input`, when
+/// given, is written to the program's stdin, which is then closed; otherwise
+/// stdin is empty. The deadline holds even for wrappers whose helpers inherit
+/// the output pipes: on timeout the whole process tree is stopped and the
+/// pipe readers are abandoned rather than joined. Errors name `label` and
+/// carry a short reason, because the device shows them.
 fn command_output_with_timeout(
     mut command: Command,
     timeout: Duration,
-    provider_name: &str,
+    label: &str,
+    input: Option<Vec<u8>>,
 ) -> Result<Output, String> {
-    let unavailable = || format!("{provider_name} CLI UNAVAILABLE");
-    let failed = || format!("{provider_name} CALL FAILED");
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| unavailable())?;
-    let stdout = child.stdout.take().ok_or_else(&failed)?;
-    let stderr = child.stderr.take().ok_or_else(&failed)?;
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut reader = stdout;
-        reader.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut reader = stderr;
-        reader.read_to_end(&mut bytes).map(|_| bytes)
-    });
+    let deadline = Instant::now() + timeout;
+    let failed = |reason: &str| format!("{label} CALL FAILED - {reason}");
+    let timed_out = || format!("{label} CALL TIMED OUT");
+    let stop = |child: &mut std::process::Child| {
+        external_tools::kill_process_tree(child);
+        let _ = child.wait();
+    };
 
-    let status = match child.wait_timeout(timeout).map_err(|_| failed())? {
-        Some(status) => status,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(format!("{provider_name} CALL TIMED OUT"));
+    command
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    external_tools::isolate_process_tree(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("{label} CLI UNAVAILABLE - {}", io_reason(&error)))?;
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        stop(&mut child);
+        return Err(failed("NO OUTPUT PIPES"));
+    };
+    if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
+        // A program that exits without reading its input closes the pipe;
+        // that write error is not the call's result, the exit status is.
+        // Dropping `stdin` afterwards closes it, which ends the input.
+        thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    let stdout = read_to_end_in_background(stdout);
+    let stderr = read_to_end_in_background(stderr);
+
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            stop(&mut child);
+            return Err(timed_out());
+        }
+        Err(error) => {
+            stop(&mut child);
+            return Err(failed(&io_reason(&error)));
         }
     };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| failed())?
-        .map_err(|_| failed())?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| failed())?
-        .map_err(|_| failed())?;
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
+    // The program has exited, but a helper it launched may still hold the
+    // pipes open; its output is only awaited until the same deadline.
+    let collect = |pipe: &mpsc::Receiver<io::Result<Vec<u8>>>| {
+        pipe.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    };
+    match (collect(&stdout), collect(&stderr)) {
+        (Ok(Ok(stdout)), Ok(Ok(stderr))) => Ok(Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        (Err(mpsc::RecvTimeoutError::Timeout), _) | (_, Err(mpsc::RecvTimeoutError::Timeout)) => {
+            // The group outlives its reaped leader while a helper holds
+            // the pipes, so this reaches the helper.
+            external_tools::kill_process_tree(&mut child);
+            Err(timed_out())
+        }
+        (Ok(Err(error)), _) | (_, Ok(Err(error))) => Err(failed(&io_reason(&error))),
+        _ => Err(failed("OUTPUT UNREADABLE")),
+    }
+}
+
+/// The assistant's reply from a finished provider call, or why it failed.
+fn provider_reply(provider: AiProvider, output: &Output) -> Result<String, String> {
+    if !output.status.success() {
+        return Err(format!(
+            "{} CALL FAILED - {}",
+            provider.name(),
+            exit_reason(output)
+        ));
+    }
+    ai_response_text(provider, &output.stdout)
+}
+
+/// Sends `prompt` to `provider` on stdin and returns its reply.
+fn ask_provider(provider: AiProvider, prompt: &str, timeout: Duration) -> Result<String, String> {
+    let call = ai_prompt_call(provider, prompt);
+    let output =
+        command_output_with_timeout(call.command, timeout, provider.name(), Some(call.input))?;
+    provider_reply(provider, &output)
 }
 
 fn ai_questions(
@@ -547,12 +716,7 @@ fn ai_questions(
     let brief = repo_context::project_brief(path, &tracked_files(path));
     let learner = questions::load_learner_state(path).unwrap_or_default();
     let prompt = questions::bounded_ai_question_prompt(&name, level, count, &brief, &learner);
-    let cmd = ai_prompt_command(provider, &prompt);
-    let out = command_output_with_timeout(cmd, Duration::from_secs(120), provider.name())?;
-    if !out.status.success() {
-        return Err(format!("{} CALL FAILED", provider.name()));
-    }
-    let result = ai_response_text(provider, &out.stdout)?;
+    let result = ask_provider(provider, &prompt, Duration::from_secs(120))?;
     questions::parse_generated_questions(&result, count)
 }
 
@@ -580,7 +744,10 @@ where
     let Some(provider) = provider_state.ready_provider() else {
         return Vec::new();
     };
-    generate(path, level, count, provider).unwrap_or_default()
+    generate(path, level, count, provider).unwrap_or_else(|error| {
+        eprintln!("CODE QUEST question generation failed: {error}");
+        Vec::new()
+    })
 }
 
 /// The engine's question loader: a fresh verified batch, without questions
@@ -667,12 +834,9 @@ fn engine_cartridge(cartridge: Cartridge) -> Result<engine::CartridgeSpec, Strin
 }
 
 fn prove_ai_provider(provider: AiProvider) -> Result<(), String> {
-    let command = ai_prompt_command(provider, AI_PROBE_PROMPT);
-    let output = command_output_with_timeout(command, Duration::from_secs(60), provider.name())?;
-    if !output.status.success() {
-        return Err(format!("{} CALL FAILED", provider.name()));
-    }
-    let response = ai_response_text(provider, &output.stdout)?;
+    // The probe takes the same stdin path as generation, so a pass means
+    // generation requests can reach the CLI too.
+    let response = ask_provider(provider, AI_PROBE_PROMPT, Duration::from_secs(60))?;
     if response.trim() != "CODEQUEST_READY" {
         return Err(format!("{} READINESS CHECK FAILED", provider.name()));
     }
@@ -711,16 +875,22 @@ async fn verify_ai_provider(
 }
 
 #[tauri::command]
-fn engine_set_cartridge(
-    state: State<EngineState>,
+async fn engine_set_cartridge(
+    state: State<'_, EngineState>,
+    loads: State<'_, CartridgeLoads>,
     path: Option<String>,
 ) -> Result<Option<Cartridge>, String> {
-    let cartridge = path
-        .map(|path| build_cartridge(std::path::Path::new(&path)))
-        .transpose()?;
-    state
-        .0
-        .set_cartridge(cartridge.clone().map(engine_cartridge).transpose()?)?;
+    // Loads walk git history and read the save, so they run off the UI
+    // thread; the order lock keeps overlapping requests applied in turn.
+    let _turn = loads.order.lock().await;
+    let picked = loads.picked.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        path.map(|path| load_cartridge(&path, &picked)).transpose()
+    })
+    .await
+    .map_err(|_| "CARTRIDGE LOAD FAILED".to_string())??;
+    let (cartridge, spec) = loaded.unzip();
+    state.0.set_cartridge(spec)?;
     Ok(cartridge)
 }
 
@@ -799,6 +969,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(provider_state)
+        .manage(CartridgeLoads::default())
         .manage(EngineState(engine::EngineRuntime::spawn(
             question_loader,
             answered_question_recorder,
@@ -921,28 +1092,172 @@ mod question_policy_tests {
 
     #[test]
     fn each_provider_uses_a_noninteractive_ephemeral_prompt_command() {
-        let claude = ai_prompt_command(AiProvider::Claude, "TEST PROMPT");
-        let claude_args = claude
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let prompt = "TEST PROMPT\nWITH \"QUOTED\" LINES";
+        let arguments = |call: &PromptCall| {
+            call.command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let claude = ai_prompt_call(AiProvider::Claude, prompt);
+        let claude_args = arguments(&claude);
+        assert_eq!(claude_args.first().map(String::as_str), Some("-p"));
         assert!(claude_args
             .windows(2)
-            .any(|args| args == ["-p", "TEST PROMPT"]));
+            .any(|args| args == ["--output-format", "json"]));
         assert!(claude_args.contains(&"--no-session-persistence".to_string()));
         assert!(claude_args.windows(2).any(|args| args == ["--tools", ""]));
 
-        let codex = ai_prompt_command(AiProvider::Codex, "TEST PROMPT");
-        let codex_args = codex
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let codex = ai_prompt_call(AiProvider::Codex, prompt);
+        let codex_args = arguments(&codex);
         assert_eq!(codex_args.first().map(String::as_str), Some("exec"));
         assert!(codex_args.contains(&"--ephemeral".to_string()));
         assert!(codex_args
             .windows(2)
             .any(|args| args == ["--sandbox", "read-only"]));
-        assert_eq!(codex_args.last().map(String::as_str), Some("TEST PROMPT"));
+        assert_eq!(
+            codex_args.last().map(String::as_str),
+            Some("-"),
+            "codex reads its instructions from stdin"
+        );
+
+        for call in [&claude, &codex] {
+            assert!(
+                arguments(call)
+                    .iter()
+                    .all(|arg| !arg.contains("TEST PROMPT")),
+                "the prompt never travels on the command line"
+            );
+            assert_eq!(call.input, prompt.as_bytes(), "the prompt is sent on stdin");
+            assert!(arguments(call)
+                .iter()
+                .all(|arg| !arg.contains(['\n', '\r'])));
+        }
+    }
+
+    #[test]
+    fn failed_calls_report_a_short_reason() {
+        let mut missing = Command::new("codequest-missing-provider-cli");
+        missing.arg("--version");
+        let error = command_output_with_timeout(missing, Duration::from_secs(5), "CODEX", None)
+            .unwrap_err();
+        assert!(error.starts_with("CODEX CLI UNAVAILABLE - "), "{error}");
+        assert!(error.contains("NOT FOUND"), "{error}");
+
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "question_policy_tests::failing_provider_fixture",
+            "--nocapture",
+        ]);
+        let output =
+            command_output_with_timeout(command, Duration::from_secs(30), "CLAUDE", None).unwrap();
+        let error = provider_reply(AiProvider::Claude, &output).unwrap_err();
+        assert_eq!(
+            error,
+            "CLAUDE CALL FAILED - ERROR: MODEL NOT AVAILABLE FOR THIS ACCOUNT"
+        );
+        assert!(error.len() <= "CLAUDE CALL FAILED - ".len() + ERROR_REASON_CHARS);
+    }
+
+    #[test]
+    fn a_silent_failure_reports_its_exit_code() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "question_policy_tests::silent_failure_fixture",
+            "--nocapture",
+        ]);
+        let output =
+            command_output_with_timeout(command, Duration::from_secs(30), "CODEX", None).unwrap();
+        assert_eq!(
+            provider_reply(AiProvider::Codex, &output).unwrap_err(),
+            "CODEX CALL FAILED - EXIT CODE 7"
+        );
+    }
+
+    #[test]
+    fn prompts_travel_on_stdin_without_a_command_line_limit() {
+        // Larger than Linux's 128 KiB per-argument limit and Windows' 32767
+        // character command line, with the quotes and newlines that batch
+        // file arguments cannot carry.
+        let prompt = "A LINE WITH \"QUOTES\", \\ SLASHES, AND 100% SIGNS\n".repeat(4_000);
+        assert!(prompt.len() > 128 * 1024);
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "question_policy_tests::stdin_echo_fixture",
+            "--nocapture",
+        ]);
+
+        let output = command_output_with_timeout(
+            command,
+            Duration::from_secs(30),
+            "CLAUDE",
+            Some(prompt.clone().into_bytes()),
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("STDIN {} BYTES 4000 LINES", prompt.len())),
+            "{stdout}"
+        );
+    }
+
+    #[test]
+    fn git_queries_are_bounded_by_a_deadline() {
+        let repo = temporary_git_repo();
+        let error = git_output_within(&repo, &["log", "--all"], Duration::ZERO).unwrap_err();
+        assert_eq!(error, "GIT CALL TIMED OUT");
+        assert!(git_output_within(&repo, &["rev-parse", "--git-dir"], GIT_TIMEOUT).is_ok());
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn a_picked_cartridge_is_reused_once_by_its_own_insertion() {
+        let repo = temporary_git_repo();
+        let other = temporary_git_repo();
+        let picked = PickedCartridge::default();
+        let cartridge = build_cartridge(&repo).unwrap();
+        let path = cartridge.path.clone();
+
+        picked.offer(cartridge.clone());
+        assert!(
+            picked
+                .take(&build_cartridge(&other).unwrap().path)
+                .is_none(),
+            "another path never receives the picked build"
+        );
+        assert!(picked.take(&path).is_none(), "any take clears the slot");
+
+        picked.offer(cartridge);
+        let reused = picked.take(&path).expect("the insertion reuses the build");
+        assert_eq!(reused.path, path);
+        assert!(
+            picked.take(&path).is_none(),
+            "a build is reused at most once"
+        );
+
+        let (loaded, spec) = load_cartridge(&path, &picked).unwrap();
+        assert_eq!(loaded.path, path);
+        assert_eq!(spec.id, path);
+
+        picked.offer(loaded);
+        if let Ok(mut slot) = picked.0.lock() {
+            if let Some((built, _)) = slot.as_mut() {
+                *built -= PICKED_CARTRIDGE_REUSE + Duration::from_secs(1);
+            }
+        }
+        assert!(picked.take(&path).is_none(), "a stale build is rebuilt");
+
+        remove_temporary_repo(other);
+        remove_temporary_repo(repo);
     }
 
     #[test]
@@ -1021,6 +1336,31 @@ mod question_policy_tests {
     }
 
     #[test]
+    #[ignore = "child-process fixture for the stdin test"]
+    fn stdin_echo_fixture() {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input).unwrap();
+        println!(
+            "STDIN {} BYTES {} LINES",
+            input.len(),
+            input.lines().count()
+        );
+    }
+
+    #[test]
+    #[ignore = "child-process fixture for the failure-reason test"]
+    fn failing_provider_fixture() {
+        eprintln!("error: model not available for this account\nsecond line");
+        std::process::exit(3);
+    }
+
+    #[test]
+    #[ignore = "child-process fixture for the failure-reason test"]
+    fn silent_failure_fixture() {
+        std::process::exit(7);
+    }
+
+    #[test]
     fn external_commands_are_stopped_at_their_deadline() {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command.args([
@@ -1030,10 +1370,42 @@ mod question_policy_tests {
         ]);
         let started = std::time::Instant::now();
 
-        let error =
-            command_output_with_timeout(command, Duration::from_millis(50), "CLAUDE").unwrap_err();
+        let error = command_output_with_timeout(command, Duration::from_millis(50), "CLAUDE", None)
+            .unwrap_err();
 
         assert_eq!(error, "CLAUDE CALL TIMED OUT");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_stops_helpers_that_inherit_the_output_pipes() {
+        // Like an npm launcher: the direct child starts the real work as a
+        // grandchild that holds stdout and stderr open.
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & sleep 30"]);
+        let started = std::time::Instant::now();
+
+        let error = command_output_with_timeout(command, Duration::from_millis(200), "CODEX", None)
+            .unwrap_err();
+
+        assert_eq!(error, "CODEX CALL TIMED OUT");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_left_holding_the_pipes_cannot_outlive_the_deadline() {
+        // The direct child exits at once; its background helper keeps the
+        // pipes open well past the deadline.
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 &"]);
+        let started = std::time::Instant::now();
+
+        let error = command_output_with_timeout(command, Duration::from_millis(300), "CODEX", None)
+            .unwrap_err();
+
+        assert_eq!(error, "CODEX CALL TIMED OUT");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

@@ -86,7 +86,11 @@ line tools:
   consume the Windows repository paths used by the quest runner.
 
 On Windows, standard Git for Windows, Codex, and Claude installation locations
-are discovered automatically. Custom or portable installs can set `CQA_GIT`,
+are discovered automatically: `.exe` files on `PATH`, `%USERPROFILE%\.local\bin`,
+the standalone Codex installer's `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`,
+and npm global installs (`codex.cmd` or `claude.cmd` on `PATH` or in
+`%APPDATA%\npm`). Prompts reach either CLI on stdin, so their size is not
+limited by the command line. Custom or portable installs can set `CQA_GIT`,
 `CQA_CODEX`, `CQA_CLAUDE`, and `CQA_SHELL` to an executable name on `PATH` or
 an absolute path. macOS GUI launches repair their restricted `PATH` before tool
 discovery.
@@ -106,7 +110,8 @@ non-interactive request to the selected CLI. The engine and boot animation do
 not start until that request succeeds. If the pack is missing or the CLI is
 unavailable, unauthenticated, or unhealthy, the switch and power LED flash red
 and return to the off position. The reason the CLI reported, such as
-`CODEX CLI UNAVAILABLE`, appears in the device's status strip and stays on the
+`CODEX CLI UNAVAILABLE - ENTITY NOT FOUND` or the first line the CLI wrote to
+stderr, appears in the device's status strip and stays on the
 CHECK BATTERIES guide and the rear battery tab until power is tried again or
 the batteries are changed.
 Battery changes are locked while power is on.

@@ -14,8 +14,9 @@ use std::path::{Component, Path};
 
 use crate::{codequest, questions};
 
-/// Bytes available to the whole brief. The brief travels inside a single
-/// command-line prompt (see `questions::MAX_PROMPT_CHARS`), which bounds it.
+/// Bytes available to the whole brief. The brief travels inside the prompt a
+/// provider reads on stdin; `questions::MAX_PROMPT_BYTES` leaves room for a
+/// brief of this size beside the instructions.
 pub(crate) const BRIEF_BUDGET: usize = 20 * 1024;
 const SUMMARY_BUDGET: usize = 1024;
 const README_BUDGET: usize = 8 * 1024;
