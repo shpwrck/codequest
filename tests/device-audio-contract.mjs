@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 
 import {
   DEFAULT_VOLUME,
-  MAX_DRIFT_SECONDS,
+  MAX_LATENESS_SECONDS,
+  MAX_LEAD_SECONDS,
+  MIN_LEAD_SECONDS,
   SCHEDULE_LEAD_SECONDS,
   VOLUME_LEVELS,
   VOLUME_STORAGE_KEY,
@@ -11,7 +13,9 @@ import {
   createTickClock,
   midiToHz,
   nextVolume,
+  noiseColor,
   normalizeVolume,
+  planBatch,
   pulseHarmonics,
   stepVolume,
 } from "../src/speaker.js";
@@ -89,6 +93,12 @@ class FakeAudioContext {
     const data = new Float32Array(length);
     return { getChannelData: () => data };
   }
+  createBiquadFilter() {
+    const node = new FakeNode(this, "filter");
+    node.type = "lowpass";
+    node.frequency = new FakeParam(350);
+    return node;
+  }
   createPeriodicWave(real, imag) { return { real, imag }; }
   resume() { this.state = "running"; return Promise.resolve(); }
 }
@@ -123,9 +133,176 @@ assert.equal(clock.timeFor(600), 2 + SCHEDULE_LEAD_SECONDS, "Notes start slightl
 assert.ok(SCHEDULE_LEAD_SECONDS >= 0.04 && SCHEDULE_LEAD_SECONDS <= 0.08, "The lookahead is roughly 60 ms");
 assert.ok(Math.abs(clock.timeFor(660) - clock.timeFor(600) - 1) < 1e-9, "Sixty engine ticks are one second");
 assert.equal(clock.sync(606, 2.1 + 0.02), false, "Ordinary polling jitter keeps the anchor");
-assert.equal(MAX_DRIFT_SECONDS, 0.15, "Re-anchoring waits for 150 ms of drift");
+assert.equal(clock.sync(606, 2.1 - 0.02), false, "Jitter the other way keeps it too");
+assert.ok(
+  MIN_LEAD_SECONDS > 0 && MIN_LEAD_SECONDS < SCHEDULE_LEAD_SECONDS && SCHEDULE_LEAD_SECONDS < MAX_LEAD_SECONDS,
+  "The anchor lead sits inside the window the clock tolerates",
+);
+assert.ok(MAX_LEAD_SECONDS <= 0.15, "The lookahead is bounded");
 assert.equal(clock.sync(612, 2.5), true, "A stalled poll re-anchors instead of bursting stale notes");
 assert.equal(clock.timeFor(612), 2.5 + SCHEDULE_LEAD_SECONDS);
+
+// An engine overrun loses engine time, so the engine tick falls behind the
+// audio clock. 100 ms behind, the newest tick would map 40 ms into the past
+// and every note would start late at poll time; the clock re-anchors instead.
+const behind = createTickClock();
+behind.sync(600, 2);
+assert.equal(behind.sync(606, 2.2), true, "An engine 100 ms behind re-anchors at once");
+assert.equal(behind.timeFor(606), 2.2 + SCHEDULE_LEAD_SECONDS, "The newest tick gets the full lead back");
+assert.equal(behind.sync(612, 2.3 + 0.03), false, "30 ms of lag inside the window keeps the anchor");
+// An audio clock that fell behind leaves every later note scheduled too far
+// ahead; the clock re-anchors instead of keeping that delay.
+const ahead = createTickClock();
+ahead.sync(600, 2);
+assert.equal(ahead.sync(612, 2.1), true, "Notes mapping 160 ms ahead re-anchor");
+assert.equal(ahead.timeFor(612), 2.1 + SCHEDULE_LEAD_SECONDS);
+
+/* ---------- Scheduling a synthetic engine stream ---------- */
+
+/** Drives planBatch with a 60 Hz engine and rAF-paced polls, both on one wall
+ * clock. `stalls` are engine overruns: the engine resets its frame deadline
+ * after one, so the stalled time is never caught up. `audioStalls` freeze
+ * the audio clock, which then resumes behind wall time. Polls jitter by up to
+ * 3 ms, arrive after 0.5-3 ms of IPC, and read an audio clock quantized to
+ * 128-frame render quanta. Every engine tick emits one note. */
+function simulateStream({ seconds = 20, stalls = [], audioStalls = [], seed = 7 } = {}) {
+  let state = seed;
+  const random = () => {
+    state = (state * 1103515245 + 12345) % 2 ** 31;
+    return state / 2 ** 31;
+  };
+  const engineTimes = [];
+  const pendingStalls = [...stalls].sort((a, b) => a.at - b.at);
+  for (let wall = 0; wall < seconds + 1; wall += 1 / 60) {
+    while (pendingStalls.length && pendingStalls[0].at <= wall) wall += pendingStalls.shift().stall;
+    engineTimes.push(wall);
+  }
+  const quantum = 128 / 48000;
+  const audioTime = (wall) => {
+    let lost = 0;
+    for (const { at, stall } of audioStalls) lost += Math.min(stall, Math.max(0, wall - at));
+    return Math.floor((10 + wall - lost) / quantum) * quantum;
+  };
+  const tickClock = createTickClock();
+  const polls = [];
+  let drained = -1;
+  for (let frame = 1; frame / 60 < seconds; frame += 1) {
+    const drainAt = frame / 60 + (random() - 0.5) * 0.006;
+    let tick = drained;
+    while (tick + 1 < engineTimes.length && engineTimes[tick + 1] <= drainAt) tick += 1;
+    if (tick < 0) continue;
+    const notes = [];
+    for (let at = drained + 1; at <= tick; at += 1) {
+      notes.push(note({ tick: at, durationTicks: 1, volume: 8 }));
+    }
+    drained = tick;
+    const now = audioTime(drainAt + 0.0005 + random() * 0.0025);
+    const offset = tickClock.anchored ? tickClock.timeFor(0) : null;
+    const plan = planBatch(tickClock, { tick, notes }, now);
+    polls.push({
+      wall: drainAt,
+      now,
+      tick,
+      notes,
+      plan,
+      lead: tickClock.timeFor(tick) - now,
+      reanchored: offset === null || Math.abs(tickClock.timeFor(0) - offset) > 1e-9,
+    });
+  }
+  return polls;
+}
+
+function assertOnTime(polls, label) {
+  for (const poll of polls) {
+    assert.ok(
+      poll.lead >= MIN_LEAD_SECONDS - 1e-9 && poll.lead <= MAX_LEAD_SECONDS + 1e-9,
+      `${label}: the newest tick maps ${poll.lead.toFixed(3)} s ahead at audio time ${poll.now.toFixed(3)}`,
+    );
+    // A poll after an ordinary frame carries a tick or two; none may start
+    // late at poll time or be dropped.
+    if (poll.notes.length > 2) continue;
+    for (const step of poll.plan) {
+      assert.ok(step.sounds && step.at > poll.now, `${label}: tick ${step.note.tick} started late`);
+    }
+  }
+}
+
+const steady = simulateStream();
+assert.equal(steady.filter((poll) => poll.reanchored).length, 1, "Polling jitter alone never re-anchors");
+assertOnTime(steady, "steady");
+const starts = steady.flatMap((poll) => poll.plan.map((step) => step.at));
+assert.equal(starts.length, steady.at(-1).tick + 1, "Every engine tick's note is scheduled");
+assert.ok(
+  starts.every((at, index) => index === 0 || Math.abs(at - starts[index - 1] - 1 / 60) < 1e-9),
+  "Note starts follow engine ticks exactly, not poll timing",
+);
+
+// Hitches: two long overruns, then a run of small ones that add up to 100 ms.
+const stalls = [
+  { at: 3, stall: 0.1 },
+  { at: 7, stall: 0.07 },
+  ...Array.from({ length: 20 }, (_, index) => ({ at: 11 + index * 0.2, stall: 0.005 })),
+];
+/** Re-anchors after the first happen only while, or just after, the clock
+ * was disturbed; never from jitter alone. */
+function assertReanchorsFollow(polls, events, label) {
+  const reanchors = polls.filter((poll) => poll.reanchored).slice(1);
+  for (const poll of reanchors) {
+    assert.ok(
+      events.some(({ at, stall }) => poll.wall >= at && poll.wall < at + stall + 0.25),
+      `${label}: re-anchored at ${poll.wall.toFixed(3)} s with nothing disturbing the clock`,
+    );
+  }
+  return reanchors.length;
+}
+
+const hitched = simulateStream({ stalls });
+assertOnTime(hitched, "engine overruns");
+const overrunReanchors = assertReanchorsFollow(hitched, stalls, "engine overruns");
+assert.ok(overrunReanchors >= 3, "Long overruns and accumulated small ones each re-anchor");
+assert.ok(overrunReanchors < stalls.length / 2, "Small overruns re-anchor only once enough lag builds up");
+const lastBeat = hitched.slice(-60).flatMap((poll) => poll.plan.map((step) => step.at));
+assert.ok(
+  lastBeat.every((at, index) => index === 0 || Math.abs(at - lastBeat[index - 1] - 1 / 60) < 1e-9),
+  "After overruns the rhythm follows engine ticks again",
+);
+
+const audioStalls = [{ at: 5, stall: 0.1 }, { at: 9, stall: 0.2 }];
+const audioBehind = simulateStream({ audioStalls });
+assertOnTime(audioBehind, "audio clock stalls");
+assert.ok(
+  assertReanchorsFollow(audioBehind, audioStalls, "audio clock stalls") >= audioStalls.length,
+  "An audio clock that falls behind re-anchors the lookahead back down",
+);
+
+// After a long poll gap the backlog is old: notes past the lateness bound do
+// not start, but each still ends its voice at once.
+const backlog = createTickClock();
+backlog.sync(100, 5);
+const gap = planBatch(
+  backlog,
+  {
+    tick: 130,
+    notes: [
+      note({ tick: 110 }),
+      note({ voice: "wave", tick: 112, volume: 0, durationTicks: 0 }),
+      note({ tick: 129 }),
+      note({ voice: "mystery", tick: 129 }),
+    ],
+  },
+  5.5,
+);
+assert.equal(gap.length, 3, "Unknown voices are skipped");
+assert.deepEqual(
+  gap.map(({ note: { voice, tick }, at, sounds }) => [voice, tick, Number(at.toFixed(4)), sounds]),
+  [
+    ["pulse1", 110, 5.5, false],
+    ["wave", 112, 5.5, false],
+    ["pulse1", 129, Number((5.5 + SCHEDULE_LEAD_SECONDS - 1 / 60).toFixed(4)), true],
+  ],
+  "Late notes and cuts end their voice now; notes in time keep their tick",
+);
+assert.ok(MAX_LATENESS_SECONDS >= 0.05, "Only clearly stale notes are skipped");
 
 /* ---------- Volume wheel detents ---------- */
 
@@ -197,6 +374,77 @@ assert.equal(sources().length, 4, "A cut never starts a new source");
 // Monophony: a new note on a sounding voice replaces it.
 speaker.play({ tick: 102, notes: [note({ voice: "wave", tick: 102 })] });
 assert.ok(wave.stopAt <= sources().at(-1).startAt + 0.01, "A voice sounds one note at a time");
+
+// A cut that arrives too late to land on its tick still ends the voice now,
+// instead of leaving a long loop note ringing to its natural end.
+const lateSpeaker = createSpeaker({ AudioContextClass: FakeAudioContext, storage: memoryStorage() });
+lateSpeaker.unlock();
+const lateAudio = FakeAudioContext.last;
+const lateSources = () => lateAudio.nodes.filter((node) => node.kind === "oscillator" || node.kind === "noise");
+lateAudio.currentTime = 20;
+lateSpeaker.play({
+  tick: 100,
+  notes: [note({ voice: "wave", tick: 100, durationTicks: 90 }), note({ tick: 100, durationTicks: 90 })],
+});
+const [longWave, longPulse] = lateSources();
+assert.ok(longWave.stopAt > 21.5, "The loop note would ring for a second and a half");
+lateAudio.currentTime = 20.36;
+assert.equal(
+  lateSpeaker.play({
+    tick: 118,
+    notes: [
+      note({ voice: "wave", tick: 101, volume: 0, durationTicks: 0 }),
+      note({ tick: 102, durationTicks: 90 }),
+    ],
+  }),
+  0,
+  "Stale notes do not start",
+);
+assert.equal(lateSources().length, 2, "A late note never starts a source");
+assert.ok(Math.abs(longWave.stopAt - 20.36) < 0.01, "A late cut silences its voice immediately");
+assert.ok(Math.abs(longPulse.stopAt - 20.36) < 0.01, "A late replacement ends the note it replaces");
+assert.ok(
+  longWave.output.output.gain.events.some(([kind, time]) => kind === "cancel" && time === 20.36),
+  "The silenced voice's gate is released now",
+);
+
+// Noise brightness: every authored step sounds distinct, even past the
+// playback-rate ceiling (the archival tick is brighter than the hat).
+const NOISE_SCALE = [48, 72, 84, 96, 100];
+for (const pitch of NOISE_SCALE.filter((value) => value <= 96)) {
+  assert.deepEqual(
+    noiseColor(pitch, 48000),
+    { rate: 2 ** ((pitch - 84) / 12), highpass: 0 },
+    `Noise ${pitch} keeps its register rate and no filter`,
+  );
+}
+for (let index = 1; index < NOISE_SCALE.length; index += 1) {
+  const darker = noiseColor(NOISE_SCALE[index - 1], 48000);
+  const brighter = noiseColor(NOISE_SCALE[index], 48000);
+  assert.ok(
+    brighter.rate > darker.rate || brighter.highpass > darker.highpass,
+    `Noise ${NOISE_SCALE[index]} must sound brighter than ${NOISE_SCALE[index - 1]}`,
+  );
+}
+const tickColor = noiseColor(100, 48000);
+assert.equal(tickColor.rate, 2, "The register never runs past one step per sample");
+assert.ok(tickColor.highpass > 2000 && tickColor.highpass < 12000, "The tick is thinned to a dry, bright click");
+assert.ok(noiseColor(160, 48000).highpass < 24000, "The highpass stays below Nyquist");
+lateAudio.currentTime = 30;
+lateSpeaker.play({
+  tick: 300,
+  notes: [note({ voice: "noise", tick: 300, pitch: 96 }), note({ voice: "noise", tick: 306, pitch: 100 })],
+});
+const [hatNoise, tickNoise] = lateSources().slice(-2);
+assert.equal(hatNoise.output.kind, "gain", "The hat plays the register unfiltered");
+assert.equal(tickNoise.output.kind, "filter", "The tick passes through a filter");
+assert.equal(tickNoise.output.type, "highpass");
+assert.equal(tickNoise.output.frequency.events[0][1], noiseColor(100, lateAudio.sampleRate).highpass);
+assert.deepEqual(
+  [hatNoise, tickNoise].map((source) => source.playbackRate.events[0][1]),
+  [2, 2],
+  "Both run at the ceiling rate; only the filter tells them apart",
+);
 
 /* ---------- Mute and persistence ---------- */
 
