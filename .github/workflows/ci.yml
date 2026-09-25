@@ -48,3 +48,36 @@ jobs:
 
       - name: Build Tauri application
         run: npm run tauri -- build --no-bundle
+
+  # Tool discovery, process-tree shutdown, and shell-path handling have
+  # Windows- and macOS-only code that the Linux job never compiles. Lint and
+  # test it on each host. tauri-build embeds ../src directly, so neither Node
+  # nor a frontend build is needed, and the runner's preinstalled Git (Git for
+  # Windows on Windows) supplies git and the quest shell.
+  verify-native:
+    name: Rust on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Git Bash on Windows, so `-- -D warnings` reaches Cargo unchanged.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Lint Rust
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml
