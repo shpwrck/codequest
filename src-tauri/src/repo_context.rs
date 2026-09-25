@@ -561,30 +561,133 @@ fn strip_html_comments(line: &str, in_comment: &mut bool) -> String {
     }
 }
 
+/// Byte offset of the first JSX comment opening (`{/*`, or `{ /*`) in
+/// `text` outside a code span, and the offset just past its `/*`.
+fn jsx_comment_opening(text: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find(['`', '{']) {
+        let at = from + offset;
+        let tail = &text[at..];
+        // Only a brace opens one: a code span that starts with `/*` is code.
+        if let Some(body) = tail
+            .strip_prefix('{')
+            .and_then(|rest| rest.trim_start().strip_prefix("/*"))
+        {
+            return Some((at, text.len() - body.len()));
+        }
+        if tail.starts_with('`') {
+            let run = tail.len() - tail.trim_start_matches('`').len();
+            from = at + run + closing_backticks(&tail[run..], run).map_or(0, |end| end + run);
+        } else {
+            from = at + 1;
+        }
+    }
+    None
+}
+
+/// `line` without its JSX comments (`{/* ... */}`), the only comments MDX
+/// accepts, which it never displays. `in_comment` carries a comment that is
+/// still open across lines.
+fn strip_jsx_comments(line: &str, in_comment: &mut bool) -> String {
+    let mut visible = String::new();
+    let mut rest = line;
+    loop {
+        if *in_comment {
+            match rest.find("*/") {
+                Some(end) => {
+                    let after = rest[end + 2..].trim_start();
+                    *in_comment = false;
+                    rest = after.strip_prefix('}').unwrap_or(after);
+                }
+                None => return visible,
+            }
+        }
+        match jsx_comment_opening(rest) {
+            Some((start, body)) => {
+                visible.push_str(&rest[..start]);
+                rest = &rest[body..];
+                *in_comment = true;
+            }
+            None => {
+                visible.push_str(rest);
+                return visible;
+            }
+        }
+    }
+}
+
+/// What the rest of a link reference definition, which may continue onto
+/// the lines after its `[label]:`, is still expected to hold.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingDefinition {
+    /// `[label]:` ended its line, so the next line is the destination.
+    Destination,
+    /// The destination ended its line, so the next line may be the title.
+    Title,
+    /// A title opened but has not closed; it closes with this character.
+    TitleEnd(char),
+}
+
+impl PendingDefinition {
+    /// Whether `trimmed`, the line after a definition left `self` pending,
+    /// belongs to that definition, and what it still expects after it.
+    fn continues(self, trimmed: &str) -> Option<Option<Self>> {
+        if trimmed.is_empty() {
+            return None;
+        }
+        match self {
+            // Hidden even when the rest does not parse: markup the reader
+            // never sees is the safer reading of a malformed definition.
+            Self::Destination => Some(after_destination(trimmed).unwrap_or(None)),
+            Self::Title => definition_title(trimmed),
+            Self::TitleEnd(close) => Some((!trimmed.ends_with(close)).then_some(self)),
+        }
+    }
+}
+
 /// A link reference definition (`[label]: destination "title"`), which
-/// Markdown resolves but never displays. Footnotes (`[^1]: ...`) and prose
-/// that only looks similar (`[Note]: read this first`) display.
-fn is_link_reference_definition(trimmed: &str) -> bool {
-    trimmed
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once("]:"))
-        .is_some_and(|(label, definition)| {
-            let definition = definition.trim_start();
-            let title = definition
-                .split_once(char::is_whitespace)
-                .map_or("", |(_, title)| title.trim());
-            !label.trim().is_empty()
-                && !label.starts_with('^')
-                && !label.contains(['[', ']'])
-                && !definition.is_empty()
-                && (title.is_empty() || title.starts_with(['"', '\'', '(']))
-        })
+/// Markdown resolves but never displays, with what it still expects on the
+/// lines after it. Footnotes (`[^1]: ...`) and prose that only looks similar
+/// (`[Note]: read this first`) display.
+fn link_reference_definition(trimmed: &str) -> Option<Option<PendingDefinition>> {
+    let (label, definition) = trimmed.strip_prefix('[')?.split_once("]:")?;
+    if label.trim().is_empty() || label.starts_with('^') || label.contains(['[', ']']) {
+        return None;
+    }
+    let definition = definition.trim();
+    if definition.is_empty() {
+        return Some(Some(PendingDefinition::Destination));
+    }
+    after_destination(definition)
+}
+
+/// A definition's `destination "title"`, with what it still expects.
+fn after_destination(definition: &str) -> Option<Option<PendingDefinition>> {
+    match definition.split_once(char::is_whitespace) {
+        Some((_, title)) if !title.trim().is_empty() => definition_title(title.trim()),
+        _ => Some(Some(PendingDefinition::Title)),
+    }
+}
+
+/// A definition's title (`"..."`, `'...'`, or `(...)`), with whether it is
+/// still open, or `None` when `title` is not one.
+fn definition_title(title: &str) -> Option<Option<PendingDefinition>> {
+    let close = match title.chars().next()? {
+        '"' => '"',
+        '\'' => '\'',
+        '(' => ')',
+        _ => return None,
+    };
+    let closed = title.len() >= 2 && title.ends_with(close);
+    Some((!closed).then_some(PendingDefinition::TitleEnd(close)))
 }
 
 /// The markup a prose document is written in, which decides what it hides.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Markup {
     Markdown,
+    /// Markdown with JSX, whose comments are `{/* ... */}`.
+    Mdx,
     ReStructuredText,
     AsciiDoc,
 }
@@ -592,11 +695,29 @@ enum Markup {
 impl Markup {
     fn for_path(path: &str) -> Self {
         match extension(path).as_str() {
+            "mdx" => Self::Mdx,
             "rst" => Self::ReStructuredText,
             "adoc" => Self::AsciiDoc,
             _ => Self::Markdown,
         }
     }
+
+    /// Markdown or a dialect of it, with its HTML comments, link
+    /// reference definitions, and code fences.
+    fn is_markdown_family(self) -> bool {
+        matches!(self, Self::Markdown | Self::Mdx)
+    }
+}
+
+/// Where an AsciiDoc `[comment]` style is in hiding the block it styles.
+#[derive(Debug, Eq, PartialEq)]
+enum AsciiDocComment {
+    /// `[comment]` was read; the next block is the comment.
+    Pending,
+    /// A commented paragraph, hidden up to the next blank line.
+    Paragraph,
+    /// A commented delimited block, hidden up to this closing delimiter.
+    Block(String),
 }
 
 /// Tracks the comments of reStructuredText and AsciiDoc, which, like HTML
@@ -608,6 +729,8 @@ struct HiddenMarkup {
     explicit_markup: Option<usize>,
     /// Inside an AsciiDoc `////` comment block.
     in_comment_block: bool,
+    /// The AsciiDoc block a `[comment]` style is hiding.
+    comment_style: Option<AsciiDocComment>,
 }
 
 impl HiddenMarkup {
@@ -615,7 +738,7 @@ impl HiddenMarkup {
     fn hides(&mut self, raw: &str, markup: Markup) -> bool {
         let trimmed = raw.trim();
         match markup {
-            Markup::Markdown => false,
+            Markup::Markdown | Markup::Mdx => false,
             Markup::ReStructuredText => {
                 let indent = indent_of(raw);
                 if let Some(markup_indent) = self.explicit_markup {
@@ -630,7 +753,7 @@ impl HiddenMarkup {
                     || trimmed == "__"
                     || trimmed.starts_with("__ ")
                     || trimmed.strip_prefix(".. ").is_some_and(|body| {
-                        !body.contains("::") && !body.trim_start().starts_with('[')
+                        !is_rst_directive(body) && !body.trim_start().starts_with('[')
                     });
                 if explicit {
                     self.explicit_markup = Some(indent);
@@ -638,6 +761,9 @@ impl HiddenMarkup {
                 explicit
             }
             Markup::AsciiDoc => {
+                if let Some(hidden) = self.hides_comment_style(trimmed) {
+                    return hidden;
+                }
                 if trimmed.len() >= 4 && trimmed.bytes().all(|byte| byte == b'/') {
                     self.in_comment_block = !self.in_comment_block;
                     return true;
@@ -648,6 +774,75 @@ impl HiddenMarkup {
             }
         }
     }
+
+    /// Whether the `[comment]` style hides `trimmed`, or `None` when no
+    /// such style applies to it.
+    fn hides_comment_style(&mut self, trimmed: &str) -> Option<bool> {
+        if !self.in_comment_block && is_asciidoc_comment_style(trimmed) {
+            self.comment_style = Some(AsciiDocComment::Pending);
+            return Some(true);
+        }
+        match self.comment_style.as_ref()? {
+            AsciiDocComment::Pending if trimmed.is_empty() => Some(false),
+            AsciiDocComment::Pending => {
+                self.comment_style = Some(if is_asciidoc_delimiter(trimmed) {
+                    AsciiDocComment::Block(trimmed.to_string())
+                } else {
+                    AsciiDocComment::Paragraph
+                });
+                Some(true)
+            }
+            AsciiDocComment::Paragraph if trimmed.is_empty() => {
+                self.comment_style = None;
+                Some(false)
+            }
+            AsciiDocComment::Paragraph => Some(true),
+            AsciiDocComment::Block(delimiter) => {
+                if trimmed == delimiter {
+                    self.comment_style = None;
+                }
+                Some(true)
+            }
+        }
+    }
+}
+
+/// Whether a reStructuredText explicit markup `body` (after `.. `) is a
+/// directive (`note:: text`) or a substitution definition
+/// (`|name| image:: logo.png`), both of which display. Any other body is a
+/// comment, even one that mentions `Foo::bar`.
+fn is_rst_directive(body: &str) -> bool {
+    let body = body.trim_start();
+    let body = match body.strip_prefix('|').and_then(|rest| rest.split_once('|')) {
+        Some((name, rest)) if !name.trim().is_empty() => rest.trim_start(),
+        _ => body,
+    };
+    body.split_once("::").is_some_and(|(name, rest)| {
+        name.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | ':' | '.' | '-'))
+            && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+    })
+}
+
+/// An AsciiDoc block attribute line giving the `comment` style
+/// (`[comment]`, `[comment,role]`), which hides the block it styles.
+fn is_asciidoc_comment_style(trimmed: &str) -> bool {
+    trimmed
+        .strip_prefix("[comment")
+        .and_then(|rest| rest.strip_suffix(']'))
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with([',', '.', '#', '%']))
+}
+
+/// An AsciiDoc delimited block's delimiter line: `--` (an open block) or a
+/// run of four or more of one delimiter character.
+fn is_asciidoc_delimiter(trimmed: &str) -> bool {
+    trimmed == "--"
+        || (trimmed.len() >= 4
+            && trimmed.chars().next().is_some_and(|first| {
+                "-=*._+/".contains(first) && trimmed.chars().all(|c| c == first)
+            }))
 }
 
 /// An AsciiDoc attribute entry (`:name: value`), which configures the
@@ -683,6 +878,8 @@ fn markdown_prose(text: &str, markup: Markup, redactor: &Redactor) -> Vec<String
     let mut lines = Vec::new();
     let mut in_fence = false;
     let mut in_comment = false;
+    let mut in_jsx_comment = false;
+    let mut pending_definition: Option<PendingDefinition> = None;
     let mut hidden = HiddenMarkup::default();
     let mut front_matter = front_matter_delimiter(text);
     let mut skipped_section: Option<usize> = None;
@@ -694,11 +891,16 @@ fn markdown_prose(text: &str, markup: Markup, redactor: &Redactor) -> Vec<String
             continue;
         }
         let visible;
-        let raw = if in_fence || markup != Markup::Markdown {
+        let raw = if in_fence || !markup.is_markdown_family() {
             raw
         } else {
-            let was_in_comment = in_comment;
-            visible = strip_html_comments(raw, &mut in_comment);
+            let was_in_comment = in_comment || in_jsx_comment;
+            let html = strip_html_comments(raw, &mut in_comment);
+            visible = if markup == Markup::Mdx {
+                strip_jsx_comments(&html, &mut in_jsx_comment)
+            } else {
+                html
+            };
             if visible.trim().is_empty() && (was_in_comment || !raw.trim().is_empty()) {
                 continue;
             }
@@ -714,6 +916,17 @@ fn markdown_prose(text: &str, markup: Markup, redactor: &Redactor) -> Vec<String
         }
         if in_fence {
             continue;
+        }
+        if markup.is_markdown_family() {
+            // A definition's destination and title may continue onto the
+            // lines after its `[label]:`, and are just as hidden there.
+            let continued = pending_definition
+                .take()
+                .and_then(|pending| pending.continues(trimmed));
+            if let Some(still_pending) = continued.or_else(|| link_reference_definition(trimmed)) {
+                pending_definition = still_pending;
+                continue;
+            }
         }
         if let Some((level, title)) = heading_level(trimmed) {
             if skipped_section.is_some_and(|skipped| level > skipped) {
@@ -733,7 +946,6 @@ fn markdown_prose(text: &str, markup: Markup, redactor: &Redactor) -> Vec<String
             || trimmed.starts_with("[![")
             || trimmed.starts_with("![")
             || is_table_rule(trimmed)
-            || (markup == Markup::Markdown && is_link_reference_definition(trimmed))
         {
             continue;
         }
@@ -1942,7 +2154,7 @@ mod tests {
         write(
             &repo,
             "README.md",
-            "# App\n\nDoes things.\n\n<!--\nstaging admin password: hunter2 (db-staging.corp.internal)\n```\n-->\n\nVisible <!-- inline secret --> prose, then `<!--` in code stays.\nText <!-- opens a secret\nthat spans lines --> and resumes.\n<!-- one-line secret -->\n<!---->Empty comments close at once.\n<!-->Degenerate comments close too.\n\n[internal]: https://wiki.corp.internal/runbook \"Reset keys with hunter2\"\n[^1]: Footnotes are displayed.\n[Note]: read this first.\n\nMore prose.\n",
+            "# App\n\nDoes things.\n\n<!--\nstaging admin password: hunter2 (db-staging.corp.internal)\n```\n-->\n\nVisible <!-- inline secret --> prose, then `<!--` in code stays.\nText <!-- opens a secret\nthat spans lines --> and resumes.\n<!-- one-line secret -->\n<!---->Empty comments close at once.\n<!-->Degenerate comments close too.\n\n[internal]: https://wiki.corp.internal/runbook \"Reset keys with hunter2\"\n[^1]: Footnotes are displayed.\n[Note]: read this first.\n[internal2]: https://wiki.corp.internal/a\n  \"Reset keys with hunter3\"\n[ops]:\n  https://wiki.corp.internal/ops \"Root pw hunter4\"\n[multi]: https://wiki.corp.internal/m 'A title that\nspans pw hunter5'\n\nMore prose.\n",
         );
         write(
             &repo,
@@ -1974,6 +2186,11 @@ mod tests {
             "spans lines",
             "internal",
             "front matter",
+            "hunter3",
+            "hunter4",
+            "hunter5",
+            "ops:",
+            "[LINK]",
         ] {
             assert!(!brief.contains(hidden), "{hidden} leaked into:\n{brief}");
         }
@@ -1983,7 +2200,7 @@ mod tests {
     #[test]
     fn restructured_text_and_asciidoc_comments_stay_hidden() {
         let redactor = Redactor::default();
-        let rst = "Title\n=====\n\nShown first.\n\n.. a comment: hunter2\n   still the comment\n\n   and its second paragraph\n\n.. _wiki: https://wiki.corp.internal\n__ https://anonymous.corp.internal\n..\n   an empty-marker comment block\n\n.. note:: Directives display.\n\n   Their bodies display too.\n\n.. [1] Footnotes display.\n\nShown last.\n";
+        let rst = "Title\n=====\n\nShown first.\n\n.. a comment: hunter2\n   still the comment\n\n   and its second paragraph\n\n.. _wiki: https://wiki.corp.internal\n__ https://anonymous.corp.internal\n..\n   an empty-marker comment block\n\n.. internal: rotate with Vault::rotate, pw hunter3\n   more private notes\n\n.. note:: Directives display.\n\n   Their bodies display too.\n\n.. [1] Footnotes display.\n\nShown last.\n";
         let prose = markdown_prose(rst, Markup::ReStructuredText, &redactor).join("\n");
         for shown in [
             "Shown first.",
@@ -1994,11 +2211,25 @@ mod tests {
         ] {
             assert!(prose.contains(shown), "{shown} missing from:\n{prose}");
         }
-        for hidden in ["hunter2", "comment", "paragraph", "corp.internal", "wiki"] {
+        for hidden in [
+            "hunter2",
+            "comment",
+            "paragraph",
+            "corp.internal",
+            "wiki",
+            "hunter3",
+            "Vault",
+            "private notes",
+        ] {
             assert!(!prose.contains(hidden), "{hidden} leaked into:\n{prose}");
         }
+        assert!(is_rst_directive("code-block:: rust"));
+        assert!(is_rst_directive("py:function:: spam()"));
+        assert!(is_rst_directive("|logo| image:: logo.png"));
+        assert!(!is_rst_directive("see Foo::bar for details"));
+        assert!(!is_rst_directive("_target::"));
 
-        let adoc = "= Title\n:author: Pat Secret\n:toc:\n\nShown first.\n// a hidden hunter2 note\n////\nA hidden block.\n////\n/// Three slashes display.\nShown last: a note.\n";
+        let adoc = "= Title\n:author: Pat Secret\n:toc:\n\nShown first.\n// a hidden hunter2 note\n////\nA hidden block.\n////\n/// Three slashes display.\n\n[comment]\n--\nstaging password hunter3\n\nstill in the open block\n--\n\n[comment]\nprivate paragraph note\nand its second line\n\n[comment,role]\n....\nliteral private block\n....\n\nShown last: a note.\n";
         let prose = markdown_prose(adoc, Markup::AsciiDoc, &redactor).join("\n");
         for shown in [
             "= Title",
@@ -2008,9 +2239,45 @@ mod tests {
         ] {
             assert!(prose.contains(shown), "{shown} missing from:\n{prose}");
         }
-        for hidden in ["Secret", ":toc:", "hunter2", "hidden block"] {
+        for hidden in [
+            "Secret",
+            ":toc:",
+            "hunter2",
+            "hidden block",
+            "hunter3",
+            "open block",
+            "comment",
+            "private",
+            "second line",
+            "--",
+            "....",
+        ] {
             assert!(!prose.contains(hidden), "{hidden} leaked into:\n{prose}");
         }
+
+        let mdx = "# Architecture\n\n{/* TODO: staging admin password hunter2 */}\n{/*\ninternal escalation: call db-staging.corp.internal\n*/}\nThe engine owns every rule. { /* inline secret */ } Still shown.\nA `{/*` in code stays.\nA `/* block` in code stays, and `/*` alone too.\n<!-- MDX 1 comment secret -->\nShown last.\n";
+        let prose = markdown_prose(mdx, Markup::Mdx, &redactor).join("\n");
+        for shown in [
+            "# Architecture",
+            "The engine owns every rule.",
+            "Still shown.",
+            "A `{/*` in code stays.",
+            "A `/* block` in code stays, and `/*` alone too.",
+            "Shown last.",
+        ] {
+            assert!(prose.contains(shown), "{shown} missing from:\n{prose}");
+        }
+        for hidden in [
+            "hunter2",
+            "staging",
+            "escalation",
+            "corp.internal",
+            "secret",
+            "*/",
+        ] {
+            assert!(!prose.contains(hidden), "{hidden} leaked into:\n{prose}");
+        }
+        assert_eq!(Markup::for_path("docs/architecture.mdx"), Markup::Mdx);
         assert_eq!(Markup::for_path("docs/guide.rst"), Markup::ReStructuredText);
         assert_eq!(Markup::for_path("README.adoc"), Markup::AsciiDoc);
         assert_eq!(Markup::for_path("README"), Markup::Markdown);

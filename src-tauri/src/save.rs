@@ -42,8 +42,9 @@ impl Default for SaveDocument {
     }
 }
 
-/// Reads the save at `path`. An empty file (a create that never got its first
-/// write) is a fresh save. Anything else that does not parse is reported as
+/// Reads the save at `path`. An empty file (left by an earlier build's create
+/// that never got its first write) is a fresh save. Anything else that does
+/// not parse is reported as
 /// corrupt rather than read as empty: every writer starts from the document
 /// read here, so reading a damaged save as empty would let the next update
 /// replace all of it with a single key.
@@ -64,41 +65,45 @@ fn read_document(path: &Path) -> Result<SaveDocument, String> {
 fn read_or_create_document(path: &Path) -> Result<SaveDocument, String> {
     match std::fs::metadata(path) {
         Ok(_) => read_document(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let document = SaveDocument::default();
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map_err(|_| "COULD NOT CREATE CARTRIDGE SAVE".to_string())?;
-            serde_json::to_writer_pretty(&mut file, &document)
-                .map_err(|_| "COULD NOT CREATE CARTRIDGE SAVE".to_string())?;
-            file.write_all(b"\n")
-                .map_err(|_| "COULD NOT CREATE CARTRIDGE SAVE".to_string())?;
-            file.sync_all()
-                .map_err(|_| "COULD NOT CREATE CARTRIDGE SAVE".to_string())?;
-            Ok(document)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_document(path),
         Err(_) => Err("COULD NOT READ CARTRIDGE SAVE".to_string()),
     }
 }
 
+/// Creates a fresh save at `path` the way [`persist_document`] writes one:
+/// complete and synced in a temporary file first, then moved into place, so
+/// an interrupted create leaves no save at all rather than a partial one
+/// that every later read refuses as corrupt. A save that appeared at `path`
+/// meanwhile is kept and read, never replaced.
+fn create_document(path: &Path) -> Result<SaveDocument, String> {
+    let document = SaveDocument::default();
+    let staged = staged_document(path, &document)
+        .map_err(|_| "COULD NOT CREATE CARTRIDGE SAVE".to_string())?;
+    match staged.persist_noclobber(path) {
+        Ok(_) => Ok(document),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            read_document(path)
+        }
+        Err(_) => Err("COULD NOT CREATE CARTRIDGE SAVE".to_string()),
+    }
+}
+
+/// `document`, complete and synced in a temporary file beside `path`.
+fn staged_document(
+    path: &Path,
+    document: &SaveDocument,
+) -> Result<tempfile::NamedTempFile, String> {
+    let failed = || "COULD NOT WRITE CARTRIDGE SAVE".to_string();
+    let parent = path.parent().ok_or_else(failed)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|_| failed())?;
+    serde_json::to_writer_pretty(&mut temporary, document).map_err(|_| failed())?;
+    temporary.write_all(b"\n").map_err(|_| failed())?;
+    temporary.as_file().sync_all().map_err(|_| failed())?;
+    Ok(temporary)
+}
+
 fn persist_document(path: &Path, document: &SaveDocument) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "COULD NOT WRITE CARTRIDGE SAVE".to_string())?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|_| "COULD NOT WRITE CARTRIDGE SAVE".to_string())?;
-    serde_json::to_writer_pretty(&mut temporary, document)
-        .map_err(|_| "COULD NOT WRITE CARTRIDGE SAVE".to_string())?;
-    temporary
-        .write_all(b"\n")
-        .map_err(|_| "COULD NOT WRITE CARTRIDGE SAVE".to_string())?;
-    temporary
-        .as_file()
-        .sync_all()
-        .map_err(|_| "COULD NOT WRITE CARTRIDGE SAVE".to_string())?;
-    temporary
+    staged_document(path, document)?
         .persist(path)
         .map_err(|_| "COULD NOT WRITE CARTRIDGE SAVE".to_string())?;
     Ok(())
@@ -388,6 +393,38 @@ mod tests {
 
         let reloaded = SaveFile::open_or_create(&cartridge_path).unwrap();
         assert_eq!(reloaded.get::<u32>("quiz.progress"), Some(1));
+        std::fs::remove_file(save_path).unwrap();
+    }
+
+    #[test]
+    fn a_create_is_whole_and_never_replaces_a_save_that_appeared() {
+        let cartridge_path = temporary_cartridge_path();
+        let save_path = path_for(&cartridge_path);
+
+        // A save that appeared after the missing-file check is read as it
+        // is, neither replaced by a fresh one nor refused.
+        let existing = "{\"schema_version\":1,\"data\":{\"quiz.progress\":3}}";
+        std::fs::write(&save_path, existing).unwrap();
+        let document = create_document(&save_path).unwrap();
+        assert_eq!(
+            document.data.get("quiz.progress"),
+            Some(&serde_json::json!(3))
+        );
+        assert_eq!(std::fs::read_to_string(&save_path).unwrap(), existing);
+        std::fs::remove_file(&save_path).unwrap();
+
+        // A fresh create reaches the save's path only complete.
+        let created = create_document(&save_path).unwrap();
+        assert_eq!(read_document(&save_path).unwrap().data, created.data);
+        std::fs::remove_file(&save_path).unwrap();
+
+        // A partial first document is refused like any damaged save, which
+        // is why the create above never writes into the save's path.
+        std::fs::write(&save_path, "{\n  \"schema_version\": 1,").unwrap();
+        assert_eq!(
+            SaveFile::open_or_create(&cartridge_path).unwrap_err(),
+            "CARTRIDGE SAVE IS CORRUPT"
+        );
         std::fs::remove_file(save_path).unwrap();
     }
 
