@@ -214,6 +214,15 @@ fn concept_key(concept: Concept) -> &'static str {
     }
 }
 
+/// Every lens's save spelling, as the provider schema lists them.
+fn lens_names() -> String {
+    Concept::ALL
+        .iter()
+        .map(|concept| concept_key(*concept))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 /// Extensions that make a dotted word a file name rather than prose.
 const FILE_EXTENSIONS: [&str; 60] = [
     "RS", "JS", "MJS", "CJS", "JSX", "TS", "TSX", "MTS", "CTS", "PY", "PYI", "GO", "RB", "JAVA",
@@ -584,6 +593,242 @@ pub(crate) fn accepted_question_batch(
     (!valid.is_empty()).then_some(valid)
 }
 
+/// A text field of a question, named by its JSON path in the provider schema
+/// (choices counted from 0), so a repair prompt can point at it exactly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Field {
+    Question,
+    Choice(usize),
+    Why(usize),
+}
+
+impl std::fmt::Display for Field {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Question => write!(formatter, "\"q\""),
+            Self::Choice(index) => write!(formatter, "choices[{index}].text"),
+            Self::Why(index) => write!(formatter, "choices[{index}].why"),
+        }
+    }
+}
+
+/// One specific way a generated question fails
+/// [`generated_question_is_acceptable`], with the measurements a repair
+/// needs. Character counts are of the normalized text the display draws.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Violation {
+    /// The question wraps into more than the quiz's question rows.
+    QuestionTooLong { chars: usize, lines: usize },
+    /// A choice is wider than one choice row.
+    ChoiceTooLong { choice: usize, chars: usize },
+    /// A choice has no rationale (a plain string, or an empty `why`).
+    WhyMissing { choice: usize },
+    /// A rationale wraps into more than the lesson panel's rows.
+    WhyTooLong {
+        choice: usize,
+        chars: usize,
+        lines: usize,
+    },
+    /// The lens is absent or names no lens [`Concept::parse`] knows. Lens
+    /// spellings it can map are canonicalized before any check runs.
+    UnknownLens { given: Option<String> },
+    /// Characters the handheld font cannot draw, in order of appearance.
+    NotAscii { field: Field, characters: Vec<char> },
+    /// The field asks about or answers with a location or a state-in-time
+    /// fact. The question itself is wrong, so it is never repaired.
+    Trivia { field: Field },
+    /// The question is structurally broken (choice count, answer index, empty
+    /// or repeated text). Fixing that means writing a new question.
+    Malformed(&'static str),
+}
+
+impl Violation {
+    /// Whether rewording fields in place can fix this without changing what
+    /// the question asks.
+    pub(crate) fn is_mechanical(&self) -> bool {
+        !matches!(self, Self::Trivia { .. } | Self::Malformed(_))
+    }
+
+    /// One instruction line for a repair prompt.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::QuestionTooLong { chars, lines } => format!(
+                "{} is {chars} characters and wraps into {lines} lines of {}; the limit is {} lines (about 100 characters).",
+                Field::Question,
+                engine::QUIZ_QUESTION_COLUMNS,
+                engine::QUIZ_QUESTION_ROWS,
+            ),
+            Self::ChoiceTooLong { choice, chars } => format!(
+                "{} is {chars} characters; the limit is {}.",
+                Field::Choice(*choice),
+                engine::QUIZ_CHOICE_CHARS
+            ),
+            Self::WhyMissing { choice } => format!(
+                "{} is missing; write one of at most 90 characters.",
+                Field::Why(*choice)
+            ),
+            Self::WhyTooLong {
+                choice,
+                chars,
+                lines,
+            } => format!(
+                "{} is {chars} characters and wraps into {lines} lines of {}; the limit is {} lines (about 90 characters).",
+                Field::Why(*choice),
+                learning::RATIONALE_COLUMNS,
+                learning::RATIONALE_ROWS,
+            ),
+            Self::UnknownLens { given } => {
+                let lenses = lens_names();
+                match given
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|lens| !lens.is_empty())
+                {
+                    Some(lens) => format!(
+                        "\"concept\" is \"{lens}\", which is not a lens; use exactly one of {lenses}."
+                    ),
+                    None => format!("\"concept\" is missing; use exactly one of {lenses}."),
+                }
+            }
+            Self::NotAscii { field, characters } => format!(
+                "{field} contains {}, which the display cannot draw; use plain ASCII.",
+                characters
+                    .iter()
+                    .map(|character| format!("'{character}' (U+{:04X})", u32::from(*character)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Trivia { field } => {
+                format!("{field} cites a location or a state-in-time fact.")
+            }
+            Self::Malformed(reason) => format!("the question is malformed: {reason}."),
+        }
+    }
+}
+
+/// Non-ASCII characters in `text`, each once, in order of appearance.
+fn unrenderable_characters(text: &str) -> Vec<char> {
+    let mut characters = Vec::new();
+    for character in text.chars() {
+        if !(' '..='~').contains(&character) && !characters.contains(&character) {
+            characters.push(character);
+        }
+    }
+    characters
+}
+
+/// Every reason [`generated_question_is_acceptable`] rejects `question`; the
+/// list is empty exactly when the question is accepted. It measures with the
+/// same primitives as the acceptance checks and never relaxes them.
+pub(crate) fn question_violations(question: &QQuestion) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let choices = question.choice_texts();
+
+    // The quiz layout (engine::quiz_question_fits).
+    if question.q.trim().is_empty() {
+        violations.push(Violation::Malformed("THE QUESTION IS EMPTY"));
+    }
+    let lines = engine::wrap_text(&question.q, engine::QUIZ_QUESTION_COLUMNS).len();
+    if lines > engine::QUIZ_QUESTION_ROWS {
+        violations.push(Violation::QuestionTooLong {
+            chars: question.q.chars().count(),
+            lines,
+        });
+    }
+    if choices.len() != 4 {
+        violations.push(Violation::Malformed("A QUESTION NEEDS EXACTLY 4 CHOICES"));
+    }
+    if question.answer >= choices.len() {
+        violations.push(Violation::Malformed("THE ANSWER IS NOT A CHOICE INDEX"));
+    }
+    let distinct = choices
+        .iter()
+        .map(|choice| choice.trim().to_ascii_uppercase())
+        .collect::<HashSet<_>>();
+    if distinct.len() != choices.len() {
+        violations.push(Violation::Malformed("TWO CHOICES REPEAT EACH OTHER"));
+    }
+    for (index, text) in choices.iter().enumerate() {
+        if text.trim().is_empty() {
+            violations.push(Violation::Malformed("A CHOICE IS EMPTY"));
+        }
+        let chars = text.chars().count();
+        if chars > engine::QUIZ_CHOICE_CHARS {
+            violations.push(Violation::ChoiceTooLong {
+                choice: index,
+                chars,
+            });
+        }
+    }
+
+    // Concepts only (cites_trivia, cites_location).
+    if cites_trivia(&question.q) {
+        violations.push(Violation::Trivia {
+            field: Field::Question,
+        });
+    }
+    for (index, text) in choices.iter().enumerate() {
+        if cites_trivia(text) {
+            violations.push(Violation::Trivia {
+                field: Field::Choice(index),
+            });
+        }
+    }
+
+    // Payload v2 (has_complete_rationales).
+    if question.lens().is_none() {
+        violations.push(Violation::UnknownLens {
+            given: question.concept.clone(),
+        });
+    }
+    for (index, choice) in question.choices.iter().enumerate() {
+        let Some(why) = choice.why() else {
+            violations.push(Violation::WhyMissing { choice: index });
+            continue;
+        };
+        if why.trim().is_empty() {
+            violations.push(Violation::WhyMissing { choice: index });
+        } else if !learning::rationale_fits(why) {
+            violations.push(Violation::WhyTooLong {
+                choice: index,
+                chars: why.chars().count(),
+                lines: engine::wrap_text(why, learning::RATIONALE_COLUMNS).len(),
+            });
+        }
+        if cites_location(why) {
+            violations.push(Violation::Trivia {
+                field: Field::Why(index),
+            });
+        }
+    }
+
+    // The handheld font (renderable).
+    let texts = std::iter::once((Field::Question, question.q.as_str())).chain(
+        question
+            .choices
+            .iter()
+            .enumerate()
+            .flat_map(|(index, choice)| {
+                std::iter::once((Field::Choice(index), choice.text()))
+                    .chain(choice.why().map(|why| (Field::Why(index), why)))
+            }),
+    );
+    for (field, text) in texts {
+        let characters = unrenderable_characters(text);
+        if !characters.is_empty() {
+            violations.push(Violation::NotAscii { field, characters });
+        }
+    }
+    violations
+}
+
+/// Whether one repair call could turn `question` into an accepted question:
+/// it fails, and only for mechanical reasons.
+pub(crate) fn is_repairable(question: &QQuestion) -> bool {
+    let violations = question_violations(question);
+    !violations.is_empty() && violations.iter().all(Violation::is_mechanical)
+}
+
 /// Folds typographic punctuation into ASCII, collapses whitespace, and
 /// uppercases, matching what the handheld font can draw.
 fn display_text(text: &str) -> String {
@@ -672,19 +917,194 @@ fn question_values(response: &str) -> Result<Vec<serde_json::Value>, String> {
     .to_string())
 }
 
-/// Parses, normalizes, and filters one provider response into at most `count`
-/// acceptable questions.
-pub(crate) fn parse_generated_questions(
+/// One provider response, parsed and normalized: the questions the policy
+/// accepts, and the questions it rejected.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct GeneratedBatch {
+    /// At most the requested count of acceptable questions, each once.
+    pub(crate) accepted: Vec<QQuestion>,
+    /// Readable questions that failed [`generated_question_is_acceptable`],
+    /// in response order. Objects that are not questions at all are dropped.
+    pub(crate) rejected: Vec<QQuestion>,
+}
+
+impl GeneratedBatch {
+    /// The playable questions, or an error when none survived.
+    pub(crate) fn into_questions(self) -> Result<Vec<QQuestion>, String> {
+        if self.accepted.is_empty() {
+            Err("INCOMPLETE OR INVALID QUESTIONS".to_string())
+        } else {
+            Ok(self.accepted)
+        }
+    }
+
+    /// The one repair call worth making for this batch: none when it is
+    /// already full or no rejection is repairable. At most `count` questions
+    /// are sent, each once, and none that repeats an accepted question.
+    pub(crate) fn repair_request(&self, count: usize) -> Option<RepairRequest> {
+        if self.accepted.len() >= count {
+            return None;
+        }
+        let mut seen = self
+            .accepted
+            .iter()
+            .map(|question| question_identity(&question.q))
+            .collect::<HashSet<_>>();
+        let originals = self
+            .rejected
+            .iter()
+            .filter(|question| is_repairable(question))
+            .filter(|question| seen.insert(question_identity(&question.q)))
+            .take(count)
+            .cloned()
+            .collect::<Vec<_>>();
+        (!originals.is_empty()).then(|| RepairRequest {
+            prompt: repair_prompt(&originals),
+            originals,
+        })
+    }
+
+    /// Adds the acceptable repairs in `reply` to the accepted questions. A
+    /// repair counts only when it echoes the `id` of a question `request`
+    /// sent and keeps that question's answer index; each sent question adds at
+    /// most one repair; the batch never exceeds `count` or repeats a question.
+    /// Returns how many repairs were added.
+    pub(crate) fn merge_repairs(
+        &mut self,
+        request: &RepairRequest,
+        reply: &str,
+        count: usize,
+    ) -> usize {
+        let Ok(values) = question_values(reply) else {
+            return 0;
+        };
+        let mut seen = self
+            .accepted
+            .iter()
+            .map(|question| question_identity(&question.q))
+            .collect::<HashSet<_>>();
+        let mut repaired = HashSet::new();
+        let before = self.accepted.len();
+        for value in values {
+            if self.accepted.len() >= count {
+                break;
+            }
+            let Some(id) = value
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|id| usize::try_from(id).ok())
+            else {
+                continue;
+            };
+            let Some(original) = id
+                .checked_sub(1)
+                .and_then(|index| request.originals.get(index))
+            else {
+                continue;
+            };
+            let Ok(question) = serde_json::from_value::<QQuestion>(value) else {
+                continue;
+            };
+            let question = normalized_question(question);
+            if question.answer == original.answer
+                && generated_question_is_acceptable(&question)
+                && !repaired.contains(&id)
+                && seen.insert(question_identity(&question.q))
+            {
+                repaired.insert(id);
+                self.accepted.push(question);
+            }
+        }
+        self.accepted.len() - before
+    }
+}
+
+/// Parses and normalizes one provider response, keeping at most `count`
+/// acceptable questions and every rejected one. Errors only when the response
+/// holds no question array at all.
+pub(crate) fn parse_generated_batch(
     response: &str,
     count: usize,
-) -> Result<Vec<QQuestion>, String> {
-    let questions = question_values(response)?
+) -> Result<GeneratedBatch, String> {
+    let (accepted, rejected) = question_values(response)?
         .into_iter()
         .filter_map(|value| serde_json::from_value::<QQuestion>(value).ok())
         .map(normalized_question)
-        .collect();
-    accepted_question_batch(questions, count)
-        .ok_or_else(|| "INCOMPLETE OR INVALID QUESTIONS".to_string())
+        .partition(generated_question_is_acceptable);
+    Ok(GeneratedBatch {
+        accepted: accepted_question_batch(accepted, count).unwrap_or_default(),
+        rejected,
+    })
+}
+
+/// A second chance for questions rejected on mechanics alone.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RepairRequest {
+    /// The questions sent for repair; the prompt numbers them from 1 as `id`.
+    pub(crate) originals: Vec<QQuestion>,
+    pub(crate) prompt: String,
+}
+
+/// The repair schema: a question in the generation schema plus the `id` the
+/// reply must echo. Choices always appear as objects, so a legacy plain choice
+/// shows where its missing rationale goes.
+#[derive(Serialize)]
+struct RepairItem<'a> {
+    id: usize,
+    q: &'a str,
+    concept: &'a str,
+    choices: Vec<RepairChoice<'a>>,
+    answer: usize,
+}
+
+#[derive(Serialize)]
+struct RepairChoice<'a> {
+    text: &'a str,
+    why: &'a str,
+}
+
+/// A precise repair prompt for `originals`: for each question, exactly which
+/// fields break which limit and by how much, then the question itself to keep
+/// verbatim otherwise, in the generation schema plus an `id`.
+pub(crate) fn repair_prompt(originals: &[QQuestion]) -> String {
+    let questions = originals
+        .iter()
+        .enumerate()
+        .map(|(index, question)| {
+            let id = index + 1;
+            let fixes = question_violations(question)
+                .iter()
+                .map(|violation| format!("- {}", violation.describe()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let item = RepairItem {
+                id,
+                q: &question.q,
+                concept: question.concept.as_deref().unwrap_or_default(),
+                choices: question
+                    .choices
+                    .iter()
+                    .map(|choice| RepairChoice {
+                        text: choice.text(),
+                        why: choice.why().unwrap_or_default(),
+                    })
+                    .collect(),
+                answer: question.answer,
+            };
+            let json = serde_json::to_string(&item).unwrap_or_default();
+            format!("QUESTION id {id}\nFIX:\n{fixes}\nQUESTION JSON:\n{json}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let lenses = lens_names();
+    format!(
+        "You wrote quiz questions for a retro handheld game, and the display rejected the ones below. Each one fails only on mechanics. Fix ONLY the fields listed under FIX. Keep every other field exactly as written: the same question meaning, the same concept, the same choices in the same order, and the same answer index.\n\nDISPLAY LIMITS (hard: anything longer is discarded, not shortened):\n- \"q\" must wrap into at most {question_rows} lines of {question_columns} characters (about 100 characters).\n- Each choice \"text\" must be at most {choice_chars} characters; aim for 2 to 5 words and at most 28. Put nuance in its why, never in the choice text.\n- Each \"why\" must wrap into at most {why_rows} lines of {why_columns} characters (about 90 characters).\n- \"concept\" is exactly one of {lenses}.\n- Plain ASCII only: no curly quotes, long dashes, arrows, or accented letters.\n\nShorten by rewording, not by truncating words or sentences. Never add file names, paths, versions, or dates. Before answering, count the characters of every field you rewrite.\n\n{questions}\n\nRespond with ONLY a JSON array of the fixed questions, no prose and no code fences, one object per question above, each keeping its \"id\":\n[{{\"id\":N,\"q\":\"...\",\"concept\":\"...\",\"choices\":[{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}}],\"answer\":N}}]",
+        question_rows = engine::QUIZ_QUESTION_ROWS,
+        question_columns = engine::QUIZ_QUESTION_COLUMNS,
+        choice_chars = engine::QUIZ_CHOICE_CHARS,
+        why_rows = learning::RATIONALE_ROWS,
+        why_columns = learning::RATIONALE_COLUMNS,
+    )
 }
 
 /// Parses one saved batch leniently: a question this build cannot read or no
@@ -942,11 +1362,7 @@ pub(crate) fn ai_question_prompt(
         .map(|concept| format!("- {}: {}", concept_key(*concept), lens_guide(*concept)))
         .collect::<Vec<_>>()
         .join("\n");
-    let lens_names = Concept::ALL
-        .iter()
-        .map(|concept| concept_key(*concept))
-        .collect::<Vec<_>>()
-        .join("|");
+    let lens_names = lens_names();
     let focus = Concept::focus_for_level(level)
         .iter()
         .map(|concept| concept_key(*concept))
@@ -1013,6 +1429,89 @@ pub(crate) mod tests {
     use super::*;
 
     const RATIONALE: &str = "THIS NAMES THE MODEL THE DESIGN DEPENDS ON.";
+
+    /// Parses one provider response into at most `count` playable questions,
+    /// as a generation request without a repair pass would.
+    fn parse_generated_questions(response: &str, count: usize) -> Result<Vec<QQuestion>, String> {
+        parse_generated_batch(response, count)?.into_questions()
+    }
+
+    /// A provider reply modeled on real over-length output: one accepted
+    /// question, three that fail only on mechanics, a trivia question, and a
+    /// malformed one.
+    pub(crate) const OVER_LENGTH_RESPONSE: &str = r#"[
+        {
+            "q": "Why does the engine own every game rule?",
+            "concept": "Responsibilities",
+            "choices": [
+                {"text": "So the shell only draws frames", "why": "One owner keeps rules consistent; the shell just shows pixels."},
+                {"text": "So the UI can skip the engine", "why": "Misconception: a bypass would split the rules across layers."},
+                {"text": "To make the shell faster", "why": "Misconception: speed is not why rules live in one place."},
+                {"text": "To store rules in the styles", "why": "Misconception: presentation cannot enforce game rules."}
+            ],
+            "answer": 0
+        },
+        {
+            "q": "What happens when a provider reply mixes valid and invalid questions?",
+            "concept": "Flows",
+            "choices": [
+                {"text": "Valid ones survive; batch may be short", "why": "Each question is judged alone, so good ones are kept."},
+                {"text": "The whole reply is discarded", "why": "Misconception: one bad question does not sink the rest."},
+                {"text": "Bad questions are cut to fit", "why": "Misconception: over-long text is rejected, never cut."},
+                {"text": "A filler deck replaces them", "why": "Misconception: the game has no filler question deck."}
+            ],
+            "answer": 0
+        },
+        {
+            "q": "Why does loading a cartridge never run its code?",
+            "concept": "invariant",
+            "choices": [
+                {"text": "Running code would be too slow", "why": "Misconception: speed is not why loaded code stays inert."},
+                {"text": "Trusted handlers keep untrusted repos safe", "why": "Only the app's own handlers act, so a hostile project cannot."},
+                {"text": "The shell cannot start programs", "why": "Misconception: the shell could, but loading never asks it to."},
+                {"text": "Saves would grow too large", "why": "Misconception: save size has nothing to do with running code."}
+            ],
+            "answer": 1
+        },
+        {
+            "q": "In a design where the engine owns every rule and the shell only draws the frames it receives each tick, what must the shell never do?",
+            "concept": "architecture",
+            "choices": [
+                "Decide game rules itself",
+                {"text": "Draw frames → pixels", "why": "Misconception: drawing frames is exactly the shell's job."},
+                {"text": "Forward player input", "why": "Misconception: the shell must forward input to the engine."},
+                {"text": "Play the engine's notes", "why": "Misconception: playing notes is fine for the shell because the engine emits them with tick stamps, so this is allowed and not wrong."}
+            ],
+            "answer": 0
+        },
+        {
+            "q": "Which file owns the game loop?",
+            "concept": "responsibility",
+            "choices": [
+                {"text": "The one that holds the engine and its systems", "why": "It schedules every system."},
+                {"text": "The shell script", "why": "Misconception: the shell only draws."},
+                {"text": "The style sheet", "why": "Misconception: styles hold no logic."},
+                {"text": "The manifest", "why": "Misconception: manifests only configure."}
+            ],
+            "answer": 0
+        },
+        {
+            "q": "Why keep saves versioned?",
+            "concept": "invariant",
+            "choices": [
+                {"text": "Old saves stay readable by new builds forever", "why": "Versions let loaders migrate."},
+                {"text": "Saves get smaller", "why": "Misconception: versions add bytes."},
+                {"text": "Loading gets faster", "why": "Misconception: speed is not the goal."}
+            ],
+            "answer": 0
+        }
+    ]"#;
+
+    /// [`OVER_LENGTH_RESPONSE`], parsed: one accepted question and five
+    /// rejections in reply order.
+    pub(crate) fn over_length_batch() -> GeneratedBatch {
+        parse_generated_batch(OVER_LENGTH_RESPONSE, 6).unwrap()
+    }
 
     /// A complete payload v2 question with `answer` 0.
     pub(crate) fn question(text: &str, choices: &[&str]) -> QQuestion {
@@ -2021,5 +2520,360 @@ pub(crate) mod tests {
             );
             assert_eq!(Concept::parse(concept_key(concept)), Some(concept));
         }
+    }
+
+    #[test]
+    fn diagnostics_measure_each_violation_of_a_rejected_question() {
+        let batch = over_length_batch();
+        assert_eq!(batch.accepted.len(), 1);
+        assert_eq!(
+            batch.accepted[0].q,
+            "WHY DOES THE ENGINE OWN EVERY GAME RULE?"
+        );
+        assert_eq!(batch.rejected.len(), 5);
+        let violations = batch
+            .rejected
+            .iter()
+            .map(question_violations)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            violations[0],
+            [Violation::ChoiceTooLong {
+                choice: 0,
+                chars: 38
+            }],
+            "VALID ONES SURVIVE; BATCH MAY BE SHORT"
+        );
+        assert_eq!(
+            batch.rejected[0].concept.as_deref(),
+            Some("interaction"),
+            "a lens spelling the parser maps is canonicalized, not reported"
+        );
+        assert_eq!(
+            violations[1],
+            [Violation::ChoiceTooLong {
+                choice: 1,
+                chars: 42
+            }],
+            "TRUSTED HANDLERS KEEP UNTRUSTED REPOS SAFE"
+        );
+        assert_eq!(
+            violations[2],
+            [
+                Violation::QuestionTooLong {
+                    chars: 133,
+                    lines: 5
+                },
+                Violation::UnknownLens {
+                    given: Some("architecture".into())
+                },
+                Violation::WhyMissing { choice: 0 },
+                Violation::WhyTooLong {
+                    choice: 3,
+                    chars: 132,
+                    lines: 5
+                },
+                Violation::NotAscii {
+                    field: Field::Choice(1),
+                    characters: vec!['\u{2192}']
+                },
+            ]
+        );
+        assert!(violations[3].contains(&Violation::Trivia {
+            field: Field::Question
+        }));
+        assert!(violations[3].contains(&Violation::ChoiceTooLong {
+            choice: 0,
+            chars: 45
+        }));
+        assert!(violations[4].contains(&Violation::Malformed("A QUESTION NEEDS EXACTLY 4 CHOICES")));
+
+        let repairable = batch.rejected.iter().map(is_repairable).collect::<Vec<_>>();
+        assert_eq!(
+            repairable,
+            [true, true, true, false, false],
+            "trivia and malformed questions are never repaired, whatever else they fail"
+        );
+        assert!(!is_repairable(&batch.accepted[0]), "nothing to repair");
+    }
+
+    #[test]
+    fn diagnostics_agree_with_the_acceptance_policy() {
+        let mut candidates = over_length_batch().rejected;
+        candidates.extend(over_length_batch().accepted);
+        candidates.push(engine_state_question());
+        let mut located_why = engine_state_question();
+        located_why.choices[0] = QChoice::Explained {
+            text: "THE GAME ENGINE".into(),
+            why: "IT IS DEFINED IN ENGINE.RS.".into(),
+        };
+        candidates.push(located_why);
+        let mut empty_why = engine_state_question();
+        empty_why.choices[2] = QChoice::Explained {
+            text: "THE STYLES".into(),
+            why: "  ".into(),
+        };
+        candidates.push(empty_why);
+        let mut out_of_range = engine_state_question();
+        out_of_range.answer = 4;
+        candidates.push(out_of_range);
+        let mut unrenderable_why = engine_state_question();
+        unrenderable_why.choices[1] = QChoice::Explained {
+            text: "THE DEVICE SHELL".into(),
+            why: "MISCONCEPTION: THE SHELL \u{2260} THE ENGINE.".into(),
+        };
+        candidates.push(unrenderable_why);
+        candidates.push(question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &["THE ENGINE", "the engine ", "THE VIEW", "THE SHELL"],
+        ));
+        candidates.push(question("", &["A", "B", "C", "D"]));
+        candidates.push(legacy_question(
+            "WHAT SHOULD OWN GAMEPLAY STATE?",
+            &["THE GAME ENGINE", "THE SHELL", "THE STYLES", "THE VIEW"],
+        ));
+
+        for candidate in &candidates {
+            let violations = question_violations(candidate);
+            assert_eq!(
+                violations.is_empty(),
+                generated_question_is_acceptable(candidate),
+                "{candidate:?}: {violations:?}"
+            );
+        }
+        let legacy = candidates.last().unwrap();
+        assert_eq!(
+            question_violations(legacy),
+            [
+                Violation::UnknownLens { given: None },
+                Violation::WhyMissing { choice: 0 },
+                Violation::WhyMissing { choice: 1 },
+                Violation::WhyMissing { choice: 2 },
+                Violation::WhyMissing { choice: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn repair_prompt_names_each_measured_violation_and_repeats_the_rest_verbatim() {
+        let batch = over_length_batch();
+        let request = batch
+            .repair_request(6)
+            .expect("three rejections are mechanical");
+        assert_eq!(request.originals, batch.rejected[..3]);
+        assert_eq!(request.prompt, repair_prompt(&request.originals), "pure");
+
+        let prompt = &request.prompt;
+        for expected in [
+            "QUESTION id 1\nFIX:\n- choices[0].text is 38 characters; the limit is 31.\nQUESTION JSON:\n",
+            "QUESTION id 2\nFIX:\n- choices[1].text is 42 characters; the limit is 31.\nQUESTION JSON:\n",
+            "- \"q\" is 133 characters and wraps into 5 lines of 31; the limit is 4 lines (about 100 characters).",
+            "- \"concept\" is \"architecture\", which is not a lens; use exactly one of purpose|responsibility|interaction|invariant|tradeoff.",
+            "- choices[0].why is missing; write one of at most 90 characters.",
+            "- choices[3].why is 132 characters and wraps into 5 lines of 34; the limit is 3 lines (about 90 characters).",
+            "- choices[1].text contains '\u{2192}' (U+2192), which the display cannot draw; use plain ASCII.",
+            "Fix ONLY the fields listed under FIX",
+            "the same answer index",
+            "Never add file names, paths, versions, or dates",
+            "each keeping its \"id\"",
+        ] {
+            assert!(prompt.contains(expected), "missing {expected:?} in\n{prompt}");
+        }
+        assert!(
+            !prompt.contains("WHICH FILE OWNS THE GAME LOOP"),
+            "trivia is not repaired"
+        );
+        assert!(
+            !prompt.contains("WHY KEEP SAVES VERSIONED"),
+            "malformed is not repaired"
+        );
+        assert!(!prompt.contains("WHY DOES THE ENGINE OWN EVERY GAME RULE"));
+
+        // Each question travels in the generation schema plus its id, with
+        // every field it keeps unchanged.
+        let sent = prompt
+            .split("QUESTION JSON:\n")
+            .skip(1)
+            .map(|rest| {
+                let line = rest.lines().next().unwrap();
+                serde_json::from_str::<serde_json::Value>(line).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sent.len(), 3);
+        for (index, (value, original)) in sent.iter().zip(&request.originals).enumerate() {
+            assert_eq!(value["id"], index + 1);
+            assert_eq!(value["q"], original.q.as_str());
+            assert_eq!(value["answer"], original.answer);
+            assert_eq!(value["choices"].as_array().unwrap().len(), 4);
+        }
+        assert_eq!(
+            serde_json::from_value::<QQuestion>(sent[1].clone()).unwrap(),
+            request.originals[1],
+            "an explained question round-trips exactly"
+        );
+        assert_eq!(
+            sent[2]["choices"][0],
+            serde_json::json!({ "text": "DECIDE GAME RULES ITSELF", "why": "" }),
+            "a plain choice shows where its rationale goes"
+        );
+    }
+
+    #[test]
+    fn a_repair_is_requested_only_for_a_short_batch_with_mechanical_rejections() {
+        let batch = over_length_batch();
+        assert!(batch.repair_request(1).is_none(), "already full");
+        assert_eq!(
+            batch.repair_request(2).unwrap().originals.len(),
+            2,
+            "capped"
+        );
+
+        let unrepairable = GeneratedBatch {
+            accepted: Vec::new(),
+            rejected: batch.rejected[3..].to_vec(),
+        };
+        assert!(unrepairable.repair_request(6).is_none());
+
+        // A rejection repeating an accepted question, or another rejection,
+        // is not sent: its repair could only duplicate.
+        let mut repeated = batch.rejected[0].clone();
+        repeated.q = batch.accepted[0].q.clone();
+        let duplicates = GeneratedBatch {
+            accepted: batch.accepted.clone(),
+            rejected: vec![
+                repeated,
+                batch.rejected[1].clone(),
+                batch.rejected[1].clone(),
+            ],
+        };
+        assert_eq!(
+            duplicates.repair_request(6).unwrap().originals,
+            [batch.rejected[1].clone()]
+        );
+    }
+
+    #[test]
+    fn merged_repairs_keep_their_answer_and_never_exceed_the_count_or_repeat() {
+        let mut batch = over_length_batch();
+        let request = batch.repair_request(6).unwrap();
+        let reply = r#"Here are the fixes:
+        [
+            {"id": 1, "q": "What happens when a provider reply mixes valid and invalid questions?", "concept": "interaction", "choices": [
+                {"text": "Valid ones survive alone", "why": "Each question is judged alone, so good ones are kept."},
+                {"text": "The whole reply is discarded", "why": "Misconception: one bad question does not sink the rest."},
+                {"text": "Bad questions are cut to fit", "why": "Misconception: over-long text is rejected, never cut."},
+                {"text": "A filler deck replaces them", "why": "Misconception: the game has no filler question deck."}
+            ], "answer": 0},
+            {"id": 1, "q": "Why are mixed replies kept in part?", "concept": "interaction", "choices": [
+                {"text": "Each is judged alone", "why": "A second repair of the same question is ignored."},
+                {"text": "B", "why": "B."}, {"text": "C", "why": "C."}, {"text": "D", "why": "D."}
+            ], "answer": 0},
+            {"id": 2, "q": "Why does the engine own every game rule?", "concept": "invariant", "choices": [
+                {"text": "Running code would be too slow", "why": "Misconception: speed is not why loaded code stays inert."},
+                {"text": "Only its own handlers act", "why": "Only the app's own handlers act, so a hostile project cannot."},
+                {"text": "The shell cannot start programs", "why": "Misconception: the shell could, but loading never asks it to."},
+                {"text": "Saves would grow too large", "why": "Misconception: save size has nothing to do with running code."}
+            ], "answer": 1},
+            {"id": 2, "q": "Why does loading a cartridge never run its code?", "concept": "invariant", "choices": [
+                {"text": "Only its own handlers act", "why": "Only the app's own handlers act, so a hostile project cannot."},
+                {"text": "Running code would be too slow", "why": "Misconception: speed is not why loaded code stays inert."},
+                {"text": "The shell cannot start programs", "why": "Misconception: the shell could, but loading never asks it to."},
+                {"text": "Saves would grow too large", "why": "Misconception: save size has nothing to do with running code."}
+            ], "answer": 0},
+            {"id": 2, "q": "Why does loading a cartridge never run its code?", "concept": "invariant", "choices": [
+                {"text": "Running code would be too slow", "why": "Misconception: speed is not why loaded code stays inert."},
+                {"text": "Only its own handlers act", "why": "Only the app's own handlers act, so a hostile project cannot."},
+                {"text": "The shell cannot start programs", "why": "Misconception: the shell could, but loading never asks it to."},
+                {"text": "Saves would grow too large", "why": "Misconception: save size has nothing to do with running code."}
+            ], "answer": 1},
+            {"id": 3, "q": "What must the shell never do?", "concept": "architecture", "choices": [
+                {"text": "Decide game rules itself", "why": "Rules belong to the engine alone."},
+                {"text": "Draw frames", "why": "Misconception: drawing frames is the shell's job."},
+                {"text": "Forward player input", "why": "Misconception: the shell must forward input."},
+                {"text": "Play the engine's notes", "why": "Misconception: the shell plays what the engine emits."}
+            ], "answer": 0},
+            {"id": 7, "q": "Why is this question new?", "concept": "purpose", "choices": [
+                {"text": "It was never requested", "why": "Unrequested questions have no brief behind them."},
+                {"text": "B", "why": "B."}, {"text": "C", "why": "C."}, {"text": "D", "why": "D."}
+            ], "answer": 0},
+            {"q": "Why has this question no id?", "concept": "purpose", "choices": [
+                {"text": "It forgot its id", "why": "Repairs must say which question they fix."},
+                {"text": "B", "why": "B."}, {"text": "C", "why": "C."}, {"text": "D", "why": "D."}
+            ], "answer": 0}
+        ]"#;
+
+        let mut capped = batch.clone();
+        assert_eq!(capped.merge_repairs(&request, reply, 2), 1);
+        assert_eq!(capped.accepted.len(), 2, "never beyond the count");
+
+        assert_eq!(batch.merge_repairs(&request, reply, 6), 2);
+        let accepted = batch
+            .accepted
+            .iter()
+            .map(|question| {
+                (
+                    question.q.as_str(),
+                    question.choices[question.answer].text(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            accepted,
+            [
+                (
+                    "WHY DOES THE ENGINE OWN EVERY GAME RULE?",
+                    "SO THE SHELL ONLY DRAWS FRAMES"
+                ),
+                (
+                    "WHAT HAPPENS WHEN A PROVIDER REPLY MIXES VALID AND INVALID QUESTIONS?",
+                    "VALID ONES SURVIVE ALONE"
+                ),
+                (
+                    "WHY DOES LOADING A CARTRIDGE NEVER RUN ITS CODE?",
+                    "ONLY ITS OWN HANDLERS ACT"
+                ),
+            ],
+            "one repair per id; repeats, moved answers, failed fixes, and unrequested questions drop"
+        );
+        assert!(batch.accepted.iter().all(generated_question_is_acceptable));
+        assert_eq!(
+            batch.accepted.len(),
+            batch
+                .accepted
+                .iter()
+                .map(|question| question_identity(&question.q))
+                .collect::<HashSet<_>>()
+                .len()
+        );
+
+        let mut unchanged = over_length_batch();
+        assert_eq!(unchanged.merge_repairs(&request, "no json here", 6), 0);
+        assert_eq!(unchanged.merge_repairs(&request, "[not json]", 6), 0);
+        assert_eq!(unchanged, over_length_batch());
+    }
+
+    #[test]
+    fn a_batch_with_no_accepted_questions_is_an_error_until_repaired() {
+        let mut batch = over_length_batch();
+        batch.accepted.clear();
+        assert_eq!(
+            batch.clone().into_questions().unwrap_err(),
+            "INCOMPLETE OR INVALID QUESTIONS"
+        );
+        let request = batch.repair_request(6).unwrap();
+        let fixed = serde_json::to_string(&serde_json::json!([{
+            "id": 1,
+            "q": request.originals[0].q,
+            "concept": "interaction",
+            "choices": request.originals[0].choices.iter().enumerate().map(|(index, choice)| {
+                let text = if index == 0 { "VALID ONES SURVIVE" } else { choice.text() };
+                serde_json::json!({ "text": text, "why": choice.why() })
+            }).collect::<Vec<_>>(),
+            "answer": 0,
+        }]))
+        .unwrap();
+        assert_eq!(batch.merge_repairs(&request, &fixed, 6), 1);
+        assert_eq!(batch.into_questions().unwrap().len(), 1);
     }
 }
