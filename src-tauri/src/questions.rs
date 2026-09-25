@@ -719,18 +719,20 @@ impl Violation {
                 engine::QUIZ_CHOICE_CHARS
             ),
             Self::WhyMissing { choice } => format!(
-                "{} is missing; write one of at most 90 characters.",
-                Field::Why(*choice)
+                "{} is missing; write one of at most {} characters.",
+                Field::Why(*choice),
+                learning::RATIONALE_MAX_CHARS
             ),
             Self::WhyTooLong {
                 choice,
                 chars,
                 lines,
             } => format!(
-                "{} is {chars} characters and wraps into {lines} lines of {}; the limit is {} lines (about 90 characters).",
+                "{} is {chars} characters and wraps into {lines} lines of {}; the limit is {} lines (at most {} characters).",
                 Field::Why(*choice),
                 learning::RATIONALE_COLUMNS,
                 learning::RATIONALE_ROWS,
+                learning::RATIONALE_MAX_CHARS,
             ),
             Self::UnknownLens { given } => {
                 let lenses = lens_names();
@@ -1153,10 +1155,11 @@ pub(crate) fn repair_prompt(originals: &[QQuestion]) -> String {
         .join("\n\n");
     let lenses = lens_names();
     format!(
-        "You wrote quiz questions for a retro handheld game, and the display rejected the ones below. Each one fails only on mechanics. Fix ONLY the fields listed under FIX. Keep every other field exactly as written: the same question meaning, the same concept, the same choices in the same order, and the same answer index.\n\nDISPLAY LIMITS (hard: anything longer is discarded, not shortened):\n- \"q\" must wrap into at most {question_rows} lines of {question_columns} characters (about 100 characters).\n- Each choice \"text\" must be at most {choice_chars} characters; aim for 2 to 5 words and at most 28. Put nuance in its why, never in the choice text.\n- Each \"why\" must wrap into at most {why_rows} lines of {why_columns} characters (about 90 characters).\n- \"concept\" is exactly one of {lenses}.\n- Plain ASCII only: no curly quotes, long dashes, arrows, or accented letters.\n\nShorten by rewording, not by truncating words or sentences. Never add file names, paths, versions, or dates. Before answering, count the characters of every field you rewrite.\n\n{questions}\n\nRespond with ONLY a JSON array of the fixed questions, no prose and no code fences, one object per question above, each keeping its \"id\":\n[{{\"id\":N,\"q\":\"...\",\"concept\":\"...\",\"choices\":[{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}}],\"answer\":N}}]",
+        "You wrote quiz questions for a retro handheld game, and the display rejected the ones below. Each one fails only on mechanics. Fix ONLY the fields listed under FIX. Keep every other field exactly as written: the same question meaning, the same concept, the same choices in the same order, and the same answer index.\n\nDISPLAY LIMITS (hard: anything longer is discarded, not shortened):\n- \"q\" must wrap into at most {question_rows} lines of {question_columns} characters (about 100 characters).\n- Each choice \"text\" must be at most {choice_chars} characters; aim for 2 to 5 words and at most 28. Put nuance in its why, never in the choice text.\n- Each \"why\" must be at most {why_max} characters, so it always wraps into {why_rows} lines of {why_columns}.\n- \"concept\" is exactly one of {lenses}.\n- Plain ASCII only: no curly quotes, long dashes, arrows, or accented letters.\n\nShorten by rewording, not by truncating words or sentences. Never add file names, paths, versions, or dates. Before answering, count the characters of every field you rewrite.\n\n{questions}\n\nRespond with ONLY a JSON array of the fixed questions, no prose and no code fences, one object per question above, each keeping its \"id\":\n[{{\"id\":N,\"q\":\"...\",\"concept\":\"...\",\"choices\":[{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}},{{\"text\":\"...\",\"why\":\"...\"}}],\"answer\":N}}]",
         question_rows = engine::QUIZ_QUESTION_ROWS,
         question_columns = engine::QUIZ_QUESTION_COLUMNS,
         choice_chars = engine::QUIZ_CHOICE_CHARS,
+        why_max = learning::RATIONALE_MAX_CHARS,
         why_rows = learning::RATIONALE_ROWS,
         why_columns = learning::RATIONALE_COLUMNS,
     )
@@ -2881,8 +2884,9 @@ pub(crate) mod tests {
             "QUESTION id 2\nFIX:\n- choices[1].text is 42 characters; the limit is 31.\nQUESTION JSON:\n",
             "- \"q\" is 133 characters and wraps into 5 lines of 31; the limit is 4 lines (about 100 characters).",
             "- \"concept\" is \"architecture\", which is not a lens; use exactly one of purpose|responsibility|interaction|invariant|tradeoff.",
-            "- choices[0].why is missing; write one of at most 90 characters.",
-            "- choices[3].why is 132 characters and wraps into 5 lines of 34; the limit is 3 lines (about 90 characters).",
+            "- choices[0].why is missing; write one of at most 70 characters.",
+            "- choices[3].why is 132 characters and wraps into 5 lines of 34; the limit is 3 lines (at most 70 characters).",
+            "- Each \"why\" must be at most 70 characters, so it always wraps into 3 lines of 34.",
             "- choices[1].text contains '\u{2192}' (U+2192), which the display cannot draw; use plain ASCII.",
             "Fix ONLY the fields listed under FIX",
             "the same answer index",
@@ -2891,6 +2895,10 @@ pub(crate) mod tests {
         ] {
             assert!(prompt.contains(expected), "missing {expected:?} in\n{prompt}");
         }
+        // The repair prompt states the same rationale bound as the generation
+        // prompt: the longest text that always fits, never a looser estimate.
+        assert_eq!(learning::RATIONALE_MAX_CHARS, 70);
+        assert!(!prompt.contains("90 characters"), "{prompt}");
         assert!(
             !prompt.contains("WHICH FILE OWNS THE GAME LOOP"),
             "trivia is not repaired"

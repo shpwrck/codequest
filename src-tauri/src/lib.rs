@@ -220,7 +220,9 @@ fn git_repo_check_within(path: &std::path::Path, timeout: Duration) -> Result<bo
         .env("LC_ALL", "C");
     let output = command_output_with_timeout(command, timeout, "GIT", None)?;
     if output.status.success() {
-        return Ok(true);
+        // Inside a bare repository or a `.git` directory git succeeds but
+        // answers `false`: there is no work tree to read a cartridge from.
+        return Ok(String::from_utf8_lossy(&output.stdout).trim() == "true");
     }
     if String::from_utf8_lossy(&output.stderr)
         .to_ascii_lowercase()
@@ -581,6 +583,10 @@ fn ai_response_text(provider: AiProvider, stdout: &[u8]) -> Result<String, Strin
         AiProvider::Claude => {
             let envelope: serde_json::Value =
                 serde_json::from_slice(stdout).map_err(|_| "BAD CLAUDE CLI OUTPUT".to_string())?;
+            if let Some(reason) = claude_envelope_failure(&envelope, false) {
+                let reason = reason.unwrap_or_else(|| "ERROR RESULT".to_string());
+                return Err(format!("CLAUDE CALL FAILED - {reason}"));
+            }
             envelope
                 .get("result")
                 .and_then(|result| result.as_str())
@@ -591,6 +597,23 @@ fn ai_response_text(provider: AiProvider, stdout: &[u8]) -> Result<String, Strin
             String::from_utf8(stdout.to_vec()).map_err(|_| "BAD CODEX CLI OUTPUT".to_string())
         }
     }
+}
+
+/// Whether Claude's JSON result envelope reports a failed call, and then the
+/// cause line of its `result` when it has one. In JSON mode the Claude CLI
+/// reports API and account errors (a login needed, a usage limit, an
+/// overload) there, with `is_error` set and usually nothing on stderr. After
+/// a failed exit, an envelope's `result` is the cause even without the flag.
+fn claude_envelope_failure(
+    envelope: &serde_json::Value,
+    call_failed: bool,
+) -> Option<Option<String>> {
+    let is_error = envelope
+        .get("is_error")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let result = envelope.get("result").and_then(serde_json::Value::as_str);
+    (is_error || (call_failed && result.is_some())).then(|| result.and_then(failure_line))
 }
 
 /// Longest reason text an error string carries to the device.
@@ -762,10 +785,15 @@ fn command_output_with_timeout(
 /// The assistant's reply from a finished provider call, or why it failed.
 fn provider_reply(provider: AiProvider, output: &Output) -> Result<String, String> {
     if !output.status.success() {
+        let envelope_reason = matches!(provider, AiProvider::Claude)
+            .then(|| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
+            .flatten()
+            .and_then(|envelope| claude_envelope_failure(&envelope, true))
+            .flatten();
         return Err(format!(
             "{} CALL FAILED - {}",
             provider.name(),
-            exit_reason(output)
+            envelope_reason.unwrap_or_else(|| exit_reason(output))
         ));
     }
     ai_response_text(provider, &output.stdout)
@@ -794,10 +822,36 @@ fn ai_questions(
     count: usize,
     active_provider: Option<AiProvider>,
 ) -> Result<Vec<QQuestion>, String> {
+    ai_questions_with(
+        path,
+        level,
+        count,
+        active_provider,
+        AI_QUESTION_TIMEOUT,
+        ask_provider,
+    )
+}
+
+/// [`ai_questions`] within `budget`, asking the provider through `ask`.
+fn ai_questions_with<A>(
+    path: &std::path::Path,
+    level: u32,
+    count: usize,
+    active_provider: Option<AiProvider>,
+    budget: Duration,
+    ask: A,
+) -> Result<Vec<QQuestion>, String>
+where
+    A: Fn(AiProvider, &str, Duration) -> Result<String, String>,
+{
     if !git_repo_check_within(path, GIT_TIMEOUT)? {
         return Err("NOT A GIT REPOSITORY".to_string());
     }
     let provider = active_provider.ok_or_else(|| "AI BATTERIES NOT VERIFIED".to_string())?;
+    // A save that cannot be read (corrupt, unsupported, unreadable) would
+    // also refuse the finished batch, so it stops the request before the
+    // provider is paid for a reply that could never be kept.
+    let learner = questions::load_learner_state(path)?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -806,37 +860,62 @@ fn ai_questions(
     // component skeletons. Paths and repository metadata are withheld from the
     // provider so questions focus on enduring concepts rather than file trivia.
     let brief = repo_context::project_brief(path, &tracked_files(path));
-    let learner = questions::load_learner_state(path).unwrap_or_default();
     let prompt = questions::bounded_ai_question_prompt(&name, level, count, &brief, &learner);
     let started = Instant::now();
-    let result = ask_provider(provider, &prompt, AI_QUESTION_TIMEOUT)?;
-    let mut batch = questions::parse_generated_batch(&result, count)?;
-    if let Some(repair) = batch.repair_request(count) {
-        let before = batch.accepted.len();
-        let remaining = AI_QUESTION_TIMEOUT.saturating_sub(started.elapsed());
-        let repaired = if remaining < MIN_REPAIR_TIME {
-            eprintln!(
-                "CODE QUEST question repair skipped: {}s of the budget left",
-                remaining.as_secs()
-            );
-            0
-        } else {
-            match ask_provider(provider, &repair.prompt, remaining) {
-                Ok(reply) => batch.merge_repairs(&repair, &reply, count),
-                Err(error) => {
-                    eprintln!("CODE QUEST question repair failed: {error}");
-                    0
-                }
-            }
-        };
+    let result = ask(provider, &prompt, budget)?;
+    let batch = questions::parse_generated_batch(&result, count)?;
+    repaired_questions(
+        batch,
+        count,
+        || budget.saturating_sub(started.elapsed()),
+        |prompt, timeout| ask(provider, prompt, timeout),
+    )
+}
+
+/// The playable questions of a first reply's `batch`, after the one repair
+/// call worth making for it, through `ask`, when at least
+/// [`MIN_REPAIR_TIME`] of the budget `remaining` is left. A failed repair
+/// keeps what the first reply got right. When that left nothing, the repair
+/// call's own error is the reason, so the Oracle names the real cause (a
+/// timeout, a rate limit, a login) and not a rejected batch.
+fn repaired_questions(
+    mut batch: questions::GeneratedBatch,
+    count: usize,
+    remaining: impl FnOnce() -> Duration,
+    ask: impl FnOnce(&str, Duration) -> Result<String, String>,
+) -> Result<Vec<QQuestion>, String> {
+    let Some(repair) = batch.repair_request(count) else {
+        return batch.into_questions();
+    };
+    let before = batch.accepted.len();
+    let remaining = remaining();
+    let mut repair_error = None;
+    let repaired = if remaining < MIN_REPAIR_TIME {
         eprintln!(
-            "CODE QUEST question repair: {before}/{count} accepted before, {}/{count} after ({repaired} of {} repairable repaired, {} rejected)",
-            batch.accepted.len(),
-            repair.originals.len(),
-            batch.rejected.len()
+            "CODE QUEST question repair skipped: {}s of the budget left",
+            remaining.as_secs()
         );
+        0
+    } else {
+        match ask(&repair.prompt, remaining) {
+            Ok(reply) => batch.merge_repairs(&repair, &reply, count),
+            Err(error) => {
+                eprintln!("CODE QUEST question repair failed: {error}");
+                repair_error = Some(error);
+                0
+            }
+        }
+    };
+    eprintln!(
+        "CODE QUEST question repair: {before}/{count} accepted before, {}/{count} after ({repaired} of {} repairable repaired, {} rejected)",
+        batch.accepted.len(),
+        repair.originals.len(),
+        batch.rejected.len()
+    );
+    match repair_error {
+        Some(error) if batch.accepted.is_empty() => Err(error),
+        _ => batch.into_questions(),
     }
-    batch.into_questions()
 }
 
 fn generate_and_save_questions(
@@ -1382,6 +1461,84 @@ mod question_policy_tests {
         );
     }
 
+    /// The output of a finished fixture process, whose exit status is real,
+    /// carrying `stdout` and an empty stderr as Claude's JSON mode does.
+    fn claude_output(fixture: &str, stdout: &str) -> Output {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            &format!("question_policy_tests::{fixture}"),
+            "--nocapture",
+        ]);
+        let output =
+            command_output_with_timeout(command, Duration::from_secs(30), "CLAUDE", None).unwrap();
+        Output {
+            status: output.status,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn claude_failures_reported_in_its_result_envelope_reach_their_category() {
+        let login = r#"{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Please run /login"}"#;
+        let limit = r#"{"type":"result","is_error":true,"result":"Claude AI usage limit reached|1759000000"}"#;
+        let overloaded =
+            r#"{"type":"result","result":"API Error: 529 {\"type\":\"overloaded_error\"}"}"#;
+        for (fixture, stdout, reason, category) in [
+            (
+                "silent_failure_fixture",
+                login,
+                "INVALID API KEY · PLEASE RUN /LOGIN",
+                "LOGIN NEEDED",
+            ),
+            (
+                "stdin_echo_fixture",
+                login,
+                "INVALID API KEY · PLEASE RUN /LOGIN",
+                "LOGIN NEEDED",
+            ),
+            (
+                "silent_failure_fixture",
+                limit,
+                "CLAUDE AI USAGE LIMIT REACHED|1759000000",
+                "RATE LIMITED",
+            ),
+            (
+                "stdin_echo_fixture",
+                limit,
+                "CLAUDE AI USAGE LIMIT REACHED|1759000000",
+                "RATE LIMITED",
+            ),
+            // After a failed exit the result is the cause even unflagged.
+            (
+                "silent_failure_fixture",
+                overloaded,
+                "API ERROR: 529 {\"TYPE\":\"OVERLOADED_ERROR\"}",
+                "PROVIDER OVERLOADED",
+            ),
+        ] {
+            let output = claude_output(fixture, stdout);
+            let error = provider_reply(AiProvider::Claude, &output).unwrap_err();
+            assert_eq!(error, format!("CLAUDE CALL FAILED - {reason}"), "{fixture}");
+            assert_eq!(question_failure_reason(&error), category, "{error}");
+        }
+
+        // An error envelope with no reason falls back to the exit code, and
+        // a successful one is still the reply.
+        let bare = claude_output("silent_failure_fixture", r#"{"is_error":true}"#);
+        assert_eq!(
+            provider_reply(AiProvider::Claude, &bare).unwrap_err(),
+            "CLAUDE CALL FAILED - EXIT CODE 7"
+        );
+        let ok = claude_output(
+            "stdin_echo_fixture",
+            r#"{"type":"result","is_error":false,"result":"[]"}"#,
+        );
+        assert_eq!(provider_reply(AiProvider::Claude, &ok).unwrap(), "[]");
+    }
+
     #[test]
     fn failure_reasons_skip_cli_preamble_and_prefer_announced_errors() {
         let banner = "OpenAI Codex v0.149.0 (research preview)\n--------\n\
@@ -1457,6 +1614,30 @@ mod question_policy_tests {
             assert!(!error.contains("NOT A GIT REPOSITORY"), "{error}");
         }
         assert_eq!(git_repo_check_within(&repo, GIT_TIMEOUT), Ok(true));
+
+        // Git answers `false` inside a bare repository or a `.git`
+        // directory: neither has a work tree, so both are refused without a
+        // save written beside them.
+        let bare = plain.join("bare.git");
+        let status = external_tools::git_command()
+            .args(["init", "--quiet", "--bare"])
+            .arg(&bare)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        for no_work_tree in [bare.clone(), repo.join(".git")] {
+            assert_eq!(
+                git_repo_check_within(&no_work_tree, GIT_TIMEOUT),
+                Ok(false),
+                "{no_work_tree:?}"
+            );
+            assert_eq!(
+                build_cartridge(&no_work_tree).err().as_deref(),
+                Some(NOT_A_REPOSITORY),
+                "{no_work_tree:?}"
+            );
+            assert!(!save::path_for(&no_work_tree).exists(), "{no_work_tree:?}");
+        }
 
         std::fs::remove_dir_all(plain).unwrap();
         remove_temporary_repo(repo);
@@ -1731,6 +1912,116 @@ mod question_policy_tests {
                 "generation and repair stay within the budget"
             );
         }
+    }
+
+    /// A repair reply fixing the first question of `request`, whose only
+    /// fault in the fixture batch is an over-long correct choice.
+    fn one_fixed_repair(request: &questions::RepairRequest) -> String {
+        let original = &request.originals[0];
+        serde_json::to_string(&serde_json::json!([{
+            "id": 1,
+            "q": original.q,
+            "concept": "interaction",
+            "choices": original.choices.iter().enumerate().map(|(index, choice)| {
+                let text = if index == 0 { "VALID ONES SURVIVE" } else { choice.text() };
+                serde_json::json!({ "text": text, "why": choice.why() })
+            }).collect::<Vec<_>>(),
+            "answer": 0,
+        }]))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_repair_pass_spends_only_the_budget_left_and_keeps_first_pass_questions() {
+        let plenty = || MIN_REPAIR_TIME * 3;
+        let first_pass = questions::tests::over_length_batch();
+        assert!(!first_pass.accepted.is_empty());
+        let mut empty = first_pass.clone();
+        empty.accepted.clear();
+        let never = |_: &str, _: Duration| -> Result<String, String> {
+            panic!("no repair call is made with less than MIN_REPAIR_TIME left")
+        };
+        let rate_limited = "CLAUDE CALL FAILED - ERROR: RATE LIMIT REACHED".to_string();
+
+        // Too little time left: no call, and the first reply stands.
+        let short = || MIN_REPAIR_TIME - Duration::from_millis(1);
+        assert_eq!(
+            repaired_questions(first_pass.clone(), 6, short, never),
+            Ok(first_pass.accepted.clone())
+        );
+        assert_eq!(
+            repaired_questions(empty.clone(), 6, short, never),
+            Err("INCOMPLETE OR INVALID QUESTIONS".to_string()),
+            "a skipped repair leaves the first reply's rejection as the reason"
+        );
+
+        // The call gets exactly what is left, and its failure keeps what the
+        // first reply got right.
+        let asked = std::cell::Cell::new(None);
+        let failing = |_: &str, timeout: Duration| {
+            asked.set(Some(timeout));
+            Err(rate_limited.clone())
+        };
+        assert_eq!(
+            repaired_questions(first_pass.clone(), 6, plenty, failing),
+            Ok(first_pass.accepted.clone())
+        );
+        assert_eq!(asked.get(), Some(plenty()));
+
+        // With nothing accepted, the failed call's cause is the reason.
+        let error = repaired_questions(empty.clone(), 6, plenty, |_, _| Err(rate_limited.clone()))
+            .unwrap_err();
+        assert_eq!(error, rate_limited);
+        assert_eq!(question_failure_reason(&error), "RATE LIMITED");
+
+        // A good repair is merged into the batch.
+        let request = empty.repair_request(6).unwrap();
+        let reply = one_fixed_repair(&request);
+        let repaired = repaired_questions(empty.clone(), 6, plenty, |prompt: &str, _: Duration| {
+            assert_eq!(prompt, request.prompt);
+            Ok(reply.clone())
+        })
+        .unwrap();
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].choices[0].text(), "VALID ONES SURVIVE");
+
+        // A full batch needs no repair.
+        let mut full = first_pass.clone();
+        full.rejected.clear();
+        assert_eq!(
+            repaired_questions(full, first_pass.accepted.len(), plenty, never),
+            Ok(first_pass.accepted.clone())
+        );
+    }
+
+    #[test]
+    fn an_unreadable_save_stops_generation_before_the_provider_is_asked() {
+        let repo = temporary_git_repo();
+        let save_path = save::path_for(&repo);
+        let truncated = r#"{"schema_version":1,"data":{"quiz.progress":{"#;
+        std::fs::write(&save_path, truncated).unwrap();
+
+        let asked = std::cell::Cell::new(0);
+        let result = ai_questions_with(
+            &repo,
+            1,
+            6,
+            Some(AiProvider::Claude),
+            AI_QUESTION_TIMEOUT,
+            |_, _, _| {
+                asked.set(asked.get() + 1);
+                Err("CLAUDE CALL TIMED OUT".to_string())
+            },
+        );
+        assert_eq!(result, Err("CARTRIDGE SAVE IS CORRUPT".to_string()));
+        assert_eq!(asked.get(), 0, "no provider call is paid for");
+        assert_eq!(
+            question_failure_reason("CARTRIDGE SAVE IS CORRUPT"),
+            "SAVE FAILED"
+        );
+        assert_eq!(std::fs::read_to_string(&save_path).unwrap(), truncated);
+
+        remove_temporary_repo(repo);
     }
 
     #[test]
