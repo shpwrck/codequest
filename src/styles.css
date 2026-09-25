@@ -792,7 +792,7 @@ html, body {
   position: absolute;
   left: 7px;
   right: 7px;
-  top: 39px;
+  top: 36px;
   width: calc(100% - 14px);
   border-collapse: separate;
   border-spacing: 0;
@@ -2021,6 +2021,92 @@ html, body {
 #rear-power-switch.on { top: 70px; }
 .ps-nub { display: none; }
 
+/* ============================ VOLUME ============================ */
+/* A knurled thumbwheel on the same edge as the power slider, below it, like
+   the handheld's analog volume wheel. Each detent rolls the knurl so its
+   index notch moves, and the molded meter beside it lights one LED per step. */
+.volume-wheel {
+  position: absolute;
+  top: 146px;
+  width: 9px;
+  height: 40px;
+  overflow: hidden;
+  background: #8c8da6;
+  border: 3px solid #101124;
+  cursor: pointer;
+  z-index: 5;
+  touch-action: none;
+}
+#volume-wheel { right: -12px; border-radius: 0 5px 5px 0; }
+#rear-volume-wheel { left: -12px; border-radius: 5px 0 0 5px; }
+.volume-wheel:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.volume-knurl {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -12px;
+  bottom: -12px;
+  background:
+    linear-gradient(90deg, rgba(0,0,0,.28), transparent 45%, rgba(255,255,255,.18) 70%, rgba(0,0,0,.2)),
+    repeating-linear-gradient(to bottom, #e1e2ee 0 2px, #9798b1 2px 4px);
+  transition: transform .14s ease-out;
+}
+.volume-knurl::after {
+  /* the index notch: a dark groove that rides with the knurl */
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  margin-top: -1px;
+  background: #1a1c2c;
+  box-shadow: 0 1px 0 rgba(255,255,255,.35);
+}
+.volume-wheel[data-level="mute"] .volume-knurl { transform: translateY(12px); }
+.volume-wheel[data-level="low"] .volume-knurl { transform: translateY(4px); }
+.volume-wheel[data-level="mid"] .volume-knurl { transform: translateY(-4px); }
+.volume-wheel[data-level="high"] .volume-knurl { transform: translateY(-12px); }
+.volume-meter {
+  /* molded legend beside the wheel: VOL under a rising three-step ladder */
+  position: absolute;
+  right: 9px;
+  top: 150px;
+  width: 20px;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.volume-legend {
+  margin-top: 2px;
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: #c3c4da;
+  text-shadow: 0 1px 0 rgba(0,0,0,.4);
+}
+.volume-led {
+  height: 4px;
+  border-radius: 1px;
+  background: #2b2d5c;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,.45), 0 1px 0 rgba(255,255,255,.12);
+  transition: background .12s, box-shadow .12s;
+}
+.volume-led:nth-child(2) { width: 6px; }
+.volume-led:nth-child(3) { width: 9px; }
+.volume-led:nth-child(4) { width: 12px; }
+.volume-meter[data-level="low"] .volume-led:nth-child(2),
+.volume-meter[data-level="mid"] .volume-led:nth-child(-n+3),
+.volume-meter[data-level="high"] .volume-led {
+  background: var(--green);
+  box-shadow: 0 0 4px var(--green);
+}
+.volume-meter[data-level="mute"] .volume-legend { color: #f0798b; }
+@media (prefers-reduced-motion: reduce) {
+  .volume-knurl, .volume-led { transition: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .power-led.rejected { animation: none; background: #f02f4f; filter: none; }
   .power-led.checking { animation: none; }
@@ -2428,16 +2514,44 @@ html, body {
 .cart-card.add { background: #1c1d38; }
 .cart-card.add .cc-label { background: transparent; border-style: dashed; color: #9ec3ff; }
 .cart-card.add, .cart-card.eject { cursor: pointer; }
-#tray-error {
-  margin-top: 12px;
+/* Message lines stay rendered while empty so their live regions are already
+   in the accessibility tree when a message arrives. */
+#tray-error,
+#battery-tray-error {
   font-size: 7px;
   letter-spacing: 1px;
   color: #ff5a70;
   animation: errBlink 1s steps(2) infinite;
 }
-#tray-error.hidden { display: none; }
-#tray-error.notice { color: #67dc87; }
+#tray-error:not(:empty),
+#battery-tray-error:not(:empty) { margin-top: 12px; }
+#tray-error.notice,
+#battery-tray-error.notice { color: #67dc87; }
 @keyframes errBlink { 50% { opacity: .45; } }
+
+/* Device status strip: the visible, announced surface for shell messages
+   raised while no tray is open (startup, power, boot, and battery faults). */
+#device-message {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 55;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 8px 12px 7px;
+  font: 8px/1.6 'Press Start 2P', monospace;
+  letter-spacing: 1px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  color: #ff7187;
+  background: var(--ink);
+  border: 2px solid #ff5a70;
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 rgba(16,17,36,.55), 0 8px 24px rgba(0,0,0,.38);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+#device-message:empty { opacity: 0; }
+#device-message.notice { color: #67dc87; border-color: #38b764; }
 
 /* ============================ QUIZ MODE ============================ */
 #scr-menu { background: var(--navy); }

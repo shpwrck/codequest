@@ -36,6 +36,13 @@ rules = ["The current choice is always visible.", "Confirm advances to the selec
 feedback = ["Highlight the current choice by pointer, shape, and color.", "Use distinct navigation, confirmation, cancellation, and unavailable responses.", "Emit at most one response per input edge and do not stack cues across scene transitions."]
 
 [[mechanics]]
+id = "review-lessons"
+summary = "Open the Oracle Codex to see per-lens mastery and reread every lesson the Oracle has taught, so a missed concept can be studied before it returns."
+inputs = ["d-pad", "l", "r", "a", "start", "b"]
+rules = ["The Codex reads the cartridge's lesson journal and mastery evidence and never changes mastery or the question deck.", "Page 0 shows every lens (purpose, roles, flows, invariants, tradeoffs) with three mastery runes that wake at exactly 1, 3, and 5 pieces of evidence; evidence is first-try successes plus misses redeemed in a later launch. Rune II also needs 60% of the lens's newest five graded answers correct and rune III 80% plus no pending review; a rune those gates hold back shows cracked, and the totals row then reads CRACKED = REVIEW DUE while a cracked lens has a pending review, or CRACKED = LOW ACCURACY while only recent accuracy holds its runes back.", "Every later page shows one lesson, oldest first: its lens and the question, then for a learned lesson the correct answer and the rationale explaining why it holds; a sealed lesson shows its self-test instead until A reveals them.", "Left, Up, and L turn back one page; Right, Down, and R turn forward one page; paging wraps between the mastery page and the newest lesson.", "B returns to the quiz menu on its input edge; A and Start reveal a sealed lesson's answer and are inactive on every other page.", "A lesson whose latest attempt was wrong stays marked for review until the player answers it correctly when it returns.", "A pending lesson, or a relearned lesson whose spaced check is still due, is a self-test: it shows the wrong choice the player picked and the misconception it reveals, and keeps the answer sealed; every page turn and every visit seals it again.", "A reveals a sealed lesson's answer; revealing it before the review or spaced check counts the next correct answer as relearning, which lights no rune and brings the question back once more as a spaced check.", "An empty journal says so honestly and explains that answering trials writes lessons."]
+feedback = ["Mark each lens with pending reviews by an amber count beside its runes, not by color alone.", "Show the page counter, lens, and mastery runes for the lesson's lens in the header of every lesson page.", "Mark outstanding lessons REVIEW PENDING in amber (PENDING PEEKED once revealed), relearned lessons awaiting their spaced check CHECK PENDING in amber (CHECK PEEKED once revealed), and learned lessons LEARNED in cyan.", "Show the pick in red with a - marker, the revealed or learned answer in green, and legacy lessons without a rationale as an explicit gap rather than blank space.", "Summarize learned lessons and pending reviews on the quiz menu, and on the mastery page while no rune is cracked; while one is, the per-lens amber counts carry the pending reviews and the totals row explains the crack."]
+
+[[mechanics]]
 id = "customize-hero"
 summary = "Choose the hero name, path, and aura before beginning a run."
 inputs = ["d-pad", "a", "b", "start"]
@@ -53,8 +60,8 @@ feedback = ["Use distinct authored crystal and corruption silhouettes in additio
 id = "answer-question"
 summary = "Choose one of four answers to a conceptual project question."
 inputs = ["d-pad", "a", "b"]
-rules = ["Exactly one answer is correct.", "A wrong answer costs one ward and resets flow; three, two, one, and zero wards are full, strained, fractured, and broken stages.", "Correct answers build flow: streaks 0-2 award x1 score, 3-5 award x2, and 6 or more award x3.", "Cumulative score awakens Insight Runes I, II, and III at 300, 900, and 1800 points.", "Committing an answer records that question in the cartridge save; future runs and launches skip every recorded question.", "After commitment, hold the revealed answer for 45 ticks; all inputs are intentionally inactive until the automatic transition completes."]
-feedback = ["Reveal whether the answer was correct through text, shape, animation, and color.", "Show the correct answer after a mistake.", "Use three authored Oracle ward runes for health instead of generic pips; communicate full, strained, fractured, and broken states through fill, count, color, and a concise review banner.", "Show flow multiplier, raw score, and three awakening Insight Rune marks together; announce exact threshold crossings before establishing the new baseline.", "Replace active answer/back prompts with the owned review, ward, flow, or rune response during the 45-tick result hold."]
+rules = ["Exactly one answer is correct.", "A wrong answer costs one ward and resets flow; three, two, one, and zero wards are full, strained, fractured, and broken stages.", "Correct answers build flow: streaks 0-2 award x1 score, 3-5 award x2, and 6 or more award x3.", "Cumulative score awakens Insight Runes I, II, and III at 300, 900, and 1800 points.", "Choices appear in a stable per-question shuffle, and every retry moves every choice, so answer position never predicts the answer.", "Committing an answer records evidence for its concept lens; a correct first try retires the question for later runs and launches, while a miss keeps it queued for review until a later launch redeems it.", "A survivable miss returns after exactly three other questions, carrying into the next batch when the current one ends sooner, so the batch still closes on time.", "A correct retry in the same launch clears the pending review but counts as relearning; only a correct answer when the miss returns in a later launch is a redemption and mastery evidence.", "After commitment, hold the lesson card for 45 ticks with every input intentionally inactive, then continue only on a fresh A or Start press.", "B arms a 90-tick leave confirmation; a second B inside the window leaves the run."]
+feedback = ["Reveal whether the answer was correct through text, shape, animation, and color.", "Show the correct answer after a mistake.", "Use three authored Oracle ward runes for health instead of generic pips; communicate full, strained, fractured, and broken states through fill, count, color, and a concise review banner.", "Show flow multiplier, raw score, and three awakening Insight Rune marks together; announce exact threshold crossings before establishing the new baseline.", "Replace the choices with a lesson card: a miss shows the chosen answer with the misconception its rationale names, then the correct answer with why it holds; a success shows the answer and why it holds.", "Replace active answer/back prompts with the owned review, ward, flow, rune, or REDEEMED response during the lesson hold, then show A:CONTINUE."]
 
 [[mechanics]]
 id = "continue-after-reward"
@@ -125,6 +132,13 @@ kind = "ui"
 summary = "A rune-and-circuit menu frame that carries the Oracle world into navigation."
 template = "oracle-menu"
 requirements = ["Fits 240x160 without empty placeholder regions.", "Shows focus through pointer, shape, and color.", "Supports idle, focused, confirmed, and cancelled states."]
+
+[[art]]
+id = "codex-frame"
+kind = "ui"
+summary = "The Oracle Codex: an archive of lens mastery and a readable journal of every lesson."
+template = "oracle-codex"
+requirements = ["Composites the mastery page inside the dormant archive frame so earned runes are the only emissive marks.", "Composites lesson pages on the trial chamber so a lesson rereads in the same place it was first learned.", "Fits five lens rows with three mastery runes and a pending-review count, plus learned and pending totals.", "Fits a page counter, lens, four 31-character question lines, a two-line answer, and three 34-character rationale lines at native scale.", "Keeps every live foreground inside the measured usable interior of its panel, disjoint from siblings, and readable against the panel fill.", "Has explicit empty-journal and missing-rationale states."]
 
 [[art]]
 id = "character-frame"
@@ -333,7 +347,7 @@ id = "quiz-menu"
 title = "Quiz Menu"
 kind = "menu"
 handler = "quiz-menu"
-summary = "Explain the run at a glance and offer start or return."
+summary = "Summarize the lesson journal, then offer a new run, the Codex, or a return to the title."
 mechanics = ["navigate-menu"]
 art = ["menu-frame", "ui-soundscape"]
 
@@ -342,8 +356,25 @@ signal = "new-run"
 target = "character-creation"
 
 [[scenes.transitions]]
+signal = "open-codex"
+target = "codex"
+
+[[scenes.transitions]]
 signal = "back"
 target = "title"
+
+[[scenes]]
+id = "codex"
+title = "Oracle Codex"
+kind = "review"
+handler = "codex"
+summary = "Make learning evidence visible: per-lens mastery runes and every lesson with its rationale, so a missed concept can be studied before its retry."
+mechanics = ["review-lessons"]
+art = ["codex-frame", "ui-soundscape"]
+
+[[scenes.transitions]]
+signal = "back"
+target = "quiz-menu"
 
 [[scenes]]
 id = "character-creation"

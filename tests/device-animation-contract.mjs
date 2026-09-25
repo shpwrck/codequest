@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const adapter = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
 function block(selector) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -32,4 +34,15 @@ assert.match(css, /@keyframes guideBob\s*\{[^}]*transform:/s, "Guide movement is
 assert.doesNotMatch(css, /@keyframes guideBob\s*\{[^}]*margin-top:/s, "Guide movement triggers layout every frame");
 assert.match(canvas, /image-rendering:\s*pixelated/, "Smoothing the shell must not blur the game framebuffer");
 
-console.log("Device animation contract OK: smooth shell motion with a crisp framebuffer");
+// The framebuffer's own decorative motion follows the host preference too: the
+// shell forwards prefers-reduced-motion (initially and on change) and the
+// engine, not the shell, decides what freezes.
+const syncMotion = adapter.match(/function syncReducedMotion\(\) \{([\s\S]*?)\n  \}/);
+assert.ok(syncMotion, "The shell must forward the reduced-motion preference");
+assert.match(syncMotion[1], /prefers-reduced-motion: reduce/);
+assert.match(syncMotion[1], /invoke\("engine_set_reduced_motion", \{ reduced \}\)/);
+assert.match(adapter, /addEventListener\?\.\("change", syncReducedMotion\)/, "Preference changes must reach the engine");
+assert.match(rust, /fn engine_set_reduced_motion\(/);
+assert.match(rust, /engine_set_reduced_motion,/, "The reduced-motion command must be registered");
+
+console.log("Device animation contract OK: smooth shell motion, crisp framebuffer, forwarded reduced motion");

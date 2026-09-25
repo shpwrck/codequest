@@ -55,6 +55,66 @@ pub(crate) fn codex_command() -> Command {
     background_command(program)
 }
 
+/// On Unix, starts `command` as the leader of a new process group, so a
+/// timeout can stop everything it launches with [`kill_process_tree`], even
+/// after the leader itself has exited. Windows has no equivalent here (no job
+/// object is used), so this does nothing there.
+pub(crate) fn isolate_process_tree(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+/// Stops `child` and the processes it launched. Wrappers such as npm shims
+/// run the real CLI as a grandchild that inherits the output pipes, so
+/// stopping only the direct child would leave the call running.
+///
+/// On Unix this signals the whole process group, which reaches every
+/// descendant whether or not `child` is still running. On Windows it runs
+/// `taskkill /T`, which finds descendants by walking parent links from a live
+/// process: it stops the tree while `child` runs, but once `child` has exited
+/// its PID is no longer listed, so a helper that outlived it is not reached.
+pub(crate) fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        const SIGKILL: i32 = 9;
+        if let Ok(group) = i32::try_from(child.id()) {
+            // SAFETY: kill(2) takes plain integers and touches no memory. The
+            // child leads its own process group (see `isolate_process_tree`),
+            // so the negated id names exactly the processes it started.
+            unsafe {
+                kill(-group, SIGKILL);
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(|root| {
+                std::path::PathBuf::from(root)
+                    .join("System32")
+                    .join("taskkill.exe")
+            })
+            .filter(|candidate| candidate.is_file())
+            .map(std::path::PathBuf::into_os_string)
+            .unwrap_or_else(|| OsString::from("taskkill"));
+        let _ = background_command(taskkill)
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+}
+
 pub(crate) fn quest_shell_command() -> Option<Command> {
     if let Some(shell) = configured_program("CQA_SHELL") {
         return Some(background_command(shell));
@@ -135,26 +195,55 @@ fn windows_git_executable() -> Option<std::path::PathBuf> {
     })
 }
 
+/// An npm global install's `<name>.cmd` shim, on `PATH` or in npm's default
+/// prefix. Rust starts batch files through `cmd.exe`, which is safe here
+/// because provider arguments are plain flags and prompts travel on stdin.
 #[cfg(target_os = "windows")]
-fn windows_claude_executable() -> Option<std::path::PathBuf> {
-    executable_on_path("claude.exe").or_else(|| {
-        let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+fn npm_shim(name: &str) -> Option<std::path::PathBuf> {
+    let file_name = format!("{name}.cmd");
+    executable_on_path(&file_name).or_else(|| {
+        let app_data = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
         first_installed(
-            home.into_iter()
-                .map(|directory| directory.join(".local").join("bin").join("claude.exe")),
+            app_data
+                .into_iter()
+                .map(|directory| directory.join("npm").join(&file_name)),
         )
     })
 }
 
 #[cfg(target_os = "windows")]
+fn windows_claude_executable() -> Option<std::path::PathBuf> {
+    executable_on_path("claude.exe")
+        .or_else(|| {
+            let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+            first_installed(
+                home.into_iter()
+                    .map(|directory| directory.join(".local").join("bin").join("claude.exe")),
+            )
+        })
+        .or_else(|| npm_shim("claude"))
+}
+
+#[cfg(target_os = "windows")]
 fn windows_codex_executable() -> Option<std::path::PathBuf> {
-    executable_on_path("codex.exe").or_else(|| {
-        let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
-        first_installed(
-            home.into_iter()
-                .map(|directory| directory.join(".local").join("bin").join("codex.exe")),
-        )
-    })
+    executable_on_path("codex.exe")
+        .or_else(|| {
+            let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+            let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+            first_installed(
+                home.into_iter()
+                    .map(|directory| directory.join(".local").join("bin").join("codex.exe"))
+                    .chain(local_app_data.into_iter().map(|directory| {
+                        directory
+                            .join("Programs")
+                            .join("OpenAI")
+                            .join("Codex")
+                            .join("bin")
+                            .join("codex.exe")
+                    })),
+            )
+        })
+        .or_else(|| npm_shim("codex"))
 }
 
 #[cfg(target_os = "windows")]
@@ -217,6 +306,64 @@ fn windows_git_bash() -> Option<std::path::PathBuf> {
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
         .map(|directory| directory.join("bash.exe"))
         .find(|candidate| candidate.is_file() && !is_windows_subsystem_launcher(candidate))
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod configured_program_tests {
+    use super::*;
+
+    const FIXTURE: &str = "external_tools::configured_program_tests::configured_programs_fixture";
+
+    /// Prints the program each launcher resolves to, one per line. Runs in a
+    /// child process so the parent can set the variables without racing
+    /// other tests.
+    #[test]
+    #[ignore = "child-process fixture for the configured-program test"]
+    fn configured_programs_fixture() {
+        let shell = quest_shell_command().expect("a shell is always available off Windows");
+        for command in [git_command(), claude_command(), codex_command(), shell] {
+            println!("PROGRAM={}", command.get_program().to_string_lossy());
+        }
+    }
+
+    fn resolved_programs(variables: &[(&str, &str)]) -> Vec<String> {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--ignored", "--exact", FIXTURE, "--nocapture"]);
+        for variable in ["CQA_GIT", "CQA_CLAUDE", "CQA_CODEX", "CQA_SHELL"] {
+            command.env_remove(variable);
+        }
+        command.envs(variables.iter().copied());
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("PROGRAM="))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn each_launcher_honors_only_its_own_nonempty_override() {
+        assert_eq!(
+            resolved_programs(&[
+                ("CQA_GIT", "/opt/git"),
+                ("CQA_CLAUDE", "/opt/claude"),
+                ("CQA_CODEX", "/opt/codex"),
+                ("CQA_SHELL", "/opt/shell"),
+            ]),
+            ["/opt/git", "/opt/claude", "/opt/codex", "/opt/shell"]
+        );
+        // An empty override is no override: each falls back to its default.
+        assert_eq!(
+            resolved_programs(&[
+                ("CQA_GIT", ""),
+                ("CQA_CLAUDE", ""),
+                ("CQA_CODEX", ""),
+                ("CQA_SHELL", ""),
+            ]),
+            ["git", "claude", "codex", "bash"]
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]

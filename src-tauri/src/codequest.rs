@@ -104,6 +104,8 @@ pub enum VisualTemplate {
     Aftermath,
     #[serde(rename = "oracle-progression")]
     Progression,
+    #[serde(rename = "oracle-codex")]
+    Codex,
 }
 
 impl CodeQuestConfig {
@@ -282,6 +284,7 @@ fn handler_supports_game(handler: SceneHandler, game_type: GameType) -> bool {
                 | Handler::ConceptQuiz
                 | Handler::LevelUp
                 | Handler::GameOver
+                | Handler::Codex
         ),
         GameType::Quest => matches!(
             handler,
@@ -420,6 +423,112 @@ mod tests {
     }
 
     #[test]
+    fn schema_v2_rejects_the_lesson_codex_in_quest_games() {
+        let error = CodeQuestConfig::parse(
+            r#"
+                schema_version = 2
+
+                [game]
+                type = "quest"
+                start_scene = "codex"
+
+                [[scenes]]
+                id = "codex"
+                title = "Oracle Codex"
+                kind = "review"
+                handler = "codex"
+            "#,
+        )
+        .expect_err("quest cartridges have no lesson journal to review");
+
+        assert!(error.contains("handler `Codex` is not available for `Quest` games"));
+    }
+
+    #[test]
+    fn schema_v2_compiles_a_quiz_menu_codex_route() {
+        let config = CodeQuestConfig::parse(
+            r#"
+                schema_version = 2
+
+                [game]
+                type = "quiz"
+                start_scene = "quiz-menu"
+
+                [[art]]
+                id = "codex-frame"
+                kind = "ui"
+                summary = "The lesson journal."
+                template = "oracle-codex"
+
+                [[scenes]]
+                id = "quiz-menu"
+                title = "Quiz Menu"
+                kind = "menu"
+                handler = "quiz-menu"
+
+                [[scenes.transitions]]
+                signal = "open-codex"
+                target = "codex"
+
+                [[scenes]]
+                id = "codex"
+                title = "Oracle Codex"
+                kind = "review"
+                handler = "codex"
+                art = ["codex-frame"]
+
+                [[scenes.transitions]]
+                signal = "back"
+                target = "quiz-menu"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.art[0].template, Some(VisualTemplate::Codex));
+
+        let mut machine = SceneMachine::new(config.runtime_machine().unwrap().unwrap());
+        let change = machine
+            .handle(SceneEvent::Signal(SceneSignal::OpenCodex))
+            .unwrap();
+        assert_eq!(
+            (change.target.as_str(), change.handler),
+            ("codex", SceneHandler::Codex)
+        );
+        assert_eq!(
+            machine
+                .handle(SceneEvent::Signal(SceneSignal::Back))
+                .unwrap()
+                .target,
+            "quiz-menu"
+        );
+    }
+
+    #[test]
+    fn codex_routes_must_use_signals_the_codex_emits() {
+        let error = CodeQuestConfig::parse(
+            r#"
+                schema_version = 2
+
+                [game]
+                type = "quiz"
+                start_scene = "codex"
+
+                [[scenes]]
+                id = "codex"
+                title = "Oracle Codex"
+                kind = "review"
+                handler = "codex"
+
+                [[scenes.transitions]]
+                signal = "new-run"
+                target = "codex"
+            "#,
+        )
+        .expect_err("the codex is read-only and can only go back");
+
+        assert!(error.contains("handler `Codex` cannot emit signal `NewRun`"));
+    }
+
+    #[test]
     fn repository_manifest_defines_the_shipped_quiz_storyboard() {
         let repository_manifest = include_str!("../../CODEQUEST.toml");
         let documented_example = include_str!("../../docs/examples/CODEQUEST.toml");
@@ -481,9 +590,36 @@ mod tests {
                 .filter_map(|art| art.template)
                 .collect::<HashSet<_>>()
                 .len(),
-            11,
+            12,
             "the dogfood cartridge should exercise every built-in Oracle visual template"
         );
+        let menu = config
+            .scenes
+            .iter()
+            .find(|scene| scene.id == "quiz-menu")
+            .expect("the storyboard should include the quiz menu");
+        assert!(menu.transitions.iter().any(|transition| {
+            transition.signal == SceneSignal::OpenCodex && transition.target == "codex"
+        }));
+        let codex = config
+            .scenes
+            .iter()
+            .find(|scene| scene.id == "codex")
+            .expect("the storyboard should let the player reread every lesson");
+        assert_eq!(codex.handler, Some(SceneHandler::Codex));
+        assert_eq!(
+            codex.transitions,
+            vec![SceneTransition {
+                signal: SceneSignal::Back,
+                target: "quiz-menu".into(),
+                after_ticks: None,
+            }]
+        );
+        assert!(codex.mechanics.iter().any(|id| id == "review-lessons"));
+        assert!(codex.art.iter().any(|art_id| config
+            .art
+            .iter()
+            .any(|art| art.id == *art_id && art.template == Some(VisualTemplate::Codex))));
         assert!(config.scenes.iter().any(|scene| scene.id == "quiz"));
         assert!(config.runtime_machine().unwrap().is_some());
     }

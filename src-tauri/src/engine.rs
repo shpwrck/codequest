@@ -1,15 +1,25 @@
-use std::collections::{HashSet, VecDeque};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Stdio};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::process::{Child, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 
+use crate::audio::{
+    self, pad, AnswerPhase, AudioBatch, AudioOut, AudioQueue, AudioScene, AudioSnapshot,
+    QuestionStatus, RunAudio, Tier,
+};
 use crate::codequest::{CodeQuestConfig, GameType, VisualTemplate};
 use crate::external_tools;
 use crate::font5x7::{glyph, GLYPH_ADVANCE, GLYPH_WIDTH, LINE_HEIGHT};
+use crate::learning::{
+    self, AnswerEvidence, Concept, LensRecord, Lesson, Mastery, ProgressEvent, Review,
+    RATIONALE_COLUMNS, RATIONALE_ROWS,
+};
 use crate::scene_machine::{
     SceneEvent, SceneHandler, SceneMachine, SceneMachineDefinition, SceneSignal,
 };
@@ -36,10 +46,18 @@ const ORACLE_HERO_SPEED: i32 = 2;
 const ORACLE_DROP_INTERVAL: u64 = 30;
 const ORACLE_COLLISION_Y: i32 = 100;
 const QUIZ_FEEDBACK_TICKS: u16 = 45;
-const LEVEL_UP_HOLD_TICKS: u64 = 60;
+/// Ticks after a first B in which a second B leaves an active question.
+const QUIZ_LEAVE_CONFIRM_TICKS: u16 = 90;
+/// Other questions answered between a miss and its review copy. The copy may
+/// carry into the next batch to keep this gap.
+const RETRY_GAP: usize = 3;
 const SCORE_RUNE_THRESHOLDS: [u32; 3] = [300, 900, 1_800];
 const DATA_CHARGE_THRESHOLDS: [u32; 3] = [3, 6, 9];
 const BUG_BREACH_THRESHOLDS: [u32; 3] = [1, 3, 5];
+/// How often the quest waiter checks whether the quest shell has exited.
+const QUEST_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// How long a finished quest's remaining output may keep arriving.
+const QUEST_OUTPUT_GRACE: Duration = Duration::from_secs(1);
 
 const INK: Color = Color::rgb(26, 28, 44);
 const NAVY: Color = Color::rgb(41, 54, 111);
@@ -291,6 +309,26 @@ const TRIAL_WARD_X: i32 = 126;
 const TRIAL_STREAK_X: i32 = 180;
 const TRIAL_SCORE_RUNES_X: i32 = 194;
 const TRIAL_SCORE_X: i32 = 215;
+/// The composed lesson panel that replaces the trial plate's four choice
+/// frames after a commitment. It spans the frames plus the free margin beside
+/// them so a full rationale row keeps visible padding inside the border.
+const TRIAL_LESSON_BOX: UiBox = UiBox {
+    x: 20,
+    y: 69,
+    width: 210,
+    height: 89,
+};
+/// The legacy quiz's lesson panel over its choice rows.
+const QUIZ_LESSON_BOX: UiBox = UiBox {
+    x: 5,
+    y: 68,
+    width: 230,
+    height: 80,
+};
+/// Top of the legacy lesson card's INK footer strip, just below the panel.
+const QUIZ_LESSON_FOOTER_STRIP_Y: i32 = QUIZ_LESSON_BOX.y + QUIZ_LESSON_BOX.height;
+/// Extra pixels between the misconception block and the answer block.
+const LESSON_BLOCK_GAP: i32 = 4;
 const ASCENSION_TITLE_BOX: UiBox = UiBox {
     x: 47,
     y: 68,
@@ -303,10 +341,11 @@ const ASCENSION_LEVEL_BOX: UiBox = UiBox {
     width: 70,
     height: 16,
 };
+/// The batch recap beside the risen hero, wide enough for `1ST TRY 99/99`.
 const ASCENSION_BATCH_BOX: UiBox = UiBox {
-    x: 158,
+    x: 148,
     y: 117,
-    width: 75,
+    width: 85,
     height: 16,
 };
 const AFTERMATH_CONTENT_BOX: UiBox = UiBox {
@@ -315,6 +354,65 @@ const AFTERMATH_CONTENT_BOX: UiBox = UiBox {
     width: 85,
     height: 116,
 };
+const CODEX_HEADING_BOX: UiBox = UiBox {
+    x: 62,
+    y: 40,
+    width: 116,
+    height: 7,
+};
+const CODEX_LENS_ROW_Y: i32 = 54;
+const CODEX_LENS_ROW_PITCH: i32 = 11;
+const CODEX_LENS_LABEL_X: i32 = 69;
+const CODEX_LENS_RUNES_X: i32 = 133;
+const CODEX_LENS_PENDING_X: i32 = 159;
+const CODEX_TOTALS_BOX: UiBox = UiBox {
+    x: 42,
+    y: 122,
+    width: 156,
+    height: 17,
+};
+const CODEX_PROMPT_BOX: UiBox = UiBox {
+    x: 42,
+    y: 141,
+    width: 156,
+    height: 16,
+};
+const CODEX_LESSON_HEADER_BOX: UiBox = UiBox {
+    x: 37,
+    y: 2,
+    width: 203,
+    height: 28,
+};
+const CODEX_QUESTION_BOX: UiBox = UiBox {
+    x: 17,
+    y: 31,
+    width: 197,
+    height: 38,
+};
+/// Lesson panels start clear of the trial plate's portrait frame and end
+/// before its brazier (question) or pillar (answer and rationale).
+const CODEX_ANSWER_BOX: UiBox = UiBox {
+    x: 17,
+    y: 71,
+    width: 212,
+    height: 15,
+};
+const CODEX_RATIONALE_BOX: UiBox = UiBox {
+    x: 17,
+    y: 88,
+    width: 212,
+    height: 66,
+};
+const CODEX_TEXT_X: i32 = 23;
+const CODEX_ANSWER_TEXT_X: i32 = 31;
+const CODEX_QUESTION_Y: i32 = 35;
+const CODEX_ANSWER_Y: i32 = 75;
+const CODEX_WHY_Y: i32 = 103;
+const CODEX_RATIONALE_Y: i32 = 116;
+/// A sealed lesson's self-test: the `YOU CHOSE` heading, then the pick and
+/// the first misconception row, each `CODEX_CHOSE_GAP` pixels apart.
+const CODEX_CHOSE_Y: i32 = 99;
+const CODEX_CHOSE_GAP: i32 = 11;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PresentationTier {
@@ -405,16 +503,28 @@ pub struct QuestSpec {
     pub command: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct QuizQuestion {
     pub question: String,
     pub choices: Vec<String>,
     pub answer: usize,
+    /// The conceptual lens this question assesses, when the provider named one.
+    pub concept: Option<Concept>,
+    /// One rationale per choice (same order as `choices`), or empty for legacy
+    /// questions generated before rationales existed.
+    pub rationales: Vec<String>,
+    /// Whether this question returns because the player previously missed
+    /// it, and whether that miss was in this launch or an earlier one.
+    pub review: Review,
 }
 
+/// Generates a question batch for a cartridge, level, and count. A failure
+/// carries a short upper-case reason the waiting Oracle shows the player.
 pub type QuestionLoader =
-    Arc<dyn Fn(String, u32, usize) -> Vec<QuizQuestion> + Send + Sync + 'static>;
-pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, String) + Send + Sync + 'static>;
+    Arc<dyn Fn(String, u32, usize) -> Result<Vec<QuizQuestion>, String> + Send + Sync + 'static>;
+/// Persists a learner-progress event (a committed answer or a Codex reveal)
+/// for the cartridge id it is given.
+pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, ProgressEvent) + Send + Sync + 'static>;
 
 pub fn quiz_question_fits(question: &str, choices: &[String], answer: usize) -> bool {
     !question.trim().is_empty()
@@ -457,6 +567,18 @@ pub struct CartridgeSpec {
     pub quests: Vec<QuestSpec>,
     pub questions: Vec<QuizQuestion>,
     pub question_batch_ends: Vec<usize>,
+    /// The generation level of each batch, parallel to `question_batch_ends`.
+    /// Empty when the save did not record levels; the engine then assumes the
+    /// batches climb one level each from 1.
+    pub question_batch_levels: Vec<u32>,
+    /// The player's lesson journal for this cartridge, oldest first.
+    pub lessons: Vec<Lesson>,
+    /// Per-lens mastery evidence accumulated across launches.
+    pub mastery: Mastery,
+    /// Committed attempts per normalized question identity, kept across runs
+    /// and (for questions still in play) launches, so a question that returns
+    /// always rotates its choices past the layout the player last saw.
+    pub question_attempts: HashMap<String, u32>,
 }
 
 impl CartridgeSpec {
@@ -514,6 +636,7 @@ enum Screen {
     Quiz,
     LevelUp,
     GameOver,
+    Codex,
     QuestSelect,
     Battle,
     Victory,
@@ -532,6 +655,7 @@ impl From<SceneHandler> for Screen {
             SceneHandler::ConceptQuiz => Self::Quiz,
             SceneHandler::LevelUp => Self::LevelUp,
             SceneHandler::GameOver => Self::GameOver,
+            SceneHandler::Codex => Self::Codex,
             SceneHandler::QuestSelect => Self::QuestSelect,
             SceneHandler::Battle => Self::Battle,
             SceneHandler::Victory => Self::Victory,
@@ -540,15 +664,22 @@ impl From<SceneHandler> for Screen {
     }
 }
 
+// Commands are short-lived queue entries and cartridge inserts are rare, so
+// the large cartridge variant is not worth boxing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 enum EngineCommand {
     Power(bool),
+    ReducedMotion(bool),
     AiProvider(Option<String>),
     BootComplete,
     Cartridge(Option<CartridgeSpec>),
     Questions {
         cartridge_id: String,
-        questions: Vec<QuizQuestion>,
+        /// The generated batch, or why generation failed.
+        result: Result<Vec<QuizQuestion>, String>,
+        /// The `RequestQuestions` sequence number this reply answers.
+        seq: u64,
     },
     Input {
         button: Button,
@@ -557,22 +688,37 @@ enum EngineCommand {
     QuestOutput {
         line: String,
         stderr: bool,
+        /// The `RunQuest` generation this output belongs to; output from an
+        /// earlier quest never lands in a later quest's log.
+        quest: u64,
     },
     QuestDone {
         success: bool,
+        quest: u64,
     },
 }
 
 #[derive(Clone, Debug)]
 enum EngineEffect {
-    RunQuest(String),
+    RunQuest {
+        command: String,
+        /// Echoed by the quest's output and completion.
+        quest: u64,
+    },
     AbortQuest,
     RequestQuestions {
         cartridge_id: String,
         level: u32,
         count: usize,
+        /// Echoed by the reply so a superseded request cannot land.
+        seq: u64,
     },
     RecordAnsweredQuestion {
+        cartridge_id: String,
+        evidence: AnswerEvidence,
+    },
+    /// The player revealed a pending lesson's answer in the Codex.
+    MarkPeeked {
         cartridge_id: String,
         question: String,
     },
@@ -587,6 +733,83 @@ struct Effects(VecDeque<EngineEffect>);
 #[derive(Resource)]
 struct Framebuffer {
     pixels: Vec<u8>,
+}
+
+/// A plate's address and grade (base, cyan, and gold scales), or no grade.
+type PlateKey = (usize, Option<[u16; 3]>);
+
+thread_local! {
+    /// RGBA expansions of the RGB plates drawn on this thread.
+    static PLATES: RefCell<Vec<(PlateKey, Box<[u8]>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Expands an RGB plate to opaque RGBA. A grade scales cyan-leaning pixels,
+/// gold-leaning pixels, and all others by its three `/255` factors.
+fn expand_plate(rgb: &[u8; NATIVE_RGB_BYTES], grade: Option<[u16; 3]>, rgba: &mut [u8]) {
+    let pixels = rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(rgba.as_chunks_mut::<4>().0.iter_mut());
+    let Some([base, cyan, gold]) = grade else {
+        for (source, destination) in pixels {
+            destination.copy_from_slice(&[source[0], source[1], source[2], 255]);
+        }
+        return;
+    };
+    for (source, destination) in pixels {
+        let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
+        let scale = if is_cyan_pixel(red, green, blue) {
+            cyan
+        } else if is_gold_pixel(red, green, blue) {
+            gold
+        } else {
+            base
+        };
+        destination.copy_from_slice(&[
+            (red * scale / 255) as u8,
+            (green * scale / 255) as u8,
+            (blue * scale / 255) as u8,
+            255,
+        ]);
+    }
+}
+
+fn is_cyan_pixel(red: u16, green: u16, blue: u16) -> bool {
+    blue > red.saturating_add(12) && green > red
+}
+
+fn is_gold_pixel(red: u16, green: u16, blue: u16) -> bool {
+    red > blue.saturating_add(14) && green > blue
+}
+
+/// Which awakening strength lights each pixel of the awakening plate: 0 the
+/// Oracle's center diamond, 1 cyan, 2 gold, 3 ambient. The plate is constant,
+/// so the classes are computed once.
+fn awakening_classes() -> &'static [u8] {
+    static CLASSES: OnceLock<Box<[u8]>> = OnceLock::new();
+    CLASSES.get_or_init(|| {
+        ORACLE_AWAKENING
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let x = (index % WIDTH) as i32;
+                let y = (index / WIDTH) as i32;
+                let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
+                if (x - 120).abs() + (y - 80).abs() < 47 {
+                    0
+                } else if is_cyan_pixel(red, green, blue) {
+                    1
+                } else if is_gold_pixel(red, green, blue) {
+                    2
+                } else {
+                    3
+                }
+            })
+            .collect()
+    })
 }
 
 impl Default for Framebuffer {
@@ -604,39 +827,39 @@ impl Framebuffer {
         }
     }
 
-    fn blit_rgb(&mut self, rgb: &[u8; NATIVE_RGB_BYTES]) {
-        for (source, destination) in rgb
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
-        {
-            destination.copy_from_slice(&[source[0], source[1], source[2], 255]);
-        }
+    fn blit_rgb(&mut self, rgb: &'static [u8; NATIVE_RGB_BYTES]) {
+        self.blit_plate(rgb, None);
     }
 
-    fn blit_rgb_graded(&mut self, rgb: &[u8; NATIVE_RGB_BYTES], base: u16, cyan: u16, gold: u16) {
-        for (source, destination) in rgb
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
-        {
-            let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
-            let scale = if blue > red.saturating_add(12) && green > red {
-                cyan
-            } else if red > blue.saturating_add(14) && green > blue {
-                gold
-            } else {
-                base
-            };
-            destination.copy_from_slice(&[
-                (red * scale / 255) as u8,
-                (green * scale / 255) as u8,
-                (blue * scale / 255) as u8,
-                255,
-            ]);
-        }
+    fn blit_rgb_graded(
+        &mut self,
+        rgb: &'static [u8; NATIVE_RGB_BYTES],
+        base: u16,
+        cyan: u16,
+        gold: u16,
+    ) {
+        self.blit_plate(rgb, Some([base, cyan, gold]));
+    }
+
+    /// Copies a plate's RGBA expansion, built once per plate and grade on
+    /// this thread: every plate and grade is a constant, so expanding it
+    /// again each tick would only redo identical work.
+    fn blit_plate(&mut self, rgb: &'static [u8; NATIVE_RGB_BYTES], grade: Option<[u16; 3]>) {
+        // A `'static` plate's address identifies it for the life of the
+        // process; a duplicated constant only costs one more cache entry.
+        let key = (rgb.as_ptr() as usize, grade);
+        PLATES.with_borrow_mut(|plates| {
+            let index = plates
+                .iter()
+                .position(|(cached, _)| *cached == key)
+                .unwrap_or_else(|| {
+                    let mut expanded = vec![0; FRAME_BYTES].into_boxed_slice();
+                    expand_plate(rgb, grade, &mut expanded);
+                    plates.push((key, expanded));
+                    plates.len() - 1
+                });
+            self.pixels.copy_from_slice(&plates[index].1);
+        });
     }
 
     fn blit_awakening(&mut self, ticks: u64) {
@@ -644,35 +867,32 @@ impl Framebuffer {
         let gold_strength = 38 + ticks.saturating_sub(112).min(108) as u16 * 197 / 108;
         let center_strength = 38 + ticks.saturating_sub(188).min(48) as u16 * 217 / 48;
         let ambient_strength = 34 + ticks.min(236) as u16 * 38 / 236;
+        // One scaled channel table per pixel class, indexed like
+        // `AwakeningClass`; each entry is the per-pixel `value * strength / 255`.
+        let tables = [
+            center_strength,
+            cyan_strength,
+            gold_strength,
+            ambient_strength,
+        ]
+        .map(|strength| {
+            std::array::from_fn::<u8, 256, _>(|value| (value as u16 * strength / 255) as u8)
+        });
 
-        for (index, (source, destination)) in ORACLE_AWAKENING
+        for ((source, class), destination) in ORACLE_AWAKENING
             .as_chunks::<3>()
             .0
             .iter()
+            .zip(awakening_classes())
             .zip(self.pixels.as_chunks_mut::<4>().0.iter_mut())
-            .enumerate()
         {
-            let x = (index % WIDTH) as i32;
-            let y = (index / WIDTH) as i32;
-            let [red, green, blue] = [source[0] as u16, source[1] as u16, source[2] as u16];
-            let in_oracle = (x - 120).abs() + (y - 80).abs() < 47;
-            let cyan_pixel = blue > red.saturating_add(12) && green > red;
-            let gold_pixel = red > blue.saturating_add(14) && green > blue;
-            let strength = if in_oracle {
-                center_strength
-            } else if cyan_pixel {
-                cyan_strength
-            } else if gold_pixel {
-                gold_strength
-            } else {
-                ambient_strength
-            };
-            destination.copy_from_slice(&[
-                (red * strength / 255) as u8,
-                (green * strength / 255) as u8,
-                (blue * strength / 255) as u8,
+            let table = &tables[*class as usize];
+            *destination = [
+                table[source[0] as usize],
+                table[source[1] as usize],
+                table[source[2] as usize],
                 255,
-            ]);
+            ];
         }
     }
 
@@ -769,7 +989,7 @@ impl Framebuffer {
 
     fn text(&mut self, x: i32, y: i32, text: &str, color: Color, scale: i32) {
         let mut cursor = x;
-        for ch in text.to_ascii_uppercase().chars() {
+        for ch in text.chars().map(|ch| ch.to_ascii_uppercase()) {
             for (gy, row) in glyph(ch).iter().enumerate() {
                 for gx in 0..GLYPH_WIDTH {
                     let mask = 1u8 << (GLYPH_WIDTH - 1 - gx) as u32;
@@ -790,7 +1010,7 @@ impl Framebuffer {
 
     fn compact_text(&mut self, x: i32, y: i32, text: &str, color: Color) {
         let mut cursor = x;
-        for ch in text.to_ascii_uppercase().chars() {
+        for ch in text.chars().map(|ch| ch.to_ascii_uppercase()) {
             for (glyph_y, row) in glyph(ch).iter().enumerate() {
                 for glyph_x in 0..GLYPH_WIDTH {
                     let mask = 1u8 << (GLYPH_WIDTH - 1 - glyph_x) as u32;
@@ -896,13 +1116,319 @@ impl Framebuffer {
 struct QuizRun {
     question: usize,
     completed_batches: usize,
+    /// The focused display slot; `order` maps it to a source choice index.
     selected: usize,
     hearts: u8,
     score: u32,
     level: u32,
     streak: u32,
     leveled_up: bool,
+    /// The committed result and its remaining input hold. The lesson card
+    /// stays up after the hold reaches zero until A or Start continues.
     feedback: Option<(bool, u16)>,
+    /// Display order of the current question: `order[slot]` is the source
+    /// choice index drawn in that slot.
+    order: Vec<usize>,
+    /// The question index `order` and `attempt` were derived for.
+    presented: Option<usize>,
+    /// Earlier committed attempts at the current question's identity.
+    attempt: u32,
+    /// True when the committed answer redeemed a previously missed question.
+    redeemed: bool,
+    /// When the committed miss returns, told on its lesson card.
+    retry_note: Option<RetryNote>,
+    /// The lens and mastery stage the committed answer woke, if it crossed
+    /// a lens threshold.
+    lens_woke: Option<(Concept, usize)>,
+    /// Ticks left in which a second B leaves the run.
+    leave_armed: u16,
+    /// What this run taught, reported by the Ascension and Aftermath debriefs.
+    ledger: RunLedger,
+}
+
+/// A per-run learning tally for the end-of-batch and end-of-run debriefs. It
+/// only reports; mastery evidence lives in the cartridge's `Mastery`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RunLedger {
+    /// First attempts (non-review questions) committed this run.
+    first_try: u32,
+    /// First attempts answered correctly this run.
+    first_try_right: u32,
+    /// Review questions answered correctly this run.
+    redeemed: u32,
+    /// First attempts committed in the batch still in progress.
+    batch_first_try: u32,
+    /// First attempts answered correctly in the batch still in progress.
+    batch_first_try_right: u32,
+    /// `(right, attempted)` first tries of the batch that completed last.
+    last_batch: (u32, u32),
+    /// Lit mastery runes per lens (`Concept::ALL` order) when the run began.
+    stages_at_start: [usize; 5],
+}
+
+impl RunLedger {
+    /// Records one committed answer. Only a review can redeem; only a
+    /// question's first appearance counts as a first try.
+    fn record(&mut self, review: bool, correct: bool) {
+        if review {
+            self.redeemed += u32::from(correct);
+        } else {
+            self.first_try += 1;
+            self.batch_first_try += 1;
+            self.first_try_right += u32::from(correct);
+            self.batch_first_try_right += u32::from(correct);
+        }
+    }
+
+    /// Snapshots the batch that just completed for the level-up screen and
+    /// starts counting the next one.
+    fn close_batch(&mut self) {
+        self.last_batch = (self.batch_first_try_right, self.batch_first_try);
+        self.batch_first_try = 0;
+        self.batch_first_try_right = 0;
+    }
+}
+
+/// `1ST TRY a/b`, capped so the worst case is `1ST TRY 99/99`.
+fn first_try_label((right, attempted): (u32, u32)) -> String {
+    format!("1ST TRY {}/{}", right.min(99), attempted.min(99))
+}
+
+/// The roman numeral of a lit mastery-rune stage.
+fn rune_numeral(stage: usize) -> &'static str {
+    match stage {
+        0 => "-",
+        1 => "I",
+        2 => "II",
+        _ => "III",
+    }
+}
+
+/// When a missed question comes back, as its lesson card tells it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetryNote {
+    /// After this many intervening questions; the copy may carry into the
+    /// next batch to keep its gap.
+    In(usize),
+    /// The deck does not reach the retry gap yet: the copy waits for the
+    /// Oracle's next questions (see `RetrySlot::Deferred`).
+    Later,
+    /// The ward broke: the miss waits in the deck for the next run.
+    NextRun,
+}
+
+impl RetryNote {
+    fn label(self) -> String {
+        match self {
+            Self::In(0) => "UP NEXT".into(),
+            Self::In(gap @ 1..=9) => format!("BACK IN {gap}"),
+            Self::In(_) | Self::Later => "LATER".into(),
+            Self::NextRun => "NEXT RUN".into(),
+        }
+    }
+}
+
+impl QuizRun {
+    fn new() -> Self {
+        Self {
+            question: 0,
+            completed_batches: 0,
+            selected: 0,
+            hearts: 3,
+            score: 0,
+            level: 1,
+            streak: 0,
+            leveled_up: false,
+            feedback: None,
+            order: Vec::new(),
+            presented: None,
+            attempt: 0,
+            redeemed: false,
+            retry_note: None,
+            lens_woke: None,
+            leave_armed: 0,
+            ledger: RunLedger::default(),
+        }
+    }
+
+    /// The source choice indices in display order for a question with
+    /// `choice_count` choices. Until the current question has been presented,
+    /// choices keep their source order.
+    fn display_order(&self, choice_count: usize) -> Vec<usize> {
+        if self.presented == Some(self.question) && self.order.len() == choice_count {
+            self.order.clone()
+        } else {
+            (0..choice_count).collect()
+        }
+    }
+
+    /// The source choice index shown in display `slot`.
+    fn source_choice(&self, slot: usize, choice_count: usize) -> usize {
+        self.display_order(choice_count)
+            .get(slot)
+            .copied()
+            .unwrap_or(slot)
+    }
+}
+
+/// Normalized question identity: uppercase with collapsed whitespace, the same
+/// rule the cartridge save uses to recognize answered questions.
+fn question_identity(question: &str) -> String {
+    question
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase()
+}
+
+/// Where a missed question's review copy is inserted: exactly `RETRY_GAP`
+/// other questions after the miss. A retry always waits `RETRY_GAP` questions
+/// and may carry into the next batch, so the current batch still closes on
+/// time. `None` when the deck does not yet reach that far.
+fn retry_insertion_index(current: usize, question_count: usize) -> Option<usize> {
+    let index = current + 1 + RETRY_GAP;
+    (index <= question_count).then_some(index)
+}
+
+/// Where a miss's review copy went.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetrySlot {
+    /// Inserted into the deck at this index.
+    At(usize),
+    /// Held in `GameState::deferred_retries` until the deck reaches its gap.
+    Deferred,
+}
+
+/// Inserts a same-launch review copy of the missed question at `current` and
+/// shifts every batch end at or beyond the insertion point, so a copy past
+/// the current batch end joins the next batch. When the deck is too short for
+/// the gap, the copy is pushed onto `deferred` with the index it is due at.
+fn schedule_retry(
+    questions: &mut Vec<QuizQuestion>,
+    batch_ends: &mut [usize],
+    deferred: &mut Vec<(usize, QuizQuestion)>,
+    current: usize,
+) -> Option<RetrySlot> {
+    let mut review = questions.get(current)?.clone();
+    review.review = Review::InSession;
+    let Some(index) = retry_insertion_index(current, questions.len()) else {
+        deferred.push((current + 1 + RETRY_GAP, review));
+        return Some(RetrySlot::Deferred);
+    };
+    insert_retry(questions, batch_ends, index, review);
+    Some(RetrySlot::At(index))
+}
+
+fn insert_retry(
+    questions: &mut Vec<QuizQuestion>,
+    batch_ends: &mut [usize],
+    index: usize,
+    review: QuizQuestion,
+) {
+    questions.insert(index, review);
+    for end in batch_ends.iter_mut().filter(|end| **end >= index) {
+        *end += 1;
+    }
+}
+
+/// Places deferred review copies once a delivery has grown the deck, in due
+/// order, each at its due index, so the full retry gap holds and at least one
+/// fresh question precedes it after an Oracle wait. A copy the deck does not
+/// reach yet waits for a later delivery; if the run ends first, its lesson is
+/// still outstanding and requeues for the next run.
+fn place_deferred_retries(state: &mut GameState) {
+    if !state.run_is_live() {
+        return;
+    }
+    let (Some(run), Some(cartridge)) = (state.quiz.as_ref(), state.cartridge.as_mut()) else {
+        return;
+    };
+    let mut deferred = std::mem::take(&mut state.deferred_retries);
+    deferred.sort_by_key(|(due, _)| *due);
+    let mut waiting = Vec::new();
+    for (due, review) in deferred {
+        // `due` already exceeds every index the player had reached when the
+        // copy was deferred; the guard keeps that true however the deck moved.
+        let index = due.max(run.question + 1);
+        if index > cartridge.questions.len() {
+            waiting.push((due, review));
+            continue;
+        }
+        insert_retry(
+            &mut cartridge.questions,
+            &mut state.batch_ends,
+            index,
+            review,
+        );
+    }
+    state.deferred_retries = waiting;
+}
+
+/// Lit mastery runes (0-3) for `concept`, gated by recent accuracy and the
+/// lens's open misses in `lessons`: the one stage rule the footer, the Codex,
+/// and the lens-wake check share.
+fn lens_stage(mastery: &Mastery, lessons: &[Lesson], concept: Concept) -> usize {
+    mastery
+        .get(&concept)
+        .copied()
+        .unwrap_or_default()
+        .stage_with(pending_reviews(lessons, concept))
+}
+
+/// Upserts the journal entry for a committed question, keyed by identity. A
+/// miss remembers the source choice `picked` and the misconception it reveals;
+/// a later correct attempt clears the outstanding flag but keeps that
+/// misconception. Every attempt clears the peeked flag.
+fn record_lesson(lessons: &mut Vec<Lesson>, question: &QuizQuestion, correct: bool, picked: usize) {
+    let identity = question_identity(&question.question);
+    let existing = lessons
+        .iter()
+        .position(|entry| question_identity(&entry.question) == identity);
+    let misconception = if correct {
+        existing.and_then(|index| lessons[index].misconception.clone())
+    } else {
+        question.choices.get(picked).map(|choice| {
+            (
+                choice.clone(),
+                choice_rationale(question, picked)
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+    };
+    let lesson = Lesson {
+        question: question.question.clone(),
+        answer: question
+            .choices
+            .get(question.answer)
+            .cloned()
+            .unwrap_or_default(),
+        rationale: choice_rationale(question, question.answer)
+            .unwrap_or_default()
+            .to_string(),
+        concept: question.concept,
+        outstanding: !correct,
+        misconception,
+        peeked: false,
+        spaced_check: false,
+    };
+    match existing {
+        Some(index) => lessons[index] = lesson,
+        None => lessons.push(lesson),
+    }
+}
+
+/// The rationale for source choice `index`, when the question carries a full
+/// set of rationales and that one is not blank.
+fn choice_rationale(question: &QuizQuestion, index: usize) -> Option<&str> {
+    if question.rationales.len() != question.choices.len() {
+        return None;
+    }
+    question
+        .rationales
+        .get(index)
+        .map(|rationale| rationale.trim())
+        .filter(|rationale| !rationale.is_empty())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -931,6 +1457,8 @@ struct OracleDrop {
 #[derive(Resource)]
 struct GameState {
     powered: bool,
+    /// Mirrors the host's reduced-motion preference for decorative motion.
+    reduced_motion: bool,
     ai_provider: Option<String>,
     cartridge: Option<CartridgeSpec>,
     machine: Option<SceneMachine>,
@@ -938,6 +1466,11 @@ struct GameState {
     screen_ticks: u64,
     held: HashSet<Button>,
     menu_selected: usize,
+    /// Codex page: 0 is the mastery overview, `n` is journal lesson `n - 1`.
+    codex_page: usize,
+    /// True once A revealed the current Codex page's pending answer. Every
+    /// page turn and every visit seals it again.
+    codex_revealed: bool,
     hero_row: usize,
     hero_name: usize,
     hero_class: usize,
@@ -945,15 +1478,40 @@ struct GameState {
     quest_selected: usize,
     quiz: Option<QuizRun>,
     batch_ends: Vec<usize>,
-    pending_questions: Option<(String, Vec<QuizQuestion>)>,
+    /// Generation level of each batch, parallel to `batch_ends`.
+    batch_levels: Vec<u32>,
+    /// Same-launch review copies whose retry gap reaches past the deck's
+    /// end, each with the deck index it is due at. The next delivery places
+    /// them; a new run drops them and requeues their outstanding lessons.
+    deferred_retries: Vec<(usize, QuizQuestion)>,
+    /// A delivery held until a safe screen boundary: cartridge id, questions,
+    /// and the level they were requested at.
+    pending_questions: Option<(String, Vec<QuizQuestion>, u32)>,
     questions_loading: bool,
     question_retry_ticks: u16,
+    /// Ticks the request in flight has been out, so a retry after a failure
+    /// keeps the failure on the Oracle line until it has had time to answer.
+    question_request_ticks: u16,
+    /// The `screen_ticks` at which the Oracle line last became a recall, so
+    /// every recall starts at the top of the recall order, written in fresh.
+    oracle_recall_since: u64,
+    /// Sequence number of the newest question request; only its reply lands.
+    question_request_seq: u64,
+    /// The level the newest question request asked for.
+    question_request_level: u32,
+    /// Why the newest answered question request failed, as the Oracle line
+    /// shows it; cleared when a request succeeds or a cartridge is inserted.
+    question_failure: Option<String>,
+    /// Deck prefix committed in this session; the next run drops it.
+    consumed_questions: usize,
     oracle_hero_x: i32,
     oracle_drops: Vec<OracleDrop>,
     oracle_spawned: u32,
     oracle_data: u32,
     oracle_bug_hits: u32,
     logs: VecDeque<(String, bool)>,
+    /// Generation of the newest quest started; only its messages land.
+    quest_generation: u64,
     active_boss: String,
 }
 
@@ -961,6 +1519,7 @@ impl Default for GameState {
     fn default() -> Self {
         Self {
             powered: false,
+            reduced_motion: false,
             ai_provider: None,
             cartridge: None,
             machine: None,
@@ -968,6 +1527,8 @@ impl Default for GameState {
             screen_ticks: 0,
             held: HashSet::new(),
             menu_selected: 0,
+            codex_page: 0,
+            codex_revealed: false,
             hero_row: 0,
             hero_name: 0,
             hero_class: 0,
@@ -975,15 +1536,24 @@ impl Default for GameState {
             quest_selected: 0,
             quiz: None,
             batch_ends: Vec::new(),
+            batch_levels: Vec::new(),
+            deferred_retries: Vec::new(),
             pending_questions: None,
             questions_loading: false,
             question_retry_ticks: 0,
+            question_request_ticks: 0,
+            oracle_recall_since: 0,
+            question_request_seq: 0,
+            question_request_level: 1,
+            question_failure: None,
+            consumed_questions: 0,
             oracle_hero_x: 104,
             oracle_drops: Vec::new(),
             oracle_spawned: 0,
             oracle_data: 0,
             oracle_bug_hits: 0,
             logs: VecDeque::new(),
+            quest_generation: 0,
             active_boss: String::new(),
         }
     }
@@ -992,6 +1562,32 @@ impl Default for GameState {
 impl GameState {
     fn ai_provider_name(&self) -> &str {
         self.ai_provider.as_deref().unwrap_or("AI")
+    }
+
+    /// Clock for decorative motion (bobbing, pulsing, twinkling, scrolling).
+    /// Reduced motion freezes it at the resting composition, while scene timing,
+    /// input, and data keep using `screen_ticks`.
+    fn motion_ticks(&self) -> u64 {
+        if self.reduced_motion {
+            0
+        } else {
+            self.screen_ticks
+        }
+    }
+
+    /// Progress of a settling motion capped at `cap` ticks; reduced motion shows
+    /// its settled end state immediately.
+    fn settled_ticks(&self, cap: u64) -> u64 {
+        if self.reduced_motion {
+            cap
+        } else {
+            self.screen_ticks.min(cap)
+        }
+    }
+
+    /// Whether a blinking prompt is lit this tick; reduced motion keeps it lit.
+    fn blink_lit(&self, period: u64) -> bool {
+        self.reduced_motion || (self.screen_ticks / period).is_multiple_of(2)
     }
 
     fn ai_provider_status(&self, status: &str) -> String {
@@ -1004,8 +1600,28 @@ impl GameState {
             self.oracle_drops.clear();
             self.oracle_spawned = 0;
         }
+        if screen == Screen::Codex && self.screen != Screen::Codex {
+            self.codex_page = 0;
+            self.codex_revealed = false;
+        }
+        // Entering the menu focuses BEGIN (so Title then A cannot bounce back to
+        // Title), except when returning from the Codex, which keeps its option.
+        if screen == Screen::QuizMenu && !matches!(self.screen, Screen::QuizMenu | Screen::Codex) {
+            self.menu_selected = 0;
+        }
+        // Whatever route the scene graph takes into the Oracle or the quiz,
+        // they always run inside a live run. A run ends as soon as the graph
+        // leaves the run's screens by any route (the next run retires its
+        // answers there), so entering from outside them starts a fresh one.
+        let within_run = matches!(self.screen, Screen::Oracle | Screen::Quiz | Screen::LevelUp);
+        if matches!(screen, Screen::Oracle | Screen::Quiz)
+            && (!within_run || self.quiz.as_ref().is_none_or(|run| run.hearts == 0))
+        {
+            start_quiz_run(self);
+        }
         self.screen = screen;
         self.screen_ticks = 0;
+        self.oracle_recall_since = 0;
     }
 
     fn start_machine(&mut self) {
@@ -1069,6 +1685,115 @@ impl GameState {
         self.cartridge
             .as_ref()
             .is_some_and(|cartridge| cartridge.questions.get(question).is_some())
+    }
+
+    /// The Oracle's truthful question status. Every Datafall status line, the
+    /// audio snapshot, and the screen transcript read this one rule.
+    fn question_status(&self) -> QuestionStatus {
+        if self.has_unanswered_question() {
+            QuestionStatus::Ready
+        } else if self.questions_loading {
+            QuestionStatus::Writing
+        } else if self.question_retry_ticks > 0 {
+            QuestionStatus::Retrying
+        } else {
+            QuestionStatus::Contacting
+        }
+    }
+
+    /// True while a run is being played: the Oracle, quiz, and level-up
+    /// screens with a run in hand. Every other screen precedes the next run.
+    fn run_is_live(&self) -> bool {
+        self.quiz.is_some()
+            && matches!(self.screen, Screen::Oracle | Screen::Quiz | Screen::LevelUp)
+    }
+
+    /// Whether the question the player faces next exists: the live run's
+    /// current question, or anything the next run keeps from the deck.
+    fn has_next_question(&self) -> bool {
+        if self.run_is_live() {
+            self.has_unanswered_question()
+        } else {
+            self.question_count() > self.consumed_questions
+        }
+    }
+
+    fn batch_start(&self, index: usize) -> usize {
+        index
+            .checked_sub(1)
+            .and_then(|previous| self.batch_ends.get(previous).copied())
+            .unwrap_or(0)
+    }
+
+    /// Whether batch `index` holds `QUESTION_BATCH_SIZE` new questions. Review
+    /// copies ride along in their batch but never count toward it.
+    fn batch_is_full(&self, index: usize) -> bool {
+        let questions = self
+            .cartridge
+            .as_ref()
+            .map_or(&[][..], |cartridge| cartridge.questions.as_slice());
+        self.batch_ends.get(index).is_some_and(|end| {
+            new_question_count(questions, self.batch_start(index), *end) >= QUESTION_BATCH_SIZE
+        })
+    }
+
+    /// The level the next requested batch should be generated at: never
+    /// below the level the run will have reached when those questions start
+    /// (one level-up per full batch still ahead), and never a level already
+    /// queued. An open (short) last batch is topped up at its own level.
+    fn next_batch_level(&self) -> u32 {
+        let (run_level, completed) = self
+            .quiz
+            .as_ref()
+            .filter(|_| self.run_is_live())
+            .map_or((1, 0), |run| (run.level, run.completed_batches));
+        let full_ahead = (completed..self.batch_ends.len())
+            .filter(|index| self.batch_is_full(*index))
+            .count() as u32;
+        let queued = self.batch_ends.len().checked_sub(1).map_or(0, |last| {
+            let level = self.batch_levels.get(last).copied().unwrap_or(1);
+            if self.batch_is_full(last) {
+                level.saturating_add(1)
+            } else {
+                level
+            }
+        });
+        run_level.saturating_add(full_ahead).max(queued)
+    }
+
+    /// The generation level of the batch the player enters next: its queued
+    /// level, else the level of the request in flight for it, else the level
+    /// the next request will ask for (never below the run's). Saved batches
+    /// can sit above the run's level, so this, not `run.level`, names the
+    /// lenses coming up.
+    fn upcoming_batch_level(&self) -> u32 {
+        let (completed, run_level) = self
+            .quiz
+            .as_ref()
+            .map_or((0, 1), |run| (run.completed_batches, run.level));
+        self.batch_levels
+            .get(completed)
+            .copied()
+            .or_else(|| {
+                self.questions_loading
+                    .then_some(self.question_request_level)
+            })
+            .unwrap_or_else(|| self.next_batch_level().max(run_level))
+    }
+
+    /// The signal a level-up continues with: back to the quiz when the next
+    /// question is ready, otherwise to the Oracle to wait for it.
+    fn level_up_signal(&self) -> SceneSignal {
+        if self.has_unanswered_question() {
+            SceneSignal::QuestionsReady
+        } else {
+            SceneSignal::NeedsQuestion
+        }
+    }
+
+    /// Whether the scene graph accepts a level-up continuation right now.
+    fn level_up_can_continue(&self) -> bool {
+        self.can_signal(self.level_up_signal())
     }
 
     fn presentation_tier(&self) -> PresentationTier {
@@ -1152,6 +1877,296 @@ impl GameState {
             OpeningBeat::Legacy
         }
     }
+
+    fn lessons(&self) -> &[Lesson] {
+        self.cartridge
+            .as_ref()
+            .map_or(&[], |cartridge| cartridge.lessons.as_slice())
+    }
+
+    fn lens_record(&self, concept: Concept) -> LensRecord {
+        self.cartridge
+            .as_ref()
+            .and_then(|cartridge| cartridge.mastery.get(&concept))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Lit mastery runes (0-3) for `concept` on the inserted cartridge, gated
+    /// by recent accuracy and the lens's open misses in the journal.
+    fn mastery_stage(&self, concept: Concept) -> usize {
+        self.cartridge.as_ref().map_or(0, |cartridge| {
+            lens_stage(&cartridge.mastery, &cartridge.lessons, concept)
+        })
+    }
+
+    /// Runes the lens's evidence volume earned that its gates hold back,
+    /// drawn cracked beside the lit ones.
+    fn mastery_cracks(&self, concept: Concept) -> usize {
+        self.lens_record(concept)
+            .cracks_with(pending_reviews(self.lessons(), concept))
+    }
+
+    /// What the cracked runes mean, while any lens shows one: a review is due
+    /// when a cracked lens has a pending review, and otherwise only its recent
+    /// accuracy holds the rune back, so no review exists to promise.
+    fn mastery_crack_legend(&self) -> Option<&'static str> {
+        let mut cracked = false;
+        for concept in Concept::ALL {
+            if self.mastery_cracks(concept) > 0 {
+                if pending_reviews(self.lessons(), concept) > 0 {
+                    return Some(CODEX_CRACKED_LEGEND);
+                }
+                cracked = true;
+            }
+        }
+        cracked.then_some(CODEX_SLIPPED_LEGEND)
+    }
+
+    /// The current question's place in its batch and the batch's length,
+    /// which grows as misses insert their review copies. An open (short) last
+    /// batch counts toward the full `QUESTION_BATCH_SIZE` new questions it
+    /// will be topped up to, plus the review copies it already holds, so the
+    /// header never promises a batch end that is not coming and a miss grows
+    /// it at once. Both cap at 99.
+    fn batch_progress(&self) -> Option<(usize, usize)> {
+        let run = self.quiz.as_ref()?;
+        let batch = run.completed_batches;
+        let start = self.batch_start(batch);
+        let end = *self.batch_ends.get(batch)?;
+        let questions = self
+            .cartridge
+            .as_ref()
+            .map_or(&[][..], |cartridge| cartridge.questions.as_slice());
+        let reviews = questions
+            .iter()
+            .take(end)
+            .skip(start)
+            .filter(|question| question.review.is_review())
+            .count();
+        let length = reviews + (end - start - reviews).max(QUESTION_BATCH_SIZE);
+        (start..end)
+            .contains(&run.question)
+            .then(|| ((run.question - start + 1).min(99), length.min(99)))
+    }
+
+    fn codex_page_count(&self) -> usize {
+        1 + self.lessons().len()
+    }
+
+    /// The journal lesson shown on the current Codex page, if any.
+    fn codex_lesson(&self) -> Option<(usize, &Lesson)> {
+        let index = self.codex_page.checked_sub(1)?;
+        self.lessons().get(index).map(|lesson| (index, lesson))
+    }
+
+    /// Whether the Codex hides `lesson`'s answer: a pending review, or a
+    /// relearned lesson whose spaced check is still due, is a self-test,
+    /// sealed until A reveals it on this page.
+    fn codex_answer_sealed(&self, lesson: &Lesson) -> bool {
+        (lesson.outstanding || lesson.spaced_check) && !self.codex_revealed
+    }
+
+    /// Reveals the current Codex page's sealed answer. The first reveal of a
+    /// pending lesson marks it peeked, so its next attempt counts as
+    /// relearning, and asks the host to persist that. A page with nothing
+    /// sealed is left unchanged.
+    fn reveal_codex_answer(&mut self, effects: &mut Effects) {
+        let Some(index) = self
+            .codex_lesson()
+            .filter(|(_, lesson)| self.codex_answer_sealed(lesson))
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+        self.codex_revealed = true;
+        let Some(cartridge) = self.cartridge.as_mut() else {
+            return;
+        };
+        let lesson = &mut cartridge.lessons[index];
+        if !lesson.peeked {
+            lesson.peeked = true;
+            effects.0.push_back(EngineEffect::MarkPeeked {
+                cartridge_id: cartridge.id.clone(),
+                question: lesson.question.clone(),
+            });
+        }
+    }
+
+    /// A truthful one-line journal summary for the quiz menu, offered only when
+    /// the menu can open the Codex that explains it.
+    fn journal_summary(&self) -> Option<String> {
+        let lessons = self.lessons();
+        if lessons.is_empty() || !self.can_signal(SceneSignal::OpenCodex) {
+            return None;
+        }
+        let pending = lessons.iter().filter(|lesson| lesson.outstanding).count();
+        Some(if pending == 0 {
+            format!("LESSONS {:02}  ALL CLEAR", lessons.len().min(99))
+        } else {
+            format!(
+                "LESSONS {:02}  REVIEW {:02}",
+                lessons.len().min(99),
+                pending.min(99)
+            )
+        })
+    }
+
+    /// Journal lessons in the order the waiting Oracle recalls them:
+    /// outstanding misses first, then cleared lessons, each newest first. An
+    /// outstanding miss whose question is still queued (a retry copy ahead
+    /// in this run, or a review the next run opens with) is left out: its
+    /// answer on the Oracle line would turn that review into a reading check.
+    fn recall_order(&self) -> Vec<&Lesson> {
+        let lessons = self.lessons();
+        let ahead = self
+            .quiz
+            .as_ref()
+            .filter(|_| self.run_is_live())
+            .map_or(0, |run| run.question);
+        let queued: HashSet<String> = self
+            .cartridge
+            .as_ref()
+            .map_or(&[][..], |cartridge| cartridge.questions.as_slice())
+            .iter()
+            .skip(ahead)
+            .map(|question| question_identity(&question.question))
+            .collect();
+        let outstanding = lessons.iter().rev().filter(|lesson| {
+            lesson.outstanding && !queued.contains(&question_identity(&lesson.question))
+        });
+        let cleared = lessons.iter().rev().filter(|lesson| !lesson.outstanding);
+        outstanding.chain(cleared).collect()
+    }
+
+    /// Ticks the Oracle line has been a recall, counted from the tick it last
+    /// took the line over (or from the screen's start).
+    fn oracle_recall_ticks(&self) -> u64 {
+        self.screen_ticks.saturating_sub(self.oracle_recall_since)
+    }
+
+    /// The lesson the Oracle recalls now. Each recall starts from the top of
+    /// the recall order and moves on every `ORACLE_RECALL_TICKS`.
+    fn recalled_lesson(&self) -> Option<&Lesson> {
+        let order = self.recall_order();
+        let slot = (self.oracle_recall_ticks() / ORACLE_RECALL_TICKS) as usize;
+        order.get(slot.checked_rem(order.len())?).copied()
+    }
+
+    /// The waiting Oracle's second status line. While a failed request waits
+    /// out its retry delay the line says why, and it keeps saying so for the
+    /// first `ORACLE_RETRY_HOLD_TICKS` of the retry, so a retry that fails
+    /// again at once never flashes a lesson between two failure lines.
+    /// Otherwise it recalls a journal lesson, and with no journal it keeps
+    /// naming the last failure while the retry is in flight. A ready question
+    /// has no failure to explain.
+    fn oracle_line(&self) -> Option<OracleLine> {
+        let failure = self
+            .question_failure
+            .as_ref()
+            .filter(|_| !self.has_unanswered_question());
+        if let Some(reason) = failure {
+            if self.question_retry_ticks > 0 {
+                return Some(OracleLine::Failure {
+                    reason: reason.clone(),
+                    retry_in: Some(u64::from(self.question_retry_ticks).div_ceil(60)),
+                });
+            }
+            // The retry is about to be sent, or has only just been sent.
+            if !self.questions_loading || self.question_request_ticks < ORACLE_RETRY_HOLD_TICKS {
+                return Some(OracleLine::Failure {
+                    reason: reason.clone(),
+                    retry_in: None,
+                });
+            }
+        }
+        if let Some(lesson) = self.recalled_lesson() {
+            return Some(OracleLine::Recall {
+                outstanding: lesson.outstanding,
+                concept: lesson.concept,
+                answer: lesson.answer.clone(),
+            });
+        }
+        failure.map(|reason| OracleLine::Failure {
+            reason: reason.clone(),
+            retry_in: None,
+        })
+    }
+
+    /// Characters of the Oracle line drawn this tick. A newly recalled
+    /// lesson is written in over a few ticks; reduced motion shows it whole,
+    /// and a failure line is always whole.
+    fn oracle_line_reveal(&self, line: &OracleLine) -> usize {
+        match line {
+            OracleLine::Recall { .. } if !self.reduced_motion => {
+                ((self.oracle_recall_ticks() % ORACLE_RECALL_TICKS) as usize + 1)
+                    * ORACLE_RECALL_REVEAL_PER_TICK
+            }
+            _ => usize::MAX,
+        }
+    }
+}
+
+/// The second line of a waiting Oracle's header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum OracleLine {
+    /// Why the last question request failed, and the whole seconds until the
+    /// retry, or `None` while the retry is in flight.
+    Failure {
+        reason: String,
+        retry_in: Option<u64>,
+    },
+    /// One journal lesson offered as retrieval practice.
+    Recall {
+        outstanding: bool,
+        concept: Option<Concept>,
+        answer: String,
+    },
+}
+
+/// Ticks each recalled lesson stays on the Oracle line: four seconds.
+const ORACLE_RECALL_TICKS: u64 = 240;
+/// Characters a newly recalled lesson reveals per tick.
+const ORACLE_RECALL_REVEAL_PER_TICK: usize = 2;
+/// Ticks a retry after a failure keeps the failure on the Oracle line before
+/// a recall may take it over: one second.
+const ORACLE_RETRY_HOLD_TICKS: u16 = 60;
+/// Longest failure reason the Oracle line carries.
+const ORACLE_FAILURE_CHARS: usize = 24;
+
+/// A provider failure reason as the Oracle line shows it: one upper-case line
+/// of letters, digits, and simple punctuation, cut at a word boundary.
+fn oracle_failure_reason(reason: &str) -> String {
+    let cleaned: String = reason
+        .chars()
+        .map(|ch| {
+            let ch = ch.to_ascii_uppercase();
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | ':' | '.' | '/') {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let mut short = String::new();
+    for word in cleaned.split_whitespace() {
+        let separator = usize::from(!short.is_empty());
+        if short.chars().count() + separator + word.chars().count() > ORACLE_FAILURE_CHARS {
+            if short.is_empty() {
+                short = truncate(word, ORACLE_FAILURE_CHARS);
+            }
+            break;
+        }
+        if separator == 1 {
+            short.push(' ');
+        }
+        short.push_str(word);
+    }
+    if short.is_empty() {
+        "GENERATION FAILED".into()
+    } else {
+        short
+    }
 }
 
 fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u32) {
@@ -1168,29 +2183,401 @@ fn request_question_batch(state: &mut GameState, effects: &mut Effects, level: u
     else {
         return;
     };
+    let cartridge_id = cartridge.id.clone();
+    state.question_request_seq = state.question_request_seq.wrapping_add(1);
+    state.question_request_level = level;
     effects.0.push_back(EngineEffect::RequestQuestions {
-        cartridge_id: cartridge.id.clone(),
+        cartridge_id,
         level,
         count: QUESTION_BATCH_SIZE,
+        seq: state.question_request_seq,
     });
     state.questions_loading = true;
+    state.question_request_ticks = 0;
+}
+
+/// New (non-review) questions in `questions[start..end]`.
+fn new_question_count(questions: &[QuizQuestion], start: usize, end: usize) -> usize {
+    questions
+        .iter()
+        .take(end)
+        .skip(start)
+        .filter(|question| !question.review.is_review())
+        .count()
+}
+
+/// Splits `questions` into batches of `QUESTION_BATCH_SIZE` new questions
+/// (review copies ride along without counting), leaving any remainder as an
+/// open last batch. Each new batch takes the level of the old batch holding
+/// its last question.
+fn rebatch(ends: &[usize], levels: &[u32], questions: &[QuizQuestion]) -> (Vec<usize>, Vec<u32>) {
+    let level_at = |index: usize| {
+        ends.iter()
+            .position(|end| index < *end)
+            .and_then(|batch| levels.get(batch))
+            .or(levels.last())
+            .copied()
+            .unwrap_or(1)
+    };
+    let mut new_ends = Vec::new();
+    let mut new_levels = Vec::new();
+    let mut fresh = 0;
+    for (index, question) in questions.iter().enumerate() {
+        fresh += usize::from(!question.review.is_review());
+        if fresh == QUESTION_BATCH_SIZE || index + 1 == questions.len() {
+            new_ends.push(index + 1);
+            new_levels.push(level_at(index));
+            fresh = 0;
+        }
+    }
+    (new_ends, new_levels)
+}
+
+/// Appends a delivery requested at `level`: it first tops the open last
+/// batch up to `QUESTION_BATCH_SIZE` new questions, so a level-up always means
+/// a full batch was survived, then forms new batches from the rest. Questions
+/// already in the deck (queued, or answered this session) or waiting as a
+/// deferred review copy are skipped, so a regenerated stem is never queued
+/// beside its own review copy, and so are stems the journal holds as
+/// answered correctly: a retired (or relearned) question does not replay in
+/// this launch even when a delivery parked across runs brings it back.
+/// Review copies deferred for their retry gap are then placed in the grown
+/// deck.
+fn append_question_batch(state: &mut GameState, questions: Vec<QuizQuestion>, level: u32) {
+    let Some(cartridge) = state.cartridge.as_mut() else {
+        return;
+    };
+    let (missed, cleared): (Vec<&Lesson>, Vec<&Lesson>) = cartridge
+        .lessons
+        .iter()
+        .partition(|lesson| lesson.outstanding);
+    let missed: HashSet<String> = missed
+        .into_iter()
+        .map(|lesson| question_identity(&lesson.question))
+        .collect();
+    let mut queued: HashSet<String> = cartridge
+        .questions
+        .iter()
+        .chain(state.deferred_retries.iter().map(|(_, review)| review))
+        .map(|question| question_identity(&question.question))
+        .chain(
+            cleared
+                .into_iter()
+                .map(|lesson| question_identity(&lesson.question)),
+        )
+        .collect();
+    let mut incoming = questions
+        .into_iter()
+        .filter(|question| queued.insert(question_identity(&question.question)))
+        .map(|mut question| {
+            // A stem the journal holds as missed is a same-launch review,
+            // whatever the delivery's (possibly stale) flag says.
+            if question.review == Review::Fresh
+                && missed.contains(&question_identity(&question.question))
+            {
+                question.review = Review::InSession;
+            }
+            question
+        });
+    // Moves incoming questions onto the deck until `fresh` reaches a full
+    // batch of new questions; review items ride along without counting,
+    // the same rule `rebatch` and `batch_is_full` use.
+    let mut fill = |questions: &mut Vec<QuizQuestion>, mut fresh: usize| {
+        while fresh < QUESTION_BATCH_SIZE {
+            let Some(question) = incoming.next() else {
+                break;
+            };
+            fresh += usize::from(!question.review.is_review());
+            questions.push(question);
+        }
+    };
+    if let Some(last) = state.batch_ends.len().checked_sub(1) {
+        let start = last
+            .checked_sub(1)
+            .map_or(0, |previous| state.batch_ends[previous]);
+        let end = state.batch_ends[last];
+        if end == cartridge.questions.len() {
+            let fresh = new_question_count(&cartridge.questions, start, end);
+            fill(&mut cartridge.questions, fresh);
+            state.batch_ends[last] = cartridge.questions.len();
+        }
+    }
+    loop {
+        let before = cartridge.questions.len();
+        fill(&mut cartridge.questions, 0);
+        if cartridge.questions.len() == before {
+            break;
+        }
+        state.batch_ends.push(cartridge.questions.len());
+        state.batch_levels.push(level);
+    }
+    place_deferred_retries(state);
+}
+
+/// Drops the deck prefix committed in this session so a new run never
+/// replays it. Consumed questions whose lesson is still outstanding (missed
+/// and not redeemed) return at the front as same-launch review items, then
+/// the deck is rebatched from the rebased batch boundaries. Deferred review
+/// copies are dropped: their outstanding lessons requeue here instead.
+fn retire_consumed_questions(state: &mut GameState) {
+    state.deferred_retries.clear();
+    let consumed = std::mem::take(&mut state.consumed_questions);
+    let Some(cartridge) = state.cartridge.as_mut() else {
+        return;
+    };
+    let consumed = consumed.min(cartridge.questions.len());
+    if consumed == 0 {
+        return;
+    }
+    let retired: Vec<_> = cartridge.questions.drain(..consumed).collect();
+    let outstanding: HashSet<String> = cartridge
+        .lessons
+        .iter()
+        .filter(|lesson| lesson.outstanding)
+        .map(|lesson| question_identity(&lesson.question))
+        .collect();
+    let mut queued: HashSet<String> = cartridge
+        .questions
+        .iter()
+        .map(|question| question_identity(&question.question))
+        .collect();
+    let reviews: Vec<_> = retired
+        .into_iter()
+        .filter(|question| {
+            let identity = question_identity(&question.question);
+            outstanding.contains(&identity) && queued.insert(identity)
+        })
+        .map(|mut question| {
+            // Still the same sitting: the Codex that shows the answer is one
+            // screen away, so a success here is relearning.
+            question.review = Review::InSession;
+            question
+        })
+        .collect();
+    let requeued = reviews.len();
+    cartridge.questions.splice(0..0, reviews);
+
+    let mut ends = Vec::new();
+    let mut levels = Vec::new();
+    for (index, end) in state.batch_ends.iter().enumerate() {
+        if *end > consumed {
+            ends.push(end - consumed + requeued);
+            levels.push(state.batch_levels.get(index).copied().unwrap_or(1));
+        }
+    }
+    (state.batch_ends, state.batch_levels) = rebatch(&ends, &levels, &cartridge.questions);
+}
+
+/// Starts a fresh run on a deck without the previous runs' answers.
+fn start_quiz_run(state: &mut GameState) {
+    retire_consumed_questions(state);
+    state.oracle_data = 0;
+    state.oracle_bug_hits = 0;
+    let mut run = QuizRun::new();
+    run.ledger.stages_at_start = Concept::ALL.map(|concept| state.mastery_stage(concept));
+    state.quiz = Some(run);
 }
 
 fn begin_quiz_run(state: &mut GameState) {
-    state.oracle_data = 0;
-    state.oracle_bug_hits = 0;
-    state.quiz = Some(QuizRun {
-        question: 0,
-        completed_batches: 0,
-        selected: 0,
-        hearts: 3,
-        score: 0,
-        level: 1,
-        streak: 0,
-        leveled_up: false,
-        feedback: None,
-    });
+    start_quiz_run(state);
     state.signal(SceneSignal::HeroReady);
+}
+
+/// Leaves the active run through the scene graph's Back route, clearing it
+/// so the next run starts fresh.
+fn leave_quiz_run(state: &mut GameState) {
+    if state.can_signal(SceneSignal::Back) {
+        state.quiz = None;
+        state.deferred_retries.clear();
+        state.signal(SceneSignal::Back);
+    }
+}
+
+/// Derives the display order once for the question that just became current.
+/// The attempt number counts every earlier commitment at the same identity on
+/// this cartridge, across runs and saved launches; a question flagged for
+/// review starts at attempt 1 or later. Either way a returning question never
+/// reappears in the order the player last saw it in.
+fn present_current_question(state: &mut GameState) {
+    let Some(run) = state.quiz.as_mut() else {
+        return;
+    };
+    if run.presented == Some(run.question) {
+        return;
+    }
+    let Some(cartridge) = state.cartridge.as_ref() else {
+        return;
+    };
+    let Some(question) = cartridge.questions.get(run.question) else {
+        return;
+    };
+    let identity = question_identity(&question.question);
+    let attempt = cartridge
+        .question_attempts
+        .get(&identity)
+        .copied()
+        .unwrap_or(0)
+        .max(u32::from(question.review.is_review()));
+    run.order = if question.choices.len() == 4 {
+        learning::presentation_order(&identity, attempt).to_vec()
+    } else {
+        (0..question.choices.len()).collect()
+    };
+    run.attempt = attempt;
+    run.presented = Some(run.question);
+    run.selected = 0;
+}
+
+/// Commits the focused choice: scores it, records evidence and the lesson,
+/// schedules a spaced retry for a survivable miss, and opens the lesson card.
+fn commit_answer(state: &mut GameState, effects: &mut Effects) {
+    let (Some(run), Some(cartridge)) = (state.quiz.as_mut(), state.cartridge.as_mut()) else {
+        return;
+    };
+    let Some(question) = cartridge.questions.get(run.question).cloned() else {
+        return;
+    };
+    let picked = run.source_choice(run.selected, question.choices.len());
+    let correct = picked == question.answer;
+    if correct {
+        run.streak += 1;
+        run.score = run.score.saturating_add(score_award_for_streak(run.streak));
+    } else {
+        run.hearts = run.hearts.saturating_sub(1);
+        run.streak = 0;
+    }
+    run.feedback = Some((correct, QUIZ_FEEDBACK_TICKS));
+    // The banner and cue celebrate every corrected miss; only a later-launch
+    // redemption counts as mastery evidence (see `learning::Review`).
+    run.redeemed = correct && question.review.is_review();
+    cartridge.question_attempts.insert(
+        question_identity(&question.question),
+        run.attempt.saturating_add(1),
+    );
+
+    // A delivery can repeat a stem the journal already holds (a miss or a
+    // same-launch relearning is not retired, so the loader keeps it). Such a
+    // copy is not a first try: it counts as relearning, never as evidence.
+    let identity = question_identity(&question.question);
+    let review = match question.review {
+        Review::Fresh
+            if cartridge
+                .lessons
+                .iter()
+                .any(|lesson| question_identity(&lesson.question) == identity) =>
+        {
+            Review::InSession
+        }
+        review => review,
+    };
+    // The debrief's first-try tally follows the same grading as evidence.
+    run.ledger.record(review.is_review(), correct);
+    // Revealing a pending answer in the Codex first makes a success
+    // relearning too (see `LensRecord::record`).
+    let peeked = cartridge
+        .lessons
+        .iter()
+        .any(|lesson| lesson.peeked && question_identity(&lesson.question) == identity);
+    let evidence = AnswerEvidence {
+        question: question.question.clone(),
+        concept: question.concept,
+        correct,
+        review,
+        picked: (!correct).then_some(picked),
+        picked_choice: (!correct)
+            .then(|| question.choices.get(picked).cloned())
+            .flatten(),
+        peeked,
+    };
+    // The lens-wake check reads the gated stage after both the evidence and
+    // the journal entry land, since an open miss holds rune III back.
+    let stage_before = question
+        .concept
+        .map(|concept| lens_stage(&cartridge.mastery, &cartridge.lessons, concept));
+    learning::record_evidence(&mut cartridge.mastery, &evidence);
+    record_lesson(&mut cartridge.lessons, &question, correct, picked);
+    run.lens_woke = question
+        .concept
+        .zip(stage_before)
+        .and_then(|(concept, before)| {
+            let after = lens_stage(&cartridge.mastery, &cartridge.lessons, concept);
+            (after > before).then_some((concept, after))
+        });
+    run.retry_note = (!correct).then_some(RetryNote::NextRun);
+    if !correct && run.hearts > 0 {
+        let slot = schedule_retry(
+            &mut cartridge.questions,
+            &mut state.batch_ends,
+            &mut state.deferred_retries,
+            run.question,
+        );
+        run.retry_note = slot.map(|slot| match slot {
+            RetrySlot::At(index) => RetryNote::In(index - run.question - 1),
+            RetrySlot::Deferred => RetryNote::Later,
+        });
+    }
+    state.consumed_questions = state.consumed_questions.max(run.question + 1);
+    effects.0.push_back(EngineEffect::RecordAnsweredQuestion {
+        cartridge_id: cartridge.id.clone(),
+        evidence,
+    });
+}
+
+/// Leaves the lesson card: ends the run on a broken ward, otherwise advances
+/// to the next question and completes the batch exactly at its (possibly
+/// retry-shifted) end once it holds a full `QUESTION_BATCH_SIZE` new questions.
+fn continue_after_lesson(state: &mut GameState) {
+    let question_count = state.question_count();
+    let Some(batch) = state.quiz.as_ref().map(|run| run.completed_batches) else {
+        return;
+    };
+    let batch_full = state.batch_is_full(batch);
+    let next_batch_end = state.batch_ends.get(batch).copied();
+    let Some(run) = state.quiz.as_mut() else {
+        return;
+    };
+    run.feedback = None;
+    run.redeemed = false;
+    run.retry_note = None;
+    run.lens_woke = None;
+    let mut next_signal = None;
+    if run.hearts == 0 {
+        next_signal = Some(SceneSignal::HeartsEmpty);
+    } else {
+        run.question += 1;
+        run.selected = 0;
+        if next_batch_end == Some(run.question) {
+            if batch_full {
+                run.completed_batches += 1;
+                run.level += 1;
+                run.leveled_up = true;
+                run.ledger.close_batch();
+            } else if run.question < question_count {
+                // A short batch with questions after it joins the next one,
+                // so the level-up waits for a full batch.
+                state.batch_ends.remove(batch);
+                if batch < state.batch_levels.len() {
+                    let level = state.batch_levels.remove(batch);
+                    if let Some(next) = state.batch_levels.get_mut(batch) {
+                        *next = (*next).max(level);
+                    }
+                }
+            }
+            // A short last batch stays open; NeedsQuestion below tops it up.
+        }
+        if run.leveled_up {
+            run.leveled_up = false;
+            next_signal = Some(SceneSignal::BatchComplete);
+        } else if run.question >= question_count {
+            next_signal = Some(SceneSignal::NeedsQuestion);
+        }
+    }
+    if let Some(signal) = next_signal {
+        state.signal(signal);
+    }
+    if state.screen == Screen::Quiz {
+        present_current_question(state);
+    }
 }
 
 fn cycle_index(index: &mut usize, count: usize, direction: isize) {
@@ -1217,7 +2604,11 @@ impl GameEngine {
             .init_resource::<Effects>()
             .init_resource::<Framebuffer>()
             .init_resource::<GameState>()
-            .add_systems(Update, (apply_commands, advance_game, render).chain());
+            .init_resource::<AudioOut>()
+            .add_systems(
+                Update,
+                (apply_commands, advance_game, direct_audio, render).chain(),
+            );
         let mut engine = Self { app };
         engine.update();
         engine
@@ -1248,6 +2639,11 @@ impl GameEngine {
             .collect()
     }
 
+    /// Notes the audio director emitted since the last call, plus the tick.
+    fn take_audio(&mut self) -> AudioBatch {
+        self.app.world_mut().resource_mut::<AudioOut>().drain()
+    }
+
     #[cfg(test)]
     fn screen(&self) -> Screen {
         self.app.world().resource::<GameState>().screen
@@ -1260,10 +2656,19 @@ impl Default for GameEngine {
     }
 }
 
+#[cfg(test)]
+mod bench;
+mod transcript;
+
+use transcript::TranscriptChannel;
+pub use transcript::TranscriptUpdate;
+
 #[derive(Clone)]
 pub struct EngineRuntime {
     sender: mpsc::Sender<EngineCommand>,
     frame: Arc<RwLock<Vec<u8>>>,
+    audio: Arc<Mutex<AudioQueue>>,
+    transcript: Arc<Mutex<TranscriptChannel>>,
 }
 
 impl EngineRuntime {
@@ -1274,6 +2679,10 @@ impl EngineRuntime {
         let (sender, receiver) = mpsc::channel();
         let frame = Arc::new(RwLock::new(vec![0; FRAME_BYTES]));
         let shared_frame = Arc::clone(&frame);
+        let audio = Arc::new(Mutex::new(AudioQueue::default()));
+        let shared_audio = Arc::clone(&audio);
+        let transcript = Arc::new(Mutex::new(TranscriptChannel::default()));
+        let shared_transcript = Arc::clone(&transcript);
         let engine_sender = sender.clone();
         let child = Arc::new(Mutex::new(None));
         let running_child = Arc::clone(&child);
@@ -1300,6 +2709,13 @@ impl EngineRuntime {
                     if let Ok(mut target) = shared_frame.write() {
                         target.copy_from_slice(engine.frame());
                     }
+                    if let Ok(mut queue) = shared_audio.lock() {
+                        queue.append(engine.take_audio());
+                    }
+                    let (screen, sentences) = engine.transcript_sentences();
+                    if let Ok(mut channel) = shared_transcript.lock() {
+                        channel.publish(screen, sentences);
+                    }
                     next_frame += FRAME_TIME;
                     if let Some(remaining) = next_frame.checked_duration_since(Instant::now()) {
                         thread::sleep(remaining);
@@ -1310,7 +2726,16 @@ impl EngineRuntime {
             })
             .expect("failed to start Bevy engine thread");
 
-        Self { sender, frame }
+        Self {
+            sender,
+            frame,
+            audio,
+            transcript,
+        }
+    }
+
+    pub fn set_reduced_motion(&self, reduced: bool) -> Result<(), String> {
+        self.send(EngineCommand::ReducedMotion(reduced))
     }
 
     pub fn set_power(&self, powered: bool) -> Result<(), String> {
@@ -1340,11 +2765,118 @@ impl EngineRuntime {
             .unwrap_or_else(|_| vec![0; FRAME_BYTES])
     }
 
+    /// Takes every note the engine has emitted since the last drain.
+    pub fn drain_audio(&self) -> AudioBatch {
+        self.audio
+            .lock()
+            .map(|mut queue| queue.drain())
+            .unwrap_or_default()
+    }
+
+    /// The latest screen transcript, when it is newer than `seq`.
+    pub fn transcript_since(&self, seq: u64) -> Option<TranscriptUpdate> {
+        self.transcript
+            .lock()
+            .ok()
+            .and_then(|channel| channel.since(seq))
+    }
+
     fn send(&self, command: EngineCommand) -> Result<(), String> {
         self.sender
             .send(command)
             .map_err(|_| "BEVY ENGINE STOPPED".to_string())
     }
+}
+
+/// Samples the observable game state the audio director listens to. Sound is
+/// derived from these snapshots only; gameplay code never calls audio.
+fn audio_snapshot(state: &GameState) -> AudioSnapshot {
+    let scene = match state.screen {
+        Screen::Off => AudioScene::Off,
+        Screen::Boot => AudioScene::Boot,
+        Screen::Copyright => AudioScene::Copyright,
+        Screen::OpeningFanfare => AudioScene::Opening(match state.opening_beat() {
+            OpeningBeat::Legacy => audio::OpeningBeat::Legacy,
+            OpeningBeat::SourceEmber => audio::OpeningBeat::SourceEmber,
+            OpeningBeat::ArchiveAnswer => audio::OpeningBeat::ArchiveAnswer,
+            OpeningBeat::MemoryVault => audio::OpeningBeat::MemoryVault,
+            OpeningBeat::Convergence => audio::OpeningBeat::Convergence,
+            OpeningBeat::OracleAwakening => audio::OpeningBeat::OracleAwakening,
+        }),
+        Screen::Title => AudioScene::Title,
+        Screen::QuizMenu => AudioScene::QuizMenu,
+        Screen::CharacterCreation => AudioScene::CharacterCreation,
+        Screen::Oracle => AudioScene::Oracle,
+        Screen::Quiz => AudioScene::Quiz,
+        Screen::LevelUp => AudioScene::LevelUp,
+        Screen::GameOver => AudioScene::GameOver,
+        Screen::QuestSelect => AudioScene::QuestSelect,
+        Screen::Battle => AudioScene::Battle,
+        Screen::Victory => AudioScene::Victory,
+        Screen::Defeat => AudioScene::Defeat,
+        Screen::Codex => AudioScene::Codex,
+    };
+    let held = state.held.iter().fold(0, |bits, button| {
+        bits | match button {
+            Button::Up => pad::UP,
+            Button::Down => pad::DOWN,
+            Button::Left => pad::LEFT,
+            Button::Right => pad::RIGHT,
+            Button::A => pad::A,
+            Button::B => pad::B,
+            Button::Start => pad::START,
+            Button::Select => pad::SELECT,
+            Button::L => pad::L,
+            Button::R => pad::R,
+        }
+    });
+    // Mirrors the Oracle's truthful status line.
+    let questions = state.question_status();
+    AudioSnapshot {
+        powered: state.powered,
+        scene,
+        scene_ticks: state.screen_ticks,
+        held,
+        menu_selected: state.menu_selected,
+        hero_row: state.hero_row,
+        hero_name: state.hero_name,
+        hero_class: state.hero_class,
+        hero_style: state.hero_style,
+        quest_selected: state.quest_selected,
+        codex_page: state.codex_page,
+        codex_revealed: state.codex_revealed,
+        run: state.quiz.as_ref().map(|run| RunAudio {
+            question: run.question,
+            selected: run.selected,
+            phase: match run.feedback {
+                None => AnswerPhase::Choosing,
+                Some((true, _)) => AnswerPhase::Correct,
+                Some((false, _)) => AnswerPhase::Wrong,
+            },
+            hearts: run.hearts,
+            multiplier: streak_multiplier(run.streak),
+            insight: InsightStage::from_score(run.score).index(),
+            level: run.level,
+            completed_batches: run.completed_batches,
+            redeemed: run.redeemed,
+            lens_woke: run.lens_woke.map(|(_, stage)| stage.min(3) as u8),
+            leave_armed: run.leave_armed > 0,
+        }),
+        data: state.oracle_data,
+        data_stage: threshold_stage(state.oracle_data, &DATA_CHARGE_THRESHOLDS),
+        bugs: state.oracle_bug_hits,
+        breach_stage: threshold_stage(state.oracle_bug_hits, &BUG_BREACH_THRESHOLDS),
+        questions,
+        tier: match state.presentation_tier() {
+            PresentationTier::Initiate => Tier::Initiate,
+            PresentationTier::Adept => Tier::Adept,
+            PresentationTier::OracleBound => Tier::OracleBound,
+        },
+    }
+}
+
+fn direct_audio(state: Res<GameState>, mut audio: ResMut<AudioOut>) {
+    audio.observe(&audio_snapshot(&state));
 }
 
 fn apply_commands(
@@ -1358,10 +2890,13 @@ fn apply_commands(
                 state.powered = powered;
                 state.held.clear();
                 state.quiz = None;
+                // The run ends; its deferred copies' lessons requeue next run.
+                state.deferred_retries.clear();
                 state.logs.clear();
                 effects.0.push_back(EngineEffect::AbortQuest);
                 state.transition(if powered { Screen::Boot } else { Screen::Off });
             }
+            EngineCommand::ReducedMotion(reduced) => state.reduced_motion = reduced,
             EngineCommand::AiProvider(provider) => {
                 state.ai_provider = provider.map(|name| name.to_ascii_uppercase());
             }
@@ -1378,23 +2913,28 @@ fn apply_commands(
                 state.quest_selected = 0;
                 state.menu_selected = 0;
                 state.quiz = None;
-                state.batch_ends = state
+                state.consumed_questions = 0;
+                state.deferred_retries.clear();
+                (state.batch_ends, state.batch_levels) = state
                     .cartridge
                     .as_ref()
                     .filter(|cartridge| cartridge.mode() == CartridgeMode::Quiz)
-                    .map(|cartridge| cartridge.question_batch_ends.clone())
+                    .map(|cartridge| {
+                        let ends = &cartridge.question_batch_ends;
+                        let levels = if cartridge.question_batch_levels.len() == ends.len() {
+                            cartridge.question_batch_levels.clone()
+                        } else {
+                            (1..=ends.len() as u32).collect()
+                        };
+                        rebatch(ends, &levels, &cartridge.questions)
+                    })
                     .unwrap_or_default();
-                if state.batch_ends.is_empty() {
-                    if let Some(batch_end) = state.cartridge.as_ref().and_then(|cartridge| {
-                        (cartridge.mode() == CartridgeMode::Quiz && !cartridge.questions.is_empty())
-                            .then_some(cartridge.questions.len())
-                    }) {
-                        state.batch_ends.push(batch_end);
-                    }
-                }
                 state.pending_questions = None;
                 state.questions_loading = false;
                 state.question_retry_ticks = 0;
+                state.question_failure = None;
+                // Replies to requests for the previous insert no longer land.
+                state.question_request_seq = state.question_request_seq.wrapping_add(1);
                 if state.cartridge.as_ref().is_some_and(|cartridge| {
                     cartridge.mode() == CartridgeMode::Quiz && cartridge.questions.is_empty()
                 }) {
@@ -1406,31 +2946,44 @@ fn apply_commands(
             }
             EngineCommand::Questions {
                 cartridge_id,
-                questions,
+                result,
+                seq,
             } => {
                 let is_current_quiz = state.cartridge.as_ref().is_some_and(|cartridge| {
                     cartridge.id == cartridge_id && cartridge.mode() == CartridgeMode::Quiz
                 });
-                if !is_current_quiz {
+                // A superseded request's reply must not end the newer
+                // request's loading state, add a batch of its own, or
+                // report a failure the newer request has not had.
+                if !is_current_quiz || seq != state.question_request_seq {
                     continue;
                 }
                 state.questions_loading = false;
-                if questions.is_empty() {
-                    state.question_retry_ticks = 300;
-                    continue;
-                }
+                let questions = match result {
+                    Ok(questions) if !questions.is_empty() => questions,
+                    failed => {
+                        let reason = failed.err().unwrap_or_else(|| "NO NEW QUESTIONS".into());
+                        state.question_failure = Some(oracle_failure_reason(&reason));
+                        state.question_retry_ticks = 300;
+                        continue;
+                    }
+                };
+                state.question_failure = None;
                 state.question_retry_ticks = 0;
+                let level = state.question_request_level;
                 if state.screen == Screen::Quiz {
-                    state.pending_questions = Some((cartridge_id, questions));
+                    match state.pending_questions.as_mut() {
+                        Some((pending_id, pending, _)) if *pending_id == cartridge_id => {
+                            pending.extend(questions);
+                        }
+                        _ => state.pending_questions = Some((cartridge_id, questions, level)),
+                    }
                     continue;
                 }
-                let batch_end = state.cartridge.as_mut().map(|cartridge| {
-                    cartridge.questions.extend(questions);
-                    cartridge.questions.len()
-                });
-                if let Some(batch_end) = batch_end {
-                    state.batch_ends.push(batch_end);
+                if !state.run_is_live() {
+                    retire_consumed_questions(&mut state);
                 }
+                append_question_batch(&mut state, questions, level);
             }
             EngineCommand::Input { button, pressed } => {
                 let was_held = state.held.contains(&button);
@@ -1443,8 +2996,12 @@ fn apply_commands(
                     state.held.remove(&button);
                 }
             }
-            EngineCommand::QuestOutput { line, stderr } => {
-                if state.screen == Screen::Battle {
+            EngineCommand::QuestOutput {
+                line,
+                stderr,
+                quest,
+            } => {
+                if state.screen == Screen::Battle && quest == state.quest_generation {
                     for wrapped in wrap_text(&line, 37).into_iter().take(3) {
                         state.logs.push_back((wrapped, stderr));
                     }
@@ -1453,8 +3010,8 @@ fn apply_commands(
                     }
                 }
             }
-            EngineCommand::QuestDone { success } => {
-                if state.screen == Screen::Battle {
+            EngineCommand::QuestDone { success, quest } => {
+                if state.screen == Screen::Battle && quest == state.quest_generation {
                     state.signal(if success {
                         SceneSignal::Victory
                     } else {
@@ -1495,7 +3052,11 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             }
             Button::A | Button::Start => {
                 if state.menu_selected == 1 {
-                    state.signal(SceneSignal::Back);
+                    // The second option opens the Codex when this menu routes
+                    // to one and otherwise keeps its original return path.
+                    if !state.signal(SceneSignal::OpenCodex) {
+                        state.signal(SceneSignal::Back);
+                    }
                 } else {
                     state.hero_row = 0;
                     state.signal(SceneSignal::NewRun);
@@ -1517,16 +3078,28 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
         },
         Screen::Oracle => {
             if button == Button::B {
-                state.signal(SceneSignal::Back);
+                leave_quiz_run(state);
             }
         }
         Screen::Quiz => {
+            present_current_question(state);
             let Some(run) = state.quiz.as_mut() else {
+                // Without a run there is nothing to confirm; B still leaves.
+                if button == Button::B {
+                    leave_quiz_run(state);
+                }
                 return;
             };
-            if run.feedback.is_some() {
+            if let Some((_, hold)) = run.feedback {
+                // The lesson card ignores every input during the hold, then
+                // only A or Start continues; B cannot abandon mid-lesson.
+                if hold == 0 && matches!(button, Button::A | Button::Start) {
+                    continue_after_lesson(state);
+                }
                 return;
             }
+            // Any press disarms a pending leave; only a second B consumes it.
+            let leave_armed = std::mem::take(&mut run.leave_armed) > 0;
             let choice_count = state
                 .cartridge
                 .as_ref()
@@ -1535,50 +3108,47 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
             match button {
                 Button::Up => run.selected = (run.selected + choice_count - 1) % choice_count,
                 Button::Down => run.selected = (run.selected + 1) % choice_count,
-                Button::B => {
-                    state.signal(SceneSignal::Back);
-                }
-                Button::A => {
-                    let answered = state.cartridge.as_ref().and_then(|cart| {
-                        cart.questions.get(run.question).map(|question| {
-                            (cart.id.clone(), question.question.clone(), question.answer)
-                        })
-                    });
-                    let answer = answered.as_ref().map_or(0, |(_, _, answer)| *answer);
-                    let correct = run.selected == answer;
-                    if correct {
-                        run.streak += 1;
-                        run.score = run.score.saturating_add(score_award_for_streak(run.streak));
-                    } else {
-                        run.hearts = run.hearts.saturating_sub(1);
-                        run.streak = 0;
-                    }
-                    run.feedback = Some((correct, QUIZ_FEEDBACK_TICKS));
-                    if let Some((cartridge_id, question, _)) = answered {
-                        effects.0.push_back(EngineEffect::RecordAnsweredQuestion {
-                            cartridge_id,
-                            question,
-                        });
-                    }
-                }
+                Button::B if leave_armed => leave_quiz_run(state),
+                Button::B => run.leave_armed = QUIZ_LEAVE_CONFIRM_TICKS,
+                Button::A => commit_answer(state, effects),
                 _ => {}
             }
         }
         Screen::LevelUp => {
-            if state.screen_ticks >= LEVEL_UP_HOLD_TICKS
-                && matches!(button, Button::A | Button::Start)
-            {
-                let signal = if state.has_unanswered_question() {
-                    SceneSignal::QuestionsReady
-                } else {
-                    SceneSignal::NeedsQuestion
-                };
+            if matches!(button, Button::A | Button::Start) && state.level_up_can_continue() {
+                let signal = state.level_up_signal();
                 state.signal(signal);
             }
         }
         Screen::GameOver => {
             if matches!(button, Button::A | Button::B | Button::Start) {
                 state.signal(SceneSignal::Replay);
+            }
+        }
+        Screen::Codex => {
+            // Paging wraps between the mastery overview and the newest lesson,
+            // and every page turn seals a pending answer again. A and Start
+            // only reveal a pending lesson's sealed answer; elsewhere they are
+            // inactive. The Codex never changes the question deck.
+            let pages = state.codex_page_count();
+            let page = state.codex_page;
+            match button {
+                Button::Left | Button::Up | Button::L => {
+                    cycle_index(&mut state.codex_page, pages, -1)
+                }
+                Button::Right | Button::Down | Button::R => {
+                    cycle_index(&mut state.codex_page, pages, 1)
+                }
+                Button::A | Button::Start => {
+                    state.reveal_codex_answer(effects);
+                }
+                Button::B => {
+                    state.signal(SceneSignal::Back);
+                }
+                _ => {}
+            }
+            if state.codex_page != page {
+                state.codex_revealed = false;
             }
         }
         Screen::QuestSelect => {
@@ -1606,7 +3176,11 @@ fn handle_press(state: &mut GameState, effects: &mut Effects, button: Button) {
                     state.logs.clear();
                     state.logs.push_back((format!("> {}", quest.name), false));
                     if state.signal(SceneSignal::QuestSelected) && state.screen == Screen::Battle {
-                        effects.0.push_back(EngineEffect::RunQuest(quest.command));
+                        state.quest_generation = state.quest_generation.wrapping_add(1);
+                        effects.0.push_back(EngineEffect::RunQuest {
+                            command: quest.command,
+                            quest: state.quest_generation,
+                        });
                     }
                 }
                 _ => {}
@@ -1631,6 +3205,9 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
     state.screen_ticks = state.screen_ticks.saturating_add(1);
     if !matches!(state.screen, Screen::Off | Screen::Boot) {
         state.tick_machine();
+    }
+    if state.consumed_questions > 0 && !state.run_is_live() {
+        retire_consumed_questions(&mut state);
     }
     if state.screen == Screen::Oracle {
         let moving_left = state.held.contains(&Button::Left);
@@ -1674,27 +3251,17 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
         state.oracle_bug_hits = state.oracle_bug_hits.saturating_add(bug_hits);
     }
     if matches!(state.screen, Screen::Oracle | Screen::LevelUp) {
-        if let Some((cartridge_id, questions)) = state.pending_questions.take() {
-            let batch_end = if let Some(cartridge) = state.cartridge.as_mut() {
-                if cartridge.id == cartridge_id && !questions.is_empty() {
-                    cartridge.questions.extend(questions);
-                    Some(cartridge.questions.len())
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(batch_end) = batch_end {
-                state.batch_ends.push(batch_end);
+        if let Some((cartridge_id, questions, level)) = state.pending_questions.take() {
+            if state
+                .cartridge
+                .as_ref()
+                .is_some_and(|cartridge| cartridge.id == cartridge_id)
+            {
+                append_question_batch(&mut state, questions, level);
             }
         }
     }
     match state.screen {
-        Screen::Oracle if !state.has_unanswered_question() && !state.questions_loading => {
-            let level = state.quiz.as_ref().map_or(1, |run| run.level);
-            request_question_batch(&mut state, &mut effects, level);
-        }
         Screen::Oracle if state.screen_ticks >= 75 && state.has_unanswered_question() => {
             state.signal(SceneSignal::QuestionsReady);
         }
@@ -1702,82 +3269,74 @@ fn advance_game(mut state: ResMut<GameState>, mut effects: ResMut<Effects>) {
             state.signal(SceneSignal::NeedsQuestion);
         }
         Screen::Quiz => {
-            let prefetch_level = state.quiz.as_ref().and_then(|run| {
-                let remaining = state.question_count().saturating_sub(run.question);
-                (remaining <= QUESTION_BATCH_SIZE
-                    && !state.questions_loading
-                    && state.pending_questions.is_none())
-                .then_some(run.level + 1)
+            let prefetch = state.quiz.as_ref().is_some_and(|run| {
+                state.question_count().saturating_sub(run.question) <= QUESTION_BATCH_SIZE
             });
-            if let Some(level) = prefetch_level {
+            if prefetch {
+                let level = state.next_batch_level();
                 request_question_batch(&mut state, &mut effects, level);
             }
-            let question_count = state.question_count();
-            let next_batch_end = state
-                .quiz
-                .as_ref()
-                .and_then(|run| state.batch_ends.get(run.completed_batches).copied());
-            let mut next_signal = None;
             if let Some(run) = state.quiz.as_mut() {
-                if let Some((correct, ticks)) = run.feedback.as_mut() {
-                    let _ = correct;
-                    *ticks = ticks.saturating_sub(1);
-                    if *ticks == 0 {
-                        run.feedback = None;
-                        if run.hearts == 0 {
-                            next_signal = Some(SceneSignal::HeartsEmpty);
-                        } else {
-                            run.question += 1;
-                            run.selected = 0;
-                            if next_batch_end == Some(run.question) {
-                                run.completed_batches += 1;
-                                run.level += 1;
-                                run.leveled_up = true;
-                            }
-                            if run.leveled_up {
-                                run.leveled_up = false;
-                                next_signal = Some(SceneSignal::BatchComplete);
-                            } else if run.question >= question_count {
-                                next_signal = Some(SceneSignal::NeedsQuestion);
-                            }
-                        }
-                    }
+                if let Some((_, hold)) = run.feedback.as_mut() {
+                    *hold = hold.saturating_sub(1);
                 }
-            }
-            if let Some(signal) = next_signal {
-                state.signal(signal);
+                run.leave_armed = run.leave_armed.saturating_sub(1);
             }
         }
         Screen::LevelUp if state.screen_ticks >= 180 => {
-            let signal = if state.has_unanswered_question() {
-                SceneSignal::QuestionsReady
-            } else {
-                SceneSignal::NeedsQuestion
-            };
+            let signal = state.level_up_signal();
             state.signal(signal);
         }
         _ => {}
     }
+    // Catch-up request: whenever the powered device shows a quiz screen and
+    // the next question does not exist yet, keep a request in flight. This
+    // recovers a first request that failed before the batteries were
+    // verified, and serves the Oracle and level-up waits alike.
+    if state.powered
+        && !matches!(state.screen, Screen::Off | Screen::Boot)
+        && !state.has_next_question()
+    {
+        let level = state.next_batch_level();
+        request_question_batch(&mut state, &mut effects, level);
+    }
+    if state.screen == Screen::Quiz {
+        present_current_question(&mut state);
+    }
     state.question_retry_ticks = state.question_retry_ticks.saturating_sub(1);
+    if state.questions_loading {
+        state.question_request_ticks = state.question_request_ticks.saturating_add(1);
+    }
+    // Until the line is a recall, the next recall starts at the next tick.
+    if state.screen != Screen::Oracle
+        || !matches!(state.oracle_line(), Some(OracleLine::Recall { .. }))
+    {
+        state.oracle_recall_since = state.screen_ticks.saturating_add(1);
+    }
 }
 
 fn render(mut frame: ResMut<Framebuffer>, state: Res<GameState>) {
+    draw_screen(&mut frame, &state);
+}
+
+fn draw_screen(frame: &mut Framebuffer, state: &GameState) {
     match state.screen {
         Screen::Off => frame.clear(INK),
-        Screen::Boot => render_boot(&mut frame, &state),
-        Screen::Copyright => render_copyright(&mut frame, &state),
-        Screen::OpeningFanfare => render_opening_fanfare(&mut frame, &state),
-        Screen::Title => render_title(&mut frame, &state),
-        Screen::QuizMenu => render_quiz_menu(&mut frame, &state),
-        Screen::CharacterCreation => render_character_creation(&mut frame, &state),
-        Screen::Oracle => render_oracle(&mut frame, &state),
-        Screen::Quiz => render_quiz(&mut frame, &state),
-        Screen::LevelUp => render_level_up(&mut frame, &state),
-        Screen::GameOver => render_game_over(&mut frame, &state),
-        Screen::QuestSelect => render_quest_select(&mut frame, &state),
-        Screen::Battle => render_battle(&mut frame, &state),
-        Screen::Victory => render_result(&mut frame, true),
-        Screen::Defeat => render_result(&mut frame, false),
+        Screen::Boot => render_boot(frame, state),
+        Screen::Copyright => render_copyright(frame, state),
+        Screen::OpeningFanfare => render_opening_fanfare(frame, state),
+        Screen::Title => render_title(frame, state),
+        Screen::QuizMenu => render_quiz_menu(frame, state),
+        Screen::CharacterCreation => render_character_creation(frame, state),
+        Screen::Oracle => render_oracle(frame, state),
+        Screen::Quiz => render_quiz(frame, state),
+        Screen::LevelUp => render_level_up(frame, state),
+        Screen::GameOver => render_game_over(frame, state),
+        Screen::Codex => render_codex(frame, state),
+        Screen::QuestSelect => render_quest_select(frame, state),
+        Screen::Battle => render_battle(frame, state),
+        Screen::Victory => render_result(frame, true),
+        Screen::Defeat => render_result(frame, false),
     }
 }
 
@@ -1786,7 +3345,7 @@ fn render_boot(frame: &mut Framebuffer, state: &GameState) {
     frame.centered_text_box(GATEWAY_TITLE_TOP_BOX, "CODE QUEST", PARCH, 2);
     frame.centered_text_box(GATEWAY_TITLE_BOTTOM_BOX, "ADVANCE", AMBER, 1);
     frame.centered_text_box(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", CYAN_DIM, 1);
-    if !state.has_game() && state.screen_ticks > 50 && (state.screen_ticks / 30).is_multiple_of(2) {
+    if !state.has_game() && state.screen_ticks > 50 && state.blink_lit(30) {
         frame.centered_text_box(GATEWAY_PROMPT_BOX, "INSERT CARTRIDGE", PARCH, 1);
     }
 }
@@ -1874,7 +3433,7 @@ fn render_oracle_chronicle(frame: &mut Framebuffer, state: &GameState) {
             frame.centered_text_in(42, 126, 156, &truncate(&history, 24), MIST, 1);
         }
     }
-    if state.can_signal(SceneSignal::Continue) && (state.screen_ticks / 20).is_multiple_of(2) {
+    if state.can_signal(SceneSignal::Continue) && state.blink_lit(20) {
         frame.rect(74, 141, 92, 16, VOID);
         frame.outline(74, 141, 92, 16, CYAN_DIM);
         frame.centered_text_in(74, 145, 92, "A / START:SKIP", MIST, 1);
@@ -1912,7 +3471,7 @@ fn render_oracle_title(frame: &mut Framebuffer, state: &GameState) {
         frame.centered_text_box(GATEWAY_TITLE_BOTTOM_BOX, &truncate(line, 19), AMBER, 1);
     }
     frame.centered_text_box(GATEWAY_SIGNATURE_BOX, "REPOSITORY ORACLE", CYAN, 1);
-    if state.has_game() && (state.screen_ticks / 30).is_multiple_of(2) {
+    if state.has_game() && state.blink_lit(30) {
         frame.centered_text_box(GATEWAY_PROMPT_BOX, "PRESS START", PARCH, 1);
     }
 }
@@ -1966,7 +3525,7 @@ fn render_copyright(frame: &mut Framebuffer, state: &GameState) {
         };
         frame.centered_text(129, &history, GOLD, 1);
     }
-    if state.can_signal(SceneSignal::Continue) && (state.screen_ticks / 20).is_multiple_of(2) {
+    if state.can_signal(SceneSignal::Continue) && state.blink_lit(20) {
         frame.centered_text(141, "START:SKIP", PARCH, 1);
     }
 }
@@ -2017,27 +3576,33 @@ fn render_opening_fanfare(frame: &mut Framebuffer, state: &GameState) {
         render_oracle_awakening(frame, state);
         return;
     }
+    // Story beats keep their timing; only decorative motion honors reduced motion.
     let ticks = state.screen_ticks;
+    let motion = state.motion_ticks();
     frame.clear(INK);
     for index in 0..24 {
-        let x = ((index * 67 + ticks as usize) % WIDTH) as i32;
+        let x = ((index * 67 + motion as usize) % WIDTH) as i32;
         let y = ((index * 43 + 17) % HEIGHT) as i32;
         frame.pixel(x, y, if index % 4 == 0 { GOLD } else { MIST });
     }
 
     if ticks < 120 {
-        let travel = (ticks.min(110) as i32 * 70) / 110;
+        let travel = (state.settled_ticks(110) as i32 * 70) / 110;
         draw_code_sigil(frame, 24 + travel, 78, false);
         draw_code_sigil(frame, 216 - travel, 78, true);
         if ticks >= 100 {
-            let flare = ((ticks - 100) as i32 / 4).min(8);
+            let flare = if state.reduced_motion {
+                8
+            } else {
+                ((ticks - 100) as i32 / 4).min(8)
+            };
             frame.rect(120 - flare, 78 - 1, flare * 2 + 1, 3, PARCH);
             frame.rect(119, 79 - flare, 3, flare * 2 + 1, GOLD);
         }
         frame.centered_text(132, "TWO PATHS CONVERGE", SKY, 1);
     } else {
-        draw_commit_constellation(frame, ticks);
-        draw_oracle_sigil(frame, 120, 78, ((ticks / 10) % 3) as i32);
+        draw_commit_constellation(frame, motion);
+        draw_oracle_sigil(frame, 120, 78, ((motion / 10) % 3) as i32);
         frame.centered_text(20, "HISTORY BECOMES POWER", GOLD, 1);
         frame.centered_text(135, "THE ORACLE OPENS", PARCH, 1);
     }
@@ -2054,7 +3619,7 @@ fn render_title(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     for index in 0..42 {
-        let x = ((index * 53 + state.screen_ticks as usize / 3) % WIDTH) as i32;
+        let x = ((index * 53 + state.motion_ticks() as usize / 3) % WIDTH) as i32;
         let y = ((index * 37 + 11) % HEIGHT) as i32;
         frame.pixel(x, y, if index % 3 == 0 { SKY } else { MIST });
     }
@@ -2073,8 +3638,16 @@ fn render_title(frame: &mut Framebuffer, state: &GameState) {
         None => "POWER OFF TO LOAD A GAME",
     };
     frame.centered_text(91, subtitle, SKY, 1);
-    if state.has_game() && (state.screen_ticks / 30).is_multiple_of(2) {
+    if state.has_game() && state.blink_lit(30) {
         frame.centered_text(126, "PRESS START", PARCH, 1);
+    }
+}
+
+fn quiz_menu_second_option(state: &GameState) -> &'static str {
+    if state.can_signal(SceneSignal::OpenCodex) {
+        "OPEN THE CODEX"
+    } else {
+        "RETURN TO TITLE"
     }
 }
 
@@ -2085,8 +3658,14 @@ fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     frame.centered_text(20, "REPO QUIZ", GOLD, 2);
+    if let Some(summary) = state.journal_summary() {
+        frame.centered_text(44, &summary, SKY, 1);
+    }
     frame.outline(34, 58, 172, 62, SKY);
-    for (index, label) in ["BEGIN RUN", "RETURN TO TITLE"].iter().enumerate() {
+    for (index, label) in ["BEGIN RUN", quiz_menu_second_option(state)]
+        .iter()
+        .enumerate()
+    {
         let y = 74 + index as i32 * 24;
         if state.menu_selected == index {
             frame.rect(43, y - 3, 154, 14, ROYAL);
@@ -2100,8 +3679,14 @@ fn render_quiz_menu(frame: &mut Framebuffer, state: &GameState) {
 fn render_oracle_menu(frame: &mut Framebuffer, state: &GameState) {
     frame.blit_rgb(ORACLE_GATEWAY);
     frame.centered_text_box(GATEWAY_MENU_HEADING_BOX, "CHOOSE YOUR PATH", PARCH, 1);
-    frame.centered_text_box(GATEWAY_MENU_SUBTITLE_BOX, "THE BOND BEGINS HERE", CYAN, 1);
-    for (index, label) in ["BEGIN THE TRIAL", "RETURN TO TITLE"].iter().enumerate() {
+    let subtitle = state
+        .journal_summary()
+        .unwrap_or_else(|| "THE BOND BEGINS HERE".into());
+    frame.centered_text_box(GATEWAY_MENU_SUBTITLE_BOX, &subtitle, CYAN, 1);
+    for (index, label) in ["BEGIN THE TRIAL", quiz_menu_second_option(state)]
+        .iter()
+        .enumerate()
+    {
         let option_box = GATEWAY_MENU_OPTION_BOXES[index];
         let text_box = GATEWAY_MENU_OPTION_TEXT_BOXES[index];
         let focused = state.menu_selected == index;
@@ -2140,7 +3725,7 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     frame.centered_text(9, "CREATE YOUR HERO", GOLD, 1);
-    let bob = ((state.screen_ticks / 20) % 2) as i32;
+    let bob = ((state.motion_ticks() / 20) % 2) as i32;
     draw_hero(frame, 26, 64 - bob, 1, state);
 
     let rows = [
@@ -2157,16 +3742,28 @@ fn render_character_creation(frame: &mut Framebuffer, state: &GameState) {
         }
         frame.text(81, y, label, PARCH, 1);
     }
-    let oracle_status = if state.question_count() > 0 {
-        "ORACLE READY"
-    } else if state.questions_loading {
-        "ORACLE IS WRITING..."
-    } else {
-        "ORACLE WILL RETRY..."
-    };
-    frame.centered_text(120, oracle_status, SKY, 1);
+    frame.centered_text(120, creation_oracle_status(state, false), SKY, 1);
     frame.centered_text(138, "D-PAD:EDIT  A:CHOOSE", PARCH, 1);
     frame.centered_text(150, "START:BEGIN  B:BACK", MIST, 1);
+}
+
+/// Hero-creation status for the next run's first question, in the Oracle's
+/// truthful states: ready, loading, a scheduled retry, or about to contact.
+fn creation_oracle_status(state: &GameState, atelier: bool) -> &'static str {
+    match (
+        state.has_next_question(),
+        state.questions_loading,
+        state.question_retry_ticks > 0,
+        atelier,
+    ) {
+        (true, ..) => "ORACLE READY",
+        (_, true, _, true) => "ORACLE IS WRITING",
+        (_, true, _, false) => "ORACLE IS WRITING...",
+        (_, _, true, true) => "VISION CLOUDY - RETRYING",
+        (_, _, true, false) => "ORACLE WILL RETRY...",
+        (.., true) => "CONTACTING ORACLE",
+        _ => "CONTACTING ORACLE...",
+    }
 }
 
 fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
@@ -2186,7 +3783,7 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
         CYAN_DIM,
     );
     frame.centered_compact_text_box(ATELIER_HEADER_BOX, "BIND YOUR CODE-SEER", AMBER);
-    let bob = ((state.screen_ticks / 22) % 2) as i32;
+    let bob = ((state.motion_ticks() / 22) % 2) as i32;
     draw_hero(
         frame,
         ATELIER_HERO_X,
@@ -2232,16 +3829,98 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
         1,
     );
 
-    let oracle_status = if state.question_count() > 0 {
-        "ORACLE READY"
-    } else if state.questions_loading {
-        "ORACLE IS WRITING"
-    } else {
-        "VISION CLOUDY - RETRYING"
-    };
     frame.rect(0, 143, WIDTH as i32, 17, VOID);
-    frame.text(5, 148, oracle_status, CYAN, 1);
+    frame.text(5, 148, creation_oracle_status(state, true), CYAN, 1);
     frame.text(174, 148, "START:BIND", MIST, 1);
+}
+
+/// Header band heights of the Datafall scenes with one row, and with the
+/// Oracle line beneath it. The tall bands end above the highest drop.
+const SANCTUM_HEADER_HEIGHT: i32 = 15;
+const SANCTUM_TALL_HEADER_HEIGHT: i32 = 22;
+const LEGACY_HEADER_HEIGHT: i32 = 12;
+const LEGACY_TALL_HEADER_HEIGHT: i32 = 21;
+/// Where each Datafall scene writes its Oracle line.
+const SANCTUM_ORACLE_LINE_BOX: UiBox = UiBox {
+    x: 5,
+    y: 13,
+    width: 230,
+    height: 7,
+};
+const LEGACY_ORACLE_LINE_BOX: UiBox = UiBox {
+    x: 4,
+    y: 12,
+    width: 232,
+    height: 7,
+};
+
+/// Rendered width of text segments drawn one space apart.
+fn segments_width(segments: &[(String, Color)]) -> i32 {
+    let characters = segments
+        .iter()
+        .map(|(text, _)| text.chars().count())
+        .sum::<usize>()
+        + segments.len().saturating_sub(1);
+    text_width(&" ".repeat(characters), 1)
+}
+
+/// The Oracle line as colored segments that fit `width` pixels at full
+/// letter spacing. A recalled lesson drops its lens label before any of its
+/// answer would be cut.
+fn oracle_line_segments(line: &OracleLine, width: i32) -> Vec<(String, Color)> {
+    match line {
+        OracleLine::Failure { reason, retry_in } => vec![
+            (reason.clone(), AMBER),
+            (
+                match retry_in {
+                    Some(seconds) => format!("- RETRY IN {seconds}S"),
+                    None => "- RETRYING".into(),
+                },
+                MIST,
+            ),
+        ],
+        OracleLine::Recall {
+            outstanding,
+            concept,
+            answer,
+        } => {
+            let tag = if *outstanding {
+                ("REVIEW", AMBER)
+            } else {
+                ("RECALL", CYAN)
+            };
+            let mut segments = vec![(tag.0.to_string(), tag.1)];
+            if let Some(concept) = concept {
+                segments.push((format!("{}:", concept.label()), MIST));
+            }
+            segments.push((truncate(answer.trim(), QUIZ_CHOICE_CHARS), PARCH));
+            if segments.len() == 3 && segments_width(&segments) > width {
+                segments.remove(1);
+            }
+            segments
+        }
+    }
+}
+
+/// Draws the Oracle line inside `bounds`, as many characters of it as
+/// [`GameState::oracle_line_reveal`] allows this tick.
+fn draw_oracle_line(frame: &mut Framebuffer, bounds: UiBox, state: &GameState, line: &OracleLine) {
+    let segments = oracle_line_segments(line, bounds.width);
+    debug_assert!(
+        segments_width(&segments) <= bounds.width,
+        "Oracle line {line:?} does not fit {bounds:?}"
+    );
+    let mut remaining = state.oracle_line_reveal(line);
+    let mut x = bounds.x;
+    for (text, color) in segments {
+        if remaining == 0 {
+            break;
+        }
+        let shown = truncate(&text, remaining);
+        frame.text(x, bounds.y, &shown, color, 1);
+        remaining = remaining.saturating_sub(text.chars().count() + 1);
+        x += (text.chars().count() as i32 + 1) * GLYPH_ADVANCE;
+    }
 }
 
 fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
@@ -2251,24 +3930,34 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(INK);
     for index in 0..30 {
-        let x = ((index * 71 + state.screen_ticks as usize * 2) % WIDTH) as i32;
+        let x = ((index * 71 + state.motion_ticks() as usize * 2) % WIDTH) as i32;
         frame.pixel(x, 14 + (index * 29 % 96) as i32, MIST);
     }
-    frame.rect(0, 0, WIDTH as i32, 12, NAVY);
-    frame.rect(0, 11, WIDTH as i32, 1, PLUM);
-    frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
-    let status = if state.has_unanswered_question() {
-        "QUESTION READY".to_string()
-    } else if state.questions_loading {
-        format!("{} THINKING", state.ai_provider_name())
-    } else if state.question_retry_ticks > 0 {
-        format!("{} RETRYING", state.ai_provider_name())
+    let oracle_line = state.oracle_line();
+    let header_height = if oracle_line.is_some() {
+        LEGACY_TALL_HEADER_HEIGHT
     } else {
-        format!("CONTACTING {}", state.ai_provider_name())
+        LEGACY_HEADER_HEIGHT
+    };
+    frame.rect(0, 0, WIDTH as i32, header_height, NAVY);
+    frame.rect(0, header_height - 1, WIDTH as i32, 1, PLUM);
+    frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
+    if let Some(line) = &oracle_line {
+        draw_oracle_line(frame, LEGACY_ORACLE_LINE_BOX, state, line);
+    }
+    let status = match state.question_status() {
+        QuestionStatus::Ready => "QUESTION READY".to_string(),
+        QuestionStatus::Writing => format!("{} THINKING", state.ai_provider_name()),
+        QuestionStatus::Retrying => format!("{} RETRYING", state.ai_provider_name()),
+        QuestionStatus::Contacting => format!("CONTACTING {}", state.ai_provider_name()),
     };
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
     frame.text(211 - status_width, 2, &status, SKY, 1);
-    let phase = (state.screen_ticks % 45) / 15;
+    let phase = if state.reduced_motion {
+        2
+    } else {
+        (state.screen_ticks % 45) / 15
+    };
     frame.text(216, 2, &".".repeat(phase as usize + 1), GOLD, 1);
     for drop in &state.oracle_drops {
         match drop.kind {
@@ -2325,12 +4014,22 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         PresentationTier::Adept => frame.blit_rgb_graded(ORACLE_SANCTUM, 236, 250, 226),
         PresentationTier::OracleBound => frame.blit_rgb(ORACLE_SANCTUM),
     };
-    frame.rect(0, 0, WIDTH as i32, 15, VOID);
+    let oracle_line = state.oracle_line();
+    let (header_height, header_y) = if oracle_line.is_some() {
+        (SANCTUM_TALL_HEADER_HEIGHT, 4)
+    } else {
+        (SANCTUM_HEADER_HEIGHT, 5)
+    };
+    frame.rect(0, 0, WIDTH as i32, header_height, VOID);
+    if oracle_line.is_some() {
+        // The tall band covers the plate's own header rule; restate it.
+        frame.rect(0, header_height - 1, WIDTH as i32, 1, NAVY);
+    }
     frame.rect(0, 143, WIDTH as i32, 17, VOID);
-    frame.text(5, 5, "DATAFALL", AMBER, 1);
+    frame.text(5, header_y, "DATAFALL", AMBER, 1);
     frame.text(
         60,
-        5,
+        header_y,
         tier.label(),
         match tier {
             PresentationTier::Initiate => CYAN_DIM,
@@ -2339,17 +4038,17 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         },
         1,
     );
-    let status = if state.has_unanswered_question() {
-        state.ai_provider_status("READY")
-    } else if state.questions_loading {
-        state.ai_provider_status("SCRYING")
-    } else if state.question_retry_ticks > 0 {
-        state.ai_provider_status("CLOUDY")
-    } else {
-        state.ai_provider_status("CHANNEL")
-    };
+    let status = state.ai_provider_status(match state.question_status() {
+        QuestionStatus::Ready => "READY",
+        QuestionStatus::Writing => "SCRYING",
+        QuestionStatus::Retrying => "CLOUDY",
+        QuestionStatus::Contacting => "CHANNEL",
+    });
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
-    frame.text(235 - status_width, 5, &status, CYAN, 1);
+    frame.text(235 - status_width, header_y, &status, CYAN, 1);
+    if let Some(line) = &oracle_line {
+        draw_oracle_line(frame, SANCTUM_ORACLE_LINE_BOX, state, line);
+    }
 
     if tier == PresentationTier::OracleBound {
         for (x, y) in [
@@ -2439,8 +4138,36 @@ fn draw_oracle_bug(frame: &mut Framebuffer, x: i32, y: i32) {
     );
 }
 
+/// How one 5x7 rune is drawn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuneStyle {
+    /// Outline in the meter color around a parchment core.
+    Lit,
+    /// An ash outline.
+    Unlit,
+    /// Earned by volume but held back by a mastery gate: an amber outline
+    /// split by a diagonal crack, with no parchment core.
+    Cracked,
+}
+
+/// The crack across a cracked rune, from its right edge to its left edge.
+const RUNE_CRACK: [(i32, i32); 3] = [(3, 2), (2, 3), (1, 4)];
+
 fn draw_oracle_rune(frame: &mut Framebuffer, x: i32, y: i32, lit: bool, color: Color) {
-    let outline = if lit { color } else { ASH };
+    let style = if lit {
+        RuneStyle::Lit
+    } else {
+        RuneStyle::Unlit
+    };
+    draw_rune(frame, x, y, style, color);
+}
+
+fn draw_rune(frame: &mut Framebuffer, x: i32, y: i32, style: RuneStyle, color: Color) {
+    let outline = match style {
+        RuneStyle::Lit => color,
+        RuneStyle::Unlit => ASH,
+        RuneStyle::Cracked => AMBER,
+    };
     for (dx, dy) in [
         (2, 0),
         (1, 1),
@@ -2457,16 +4184,58 @@ fn draw_oracle_rune(frame: &mut Framebuffer, x: i32, y: i32, lit: bool, color: C
     ] {
         frame.pixel(x + dx, y + dy, outline);
     }
-    if lit {
-        for (dx, dy) in [(2, 2), (1, 3), (2, 3), (3, 3), (2, 4)] {
-            frame.pixel(x + dx, y + dy, PARCH);
+    match style {
+        RuneStyle::Lit => {
+            for (dx, dy) in [(2, 2), (1, 3), (2, 3), (3, 3), (2, 4)] {
+                frame.pixel(x + dx, y + dy, PARCH);
+            }
         }
+        RuneStyle::Cracked => {
+            for (dx, dy) in RUNE_CRACK {
+                frame.pixel(x + dx, y + dy, AMBER);
+            }
+        }
+        RuneStyle::Unlit => {}
     }
 }
 
+/// Width of a three-rune meter: three 5px runes at a 7px pitch.
+const RUNE_METER_WIDTH: i32 = 19;
+
 fn draw_oracle_rune_meter(frame: &mut Framebuffer, x: i32, y: i32, lit_runes: usize, color: Color) {
-    for index in 0..3 {
-        draw_oracle_rune(frame, x + index as i32 * 7, y, index < lit_runes, color);
+    draw_mastery_meter(frame, x, y, lit_runes, 0, color);
+}
+
+/// Three runes: `lit` in `color`, then `cracks` cracked ones (earned by
+/// volume, held back by a mastery gate), then unlit ones.
+fn draw_mastery_meter(
+    frame: &mut Framebuffer,
+    x: i32,
+    y: i32,
+    lit: usize,
+    cracks: usize,
+    color: Color,
+) {
+    draw_rune_row(frame, x, y, mastery_meter_styles(lit, cracks), color);
+}
+
+/// How each of a meter's three runes is drawn for `lit` lit runes followed
+/// by `cracks` cracked ones.
+fn mastery_meter_styles(lit: usize, cracks: usize) -> [RuneStyle; 3] {
+    std::array::from_fn(|index| {
+        if index < lit {
+            RuneStyle::Lit
+        } else if index < lit + cracks {
+            RuneStyle::Cracked
+        } else {
+            RuneStyle::Unlit
+        }
+    })
+}
+
+fn draw_rune_row(frame: &mut Framebuffer, x: i32, y: i32, styles: [RuneStyle; 3], color: Color) {
+    for (index, style) in styles.into_iter().enumerate() {
+        draw_rune(frame, x + index as i32 * 7, y, style, color);
     }
 }
 
@@ -2494,15 +4263,30 @@ fn crossed_insight_stage(run: &QuizRun) -> Option<InsightStage> {
     (current > previous).then_some(current)
 }
 
+/// Roman numeral for a lit mastery stage (1-3).
+fn mastery_numeral(stage: usize) -> &'static str {
+    match stage {
+        0 | 1 => "I",
+        2 => "II",
+        _ => "III",
+    }
+}
+
+/// The lesson-card banner. A woken lens rune outranks everything: it is the
+/// run's pedagogical reward, while INSIGHT names the score marks.
 fn quiz_feedback_banner(run: &QuizRun) -> String {
     match run.feedback {
         Some((true, _)) => {
-            if let Some(stage) = crossed_insight_stage(run) {
-                format!("RUNE {} AWAKENS", stage.label())
+            if let Some((concept, stage)) = run.lens_woke {
+                format!("{} RUNE {}", concept.label(), mastery_numeral(stage))
+            } else if let Some(stage) = crossed_insight_stage(run) {
+                format!("INSIGHT {} RISES", stage.label())
+            } else if run.redeemed {
+                "REDEEMED".into()
             } else if streak_multiplier(run.streak) > 1 {
                 format!("FLOW X{}", streak_multiplier(run.streak))
             } else {
-                "REVIEW ANSWER".into()
+                "CLEAR SIGHT".into()
             }
         }
         Some((false, _)) => match run.hearts {
@@ -2510,17 +4294,224 @@ fn quiz_feedback_banner(run: &QuizRun) -> String {
             1 => "WARD FRACTURES".into(),
             _ => "WARD STRAINED".into(),
         },
+        None if run.leave_armed > 0 => "B AGAIN:LEAVE".into(),
         None => "A:ANSWER B:LEAVE".into(),
     }
 }
 
 fn quiz_feedback_color(run: &QuizRun) -> Color {
+    if let (Some((true, _)), Some((_, stage))) = (run.feedback, run.lens_woke) {
+        return mastery_rune_color(stage);
+    }
     match run.feedback {
         Some((true, _)) if crossed_insight_stage(run).is_some() => AMBER,
+        Some((true, _)) if run.redeemed => GREEN,
         Some((true, _)) => CYAN,
         Some((false, _)) => ward_color(run.hearts),
+        None if run.leave_armed > 0 => AMBER,
         None => MIST,
     }
+}
+
+/// Left edge of the trial header's banner row: beside the tier label, pulled
+/// left just enough that the longest lens banner stays inside the header.
+const TRIAL_BANNER_X: i32 = 126;
+
+fn trial_banner_x(banner: &str) -> i32 {
+    TRIAL_BANNER_X.min(236 - text_width(banner, 1))
+}
+
+/// Whether the question on screen is a returning review copy.
+fn current_question_is_review(state: &GameState) -> bool {
+    state
+        .quiz
+        .as_ref()
+        .zip(state.cartridge.as_ref())
+        .and_then(|(run, cartridge)| cartridge.questions.get(run.question))
+        .is_some_and(|question| question.review.is_review())
+}
+
+/// The header counter: `trial` (or `retry` in amber while a review copy is on
+/// screen) with batch progress `P/N`, or the run's question number when no
+/// batch is known.
+fn question_counter(
+    state: &GameState,
+    (trial, retry): (&str, &str),
+    trial_color: Color,
+) -> (String, Color) {
+    let (label, color) = if current_question_is_review(state) {
+        (retry, AMBER)
+    } else {
+        (trial, trial_color)
+    };
+    let text = match state.batch_progress() {
+        Some((place, length)) => format!("{label}{place}/{length}"),
+        None => {
+            let question = state.quiz.as_ref().map_or(0, |run| run.question);
+            format!("{label}{:02}", (question + 1).min(99))
+        }
+    };
+    (text, color)
+}
+
+/// Where the trial lesson footer centers `note`: in the free span between the
+/// lens runes (or the column start without a lens) and `A:CONTINUE`.
+fn trial_retry_note_x(column_x: i32, column_end: i32, concept: Option<Concept>, note: &str) -> i32 {
+    let left = concept.map_or(column_x, |concept| {
+        column_x + text_width(concept.label(), 1) + 4 + RUNE_METER_WIDTH
+    });
+    let right = column_end - text_width(LESSON_CONTINUE, 1);
+    left + (right - left - text_width(note, 1)) / 2
+}
+
+/// Where the legacy footer puts `note`: centered in the free span between
+/// `banner` and `A:CONTINUE`, when that leaves at least a glyph cell (6px) on
+/// each side. Both are amber, so a tight gap would read as one phrase
+/// (`WARD STRAINED BACK IN 3`).
+fn quiz_retry_note_x(banner: &str, note: &str) -> Option<i32> {
+    let left = 5 + text_width(banner, 1);
+    let right = 235 - text_width(LESSON_CONTINUE, 1);
+    let spare = right - left - text_width(note, 1);
+    (spare >= 12).then_some(left + spare / 2)
+}
+
+/// True once the lesson card's input hold has elapsed and A or Start will
+/// continue.
+fn lesson_is_live(run: &QuizRun) -> bool {
+    matches!(run.feedback, Some((_, 0)))
+}
+
+const LESSON_CONTINUE: &str = "A:CONTINUE";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LessonTone {
+    /// The player's wrong pick: the misconception it reveals.
+    Misconception,
+    MisconceptionWhy,
+    /// The correct answer and why it holds.
+    Answer,
+    AnswerWhy,
+}
+
+impl LessonTone {
+    fn color(self) -> Color {
+        match self {
+            Self::Misconception => RED,
+            Self::MisconceptionWhy => MIST,
+            Self::Answer => GREEN,
+            Self::AnswerWhy => PARCH,
+        }
+    }
+}
+
+/// One positioned line of lesson copy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LessonLine {
+    x: i32,
+    y: i32,
+    text: String,
+    tone: LessonTone,
+}
+
+/// Composes the lesson card copy inside `area`: for a miss, the player's pick
+/// with its rationale and then the correct answer with its rationale; for a
+/// success, the answer with its rationale. Choice lines carry a `-` or `+`
+/// marker as well as color, so the verdict never depends on hue alone. The
+/// fixed rationale column is centered horizontally and the whole composition
+/// vertically; legacy questions without rationales show only choice lines.
+fn lesson_lines(
+    question: &QuizQuestion,
+    picked: usize,
+    correct: bool,
+    area: UiBox,
+) -> Vec<LessonLine> {
+    let mut blocks: Vec<Vec<(String, LessonTone)>> = Vec::new();
+    let mut block = |marker: &str, index: usize, tone: LessonTone, why: LessonTone| {
+        let choice = question.choices.get(index).map_or("", String::as_str);
+        let mut lines = vec![(
+            format!("{marker} {}", truncate(choice, QUIZ_CHOICE_CHARS)),
+            tone,
+        )];
+        if let Some(rationale) = choice_rationale(question, index) {
+            lines.extend(
+                wrap_text(rationale, RATIONALE_COLUMNS)
+                    .into_iter()
+                    .take(RATIONALE_ROWS)
+                    .map(|line| (line, why)),
+            );
+        }
+        blocks.push(lines);
+    };
+    if !correct {
+        block(
+            "-",
+            picked,
+            LessonTone::Misconception,
+            LessonTone::MisconceptionWhy,
+        );
+    }
+    block(
+        "+",
+        question.answer,
+        LessonTone::Answer,
+        LessonTone::AnswerWhy,
+    );
+
+    let line_count = blocks.iter().map(Vec::len).sum::<usize>() as i32;
+    let height = line_count * LINE_HEIGHT - 1 + (blocks.len() as i32 - 1) * LESSON_BLOCK_GAP;
+    let column_width = text_width(&"W".repeat(RATIONALE_COLUMNS), 1);
+    let x = area.x + (area.width - column_width) / 2;
+    let mut y = area.y + (area.height - height) / 2;
+    let mut positioned = Vec::new();
+    for block in blocks {
+        for (text, tone) in block {
+            positioned.push(LessonLine { x, y, text, tone });
+            y += LINE_HEIGHT;
+        }
+        y += LESSON_BLOCK_GAP;
+    }
+    positioned
+}
+
+fn draw_lesson_lines(frame: &mut Framebuffer, lines: &[LessonLine]) {
+    for line in lines {
+        frame.text(line.x, line.y, &line.text, line.tone.color(), 1);
+    }
+}
+
+/// The trial lesson panel's copy region above its footer row.
+fn trial_lesson_copy_box() -> UiBox {
+    UiBox {
+        x: TRIAL_LESSON_BOX.x + 1,
+        y: TRIAL_LESSON_BOX.y + 2,
+        width: TRIAL_LESSON_BOX.width - 2,
+        height: TRIAL_LESSON_BOX.height - 17,
+    }
+}
+
+/// The trial lesson panel's footer row: the lens and its mastery runes on the
+/// left, and the continue prompt on the right once input is live.
+fn trial_lesson_footer_y() -> i32 {
+    TRIAL_LESSON_BOX.y + TRIAL_LESSON_BOX.height - 11
+}
+
+/// The legacy lesson panel's copy region inside its border.
+fn quiz_lesson_copy_box() -> UiBox {
+    UiBox {
+        x: QUIZ_LESSON_BOX.x + 1,
+        y: QUIZ_LESSON_BOX.y + 1,
+        width: QUIZ_LESSON_BOX.width - 2,
+        height: QUIZ_LESSON_BOX.height - 2,
+    }
+}
+
+/// The committed result's lesson copy, when the run is showing one.
+fn current_lesson(state: &GameState, area: UiBox) -> Option<Vec<LessonLine>> {
+    let run = state.quiz.as_ref()?;
+    let (correct, _) = run.feedback?;
+    let question = state.cartridge.as_ref()?.questions.get(run.question)?;
+    let picked = run.source_choice(run.selected, question.choices.len());
+    Some(lesson_lines(question, picked, correct, area))
 }
 
 fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
@@ -2533,7 +4524,8 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
         return;
     };
     frame.rect(0, 0, WIDTH as i32, 16, INK);
-    frame.text(5, 4, &format!("Q{:02}", run.question + 1), SKY, 1);
+    let (counter, counter_color) = question_counter(state, ("Q", "R"), SKY);
+    frame.text(5, 4, &counter, counter_color, 1);
     draw_hero(frame, 47, 1, 1, state);
     draw_oracle_ward_meter(frame, 84, 4, run.hearts);
     frame.text(
@@ -2568,26 +4560,64 @@ fn render_quiz(frame: &mut Framebuffer, state: &GameState) {
         QUIZ_QUESTION_COLUMNS,
         QUIZ_QUESTION_ROWS,
     );
-    for (index, choice) in question.choices.iter().take(4).enumerate() {
-        let y = 73 + index as i32 * 20;
-        let mut color = PARCH;
-        if run.selected == index {
+    if let Some(lesson) = current_lesson(state, quiz_lesson_copy_box()) {
+        let panel = QUIZ_LESSON_BOX;
+        frame.rect(panel.x, panel.y, panel.width, panel.height, VOID);
+        frame.outline(panel.x, panel.y, panel.width, panel.height, SKY);
+        draw_lesson_lines(frame, &lesson);
+        // The lesson footer sits on an INK strip, like the header: a woken
+        // rune III banner is MAGENTA, which NAVY cannot carry at 4.5:1.
+        frame.rect(
+            0,
+            QUIZ_LESSON_FOOTER_STRIP_Y,
+            WIDTH as i32,
+            HEIGHT as i32 - QUIZ_LESSON_FOOTER_STRIP_Y,
+            INK,
+        );
+        let banner = quiz_feedback_banner(run);
+        frame.text(5, 151, &banner, quiz_feedback_color(run), 1);
+        if let Some(note) = run.retry_note.map(RetryNote::label) {
+            if let Some(x) = quiz_retry_note_x(&banner, &note) {
+                frame.text(x, 151, &note, AMBER, 1);
+            }
+        }
+        if lesson_is_live(run) {
+            frame.text(
+                235 - text_width(LESSON_CONTINUE, 1),
+                151,
+                LESSON_CONTINUE,
+                CYAN,
+                1,
+            );
+        }
+        return;
+    }
+    let order = run.display_order(question.choices.len());
+    for (slot, source) in order.into_iter().take(4).enumerate() {
+        let y = 73 + slot as i32 * 20;
+        if run.selected == slot {
             frame.rect(5, y - 3, 230, 14, ROYAL);
             frame.text(9, y, ">", GOLD, 1);
         }
-        if let Some((correct, _)) = run.feedback {
-            if index == question.answer {
-                color = GREEN;
-            } else if run.selected == index && !correct {
-                color = RED;
-            }
-        }
-        frame.text(21, y, &truncate(choice, QUIZ_CHOICE_CHARS), color, 1);
+        frame.text(
+            21,
+            y,
+            &truncate(&question.choices[source], QUIZ_CHOICE_CHARS),
+            PARCH,
+            1,
+        );
     }
-    if run.feedback.is_some() {
-        frame.centered_text(151, &quiz_feedback_banner(run), quiz_feedback_color(run), 1);
+    frame.text(5, 151, "A:ANSWER", MIST, 1);
+    if run.leave_armed > 0 {
+        let prompt = quiz_feedback_banner(run);
+        frame.text(
+            235 - text_width(&prompt, 1),
+            151,
+            &prompt,
+            quiz_feedback_color(run),
+            1,
+        );
     } else {
-        frame.text(5, 151, "A:ANSWER", MIST, 1);
         frame.text(199, 151, "B:BACK", MIST, 1);
     }
 }
@@ -2612,13 +4642,8 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
     );
     frame.rect(37, 2, 203, 28, VOID);
     frame.outline(37, 2, 203, 28, CYAN_DIM);
-    frame.text(
-        44,
-        7,
-        &format!("TRIAL {:02}", (run.question + 1).min(99)),
-        CYAN,
-        1,
-    );
+    let (counter, counter_color) = question_counter(state, ("TRIAL ", "RETRY "), CYAN);
+    frame.text(44, 7, &counter, counter_color, 1);
     draw_oracle_ward_meter(frame, TRIAL_WARD_X, 7, run.hearts);
     frame.text(
         TRIAL_STREAK_X,
@@ -2653,10 +4678,11 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         },
         1,
     );
+    let banner = quiz_feedback_banner(run);
     frame.text(
-        126,
+        trial_banner_x(&banner),
         20,
-        &quiz_feedback_banner(run),
+        &banner,
         quiz_feedback_color(run),
         1,
     );
@@ -2676,25 +4702,69 @@ fn render_oracle_trial(frame: &mut Framebuffer, state: &GameState) {
         QUIZ_QUESTION_ROWS,
     );
 
-    for (index, choice) in question.choices.iter().take(4).enumerate() {
-        let y = 69 + index as i32 * 22;
-        let focused = run.selected == index;
+    if let Some(lesson) = current_lesson(state, trial_lesson_copy_box()) {
+        let panel = TRIAL_LESSON_BOX;
+        frame.rect(panel.x, panel.y, panel.width, panel.height, VOID);
+        frame.outline(panel.x, panel.y, panel.width, panel.height, CYAN_DIM);
+        draw_lesson_lines(frame, &lesson);
+        let column_x = lesson.first().map_or(panel.x + 3, |line| line.x);
+        let column_end = column_x + text_width(&"W".repeat(RATIONALE_COLUMNS), 1);
+        let footer_y = trial_lesson_footer_y();
+        frame.rect(column_x, footer_y - 3, column_end - column_x, 1, INDIGO);
+        if let Some(concept) = question.concept {
+            let stage = state.mastery_stage(concept);
+            let mut styles = mastery_meter_styles(stage, state.mastery_cracks(concept));
+            // The rune this answer woke blinks through the input hold, then
+            // settles lit; reduced motion keeps it lit throughout. Cracked
+            // runes beside it hold still.
+            let waking =
+                run.lens_woke.is_some_and(|(woke, _)| woke == concept) && !lesson_is_live(run);
+            if waking && !state.blink_lit(8) {
+                if let Some(rune) = stage.checked_sub(1).and_then(|rune| styles.get_mut(rune)) {
+                    *rune = RuneStyle::Unlit;
+                }
+            }
+            frame.text(column_x, footer_y, concept.label(), CYAN_DIM, 1);
+            draw_rune_row(
+                frame,
+                column_x + text_width(concept.label(), 1) + 4,
+                footer_y,
+                styles,
+                CYAN,
+            );
+        }
+        if let Some(note) = run.retry_note.map(RetryNote::label) {
+            frame.text(
+                trial_retry_note_x(column_x, column_end, question.concept, &note),
+                footer_y,
+                &note,
+                AMBER,
+                1,
+            );
+        }
+        if lesson_is_live(run) {
+            frame.text(
+                column_end - text_width(LESSON_CONTINUE, 1),
+                footer_y,
+                LESSON_CONTINUE,
+                CYAN,
+                1,
+            );
+        }
+        return;
+    }
+    let order = run.display_order(question.choices.len());
+    for (slot, source) in order.into_iter().take(4).enumerate() {
+        let y = 69 + slot as i32 * 22;
+        let focused = run.selected == slot;
         if focused {
             draw_asset_focus(frame, 23, y, 204, 20);
-        }
-        let mut color = if focused { PARCH } else { MIST };
-        if let Some((correct, _)) = run.feedback {
-            if index == question.answer {
-                color = GREEN;
-            } else if focused && !correct {
-                color = RED;
-            }
         }
         frame.text(
             TRIAL_CHOICE_TEXT_X,
             y + 7,
-            &truncate(choice, QUIZ_CHOICE_CHARS),
-            color,
+            &truncate(&question.choices[source], QUIZ_CHOICE_CHARS),
+            if focused { PARCH } else { MIST },
             1,
         );
     }
@@ -2707,25 +4777,50 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
     }
     frame.clear(NAVY);
     frame.outline(8, 8, 224, 144, PLUM);
-    let pulse = ((state.screen_ticks / 10) % 3) as i32;
+    let pulse = ((state.motion_ticks() / 10) % 3) as i32;
     draw_oracle_sigil(frame, 120, 72, pulse);
     frame.centered_text(22, "LEVEL UP!", GOLD, 2);
-    let rise = (state.screen_ticks.min(45) / 5) as i32;
+    let rise = (state.settled_ticks(45) / 5) as i32;
     draw_hero(frame, 106, 91 - rise, 1, state);
+    let level = state.quiz.as_ref().map_or(1, |run| run.level);
+    frame.centered_text(42, bond_title(level), CYAN, 1);
     if let Some(run) = state.quiz.as_ref() {
         frame.centered_text(116, &format!("LEVEL {}", run.level), PARCH, 1);
+        frame.centered_text(130, &first_try_label(run.ledger.last_batch), CYAN, 1);
+    }
+    if state.level_up_can_continue() {
+        frame.centered_text(LEVEL_UP_FOOTER_Y, "A / START:CONTINUE", MIST, 1);
+    } else {
         frame.centered_text(
-            130,
-            &format!("BATCH {} SURVIVED", run.completed_batches),
-            SKY,
+            LEVEL_UP_FOOTER_Y,
+            &next_focus_label(state.upcoming_batch_level()),
+            MIST,
             1,
         );
     }
-    if state.screen_ticks >= LEVEL_UP_HOLD_TICKS {
-        frame.centered_text(149, "A / START:CONTINUE", MIST, 1);
+}
+
+/// The legacy level-up footer, inside the frame like the result prompt.
+const LEVEL_UP_FOOTER_Y: i32 = 143;
+
+/// The level-up heading: the bond ascends only when the level crosses into a
+/// new presentation tier, and deepens within one.
+fn bond_title(level: u32) -> &'static str {
+    if PresentationTier::from_level(level.saturating_sub(1)) == PresentationTier::from_level(level)
+    {
+        "ORACLE BOND DEEPENS"
     } else {
-        frame.centered_text(149, "ORACLE BOND DEEPENS", MIST, 1);
+        "ORACLE BOND ASCENDS"
     }
+}
+
+/// The lenses the batch at `level` focuses on, e.g. `NEXT: FLOWS+TRADEOFFS`.
+fn next_focus_label(level: u32) -> String {
+    let lenses = Concept::focus_for_level(level)
+        .iter()
+        .map(|concept| concept.label())
+        .collect::<Vec<_>>();
+    format!("NEXT: {}", lenses.join("+"))
 }
 
 fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
@@ -2745,11 +4840,12 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         ASCENSION_TITLE_BOX.height,
         AMBER,
     );
+    let level = state.quiz.as_ref().map_or(1, |run| run.level);
     frame.centered_text_in(
         ASCENSION_TITLE_BOX.x,
         73,
         ASCENSION_TITLE_BOX.width,
-        "ORACLE BOND ASCENDS",
+        bond_title(level),
         AMBER,
         1,
     );
@@ -2765,7 +4861,7 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         },
         2,
     );
-    let rise = (state.screen_ticks.min(45) / 5) as i32;
+    let rise = (state.settled_ticks(45) / 5) as i32;
     draw_hero(frame, 108, 105 - rise, 1, state);
     if let Some(run) = state.quiz.as_ref() {
         frame.rect(
@@ -2804,7 +4900,7 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         );
         frame.centered_text_box(
             ASCENSION_BATCH_BOX,
-            &format!("BATCH {}", run.completed_batches.min(99)),
+            &first_try_label(run.ledger.last_batch),
             PARCH,
             1,
         );
@@ -2823,10 +4919,15 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         MENU_FOOTER_BOX.height,
         CYAN_DIM,
     );
-    if state.screen_ticks >= LEVEL_UP_HOLD_TICKS {
+    if state.level_up_can_continue() {
         frame.centered_text_box(MENU_FOOTER_BOX, "A / START:CONTINUE", PARCH, 1);
     } else {
-        frame.centered_text_box(MENU_FOOTER_BOX, "THE NEW CREST TAKES HOLD", MIST, 1);
+        frame.centered_text_box(
+            MENU_FOOTER_BOX,
+            &next_focus_label(state.upcoming_batch_level()),
+            CYAN,
+            1,
+        );
     }
 }
 
@@ -2839,89 +4940,133 @@ fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
     frame.outline(8, 8, 224, 144, PLUM);
     frame.centered_text(24, "GAME OVER", RED, 2);
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text(57, &format!("SCORE {:04}", run.score.min(9999)), GOLD, 1);
-        frame.centered_text(
-            83,
-            &format!("INSIGHT {}", InsightStage::from_score(run.score).label()),
-            InsightStage::from_score(run.score).color(),
-            1,
-        );
-        frame.centered_text(70, &format!("LEVEL {} REACHED", run.level), SKY, 1);
-        draw_oracle_sigil(frame, 120, 104, 0);
-        draw_hero(frame, 106, 99, 1, state);
+        let insight = InsightStage::from_score(run.score);
+        let mut rows = vec![
+            (format!("SCORE {:04}", run.score.min(9999)), GOLD),
+            (format!("INSIGHT {}", insight.label()), insight.color()),
+            (format!("LEVEL {} REACHED", run.level.min(99)), SKY),
+        ];
+        rows.extend(ledger_rows(state, run));
+        for ((text, color), y) in rows.iter().zip(GAME_OVER_ROW_YS) {
+            frame.centered_text(y, text, *color, 1);
+        }
+        draw_oracle_sigil(frame, GAME_OVER_SIGIL_X, 110, 0);
+        draw_hero(frame, GAME_OVER_SIGIL_X - 12, 99, 1, state);
     } else {
         frame.centered_text(70, "NO QUESTIONS FOUND", GOLD, 1);
     }
-    if (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text(143, "A/B/START:MENU", PARCH, 1);
+    frame.centered_text(143, RESULT_PROMPT, PARCH, 1);
+}
+
+/// Every input the result screen accepts; drawn steadily, never blinking.
+const RESULT_PROMPT: &str = "A/B/START:MENU";
+/// Legacy result rows: score, insight, level, then the learning ledger.
+const GAME_OVER_ROW_YS: [i32; 7] = [46, 56, 66, 80, 90, 100, 110];
+/// The legacy result hero stands left of the centered ledger.
+const GAME_OVER_SIGIL_X: i32 = 42;
+const AFTERMATH_TITLE_Y: i32 = 24;
+/// Aftermath rows: score and insight, tier and level, then the ledger.
+const AFTERMATH_ROW_YS: [i32; 8] = [36, 46, 58, 68, 80, 90, 100, 110];
+const AFTERMATH_PROMPT_Y: i32 = 124;
+
+/// Lessons in the journal whose latest attempt was a miss.
+fn open_reviews(state: &GameState) -> usize {
+    state
+        .lessons()
+        .iter()
+        .filter(|lesson| lesson.outstanding)
+        .count()
+}
+
+/// The lens whose mastery rose the most since the run began, with its stage
+/// now; ties go to the earliest lens in `Concept::ALL`.
+fn woken_lens(state: &GameState) -> Option<(Concept, usize)> {
+    let run = state.quiz.as_ref()?;
+    let mut woken: Option<(Concept, usize, usize)> = None;
+    for (concept, start) in Concept::ALL.into_iter().zip(run.ledger.stages_at_start) {
+        let stage = state.mastery_stage(concept);
+        let rise = stage.saturating_sub(start);
+        if rise > 0 && woken.is_none_or(|(_, _, best)| rise > best) {
+            woken = Some((concept, stage, rise));
+        }
     }
+    woken.map(|(concept, stage, _)| (concept, stage))
+}
+
+/// The run's learning ledger, shared by both result screens: first-try
+/// successes, redemptions, open reviews, and where to go next (the lens that
+/// woke this run, else the Codex while reviews are open).
+fn ledger_rows(state: &GameState, run: &QuizRun) -> Vec<(String, Color)> {
+    let ledger = &run.ledger;
+    let open = open_reviews(state);
+    let mut rows = vec![
+        (
+            first_try_label((ledger.first_try_right, ledger.first_try)),
+            PARCH,
+        ),
+        (format!("REDEEMED {:02}", ledger.redeemed.min(99)), CYAN),
+        if open == 0 {
+            ("ALL CLEAR".into(), MIST)
+        } else {
+            (format!("REVIEW {:02}", open.min(99)), AMBER)
+        },
+    ];
+    if let Some((concept, stage)) = woken_lens(state) {
+        rows.push((
+            format!("{} {}", concept.label(), rune_numeral(stage)),
+            mastery_rune_color(stage),
+        ));
+    } else if open > 0 {
+        rows.push(("SEE CODEX".into(), AMBER));
+    }
+    rows
+}
+
+/// The Aftermath panel's rows below its title, each with its baseline.
+fn aftermath_rows(state: &GameState, run: &QuizRun) -> Vec<(i32, String, Color)> {
+    let tier = state.visual_tier();
+    let insight = InsightStage::from_score(run.score);
+    let mut rows = vec![
+        (format!("SCORE {:04}", run.score.min(9999)), AMBER),
+        (format!("INSIGHT {}", insight.label()), insight.color()),
+        (
+            tier.label().to_string(),
+            if tier == PresentationTier::Initiate {
+                CYAN
+            } else {
+                AMBER
+            },
+        ),
+        (format!("LEVEL {}", run.level.min(99)), PARCH),
+    ];
+    rows.extend(ledger_rows(state, run));
+    rows.into_iter()
+        .zip(AFTERMATH_ROW_YS)
+        .map(|((text, color), y)| (y, text, color))
+        .collect()
 }
 
 fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
-    let tier = state.visual_tier();
     frame.blit_rgb(ORACLE_AFTERMATH);
     frame.centered_text_in(
         AFTERMATH_CONTENT_BOX.x,
-        24,
+        AFTERMATH_TITLE_Y,
         AFTERMATH_CONTENT_BOX.width,
         "VISION CLOSED",
         RED,
         1,
     );
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            49,
-            AFTERMATH_CONTENT_BOX.width,
-            "FINAL SCORE",
-            MIST,
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            59,
-            AFTERMATH_CONTENT_BOX.width,
-            &format!("{:04}", run.score.min(9999)),
-            AMBER,
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            76,
-            AFTERMATH_CONTENT_BOX.width,
-            "BOND REACHED",
-            MIST,
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            87,
-            AFTERMATH_CONTENT_BOX.width,
-            tier.label(),
-            if tier == PresentationTier::Initiate {
-                CYAN
-            } else {
-                AMBER
-            },
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            104,
-            AFTERMATH_CONTENT_BOX.width,
-            &format!("LEVEL {}", run.level.min(99)),
-            PARCH,
-            1,
-        );
-        let insight = InsightStage::from_score(run.score);
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            114,
-            AFTERMATH_CONTENT_BOX.width,
-            &format!("RUNE {}", insight.label()),
-            insight.color(),
-            1,
-        );
+        for (y, text, color) in aftermath_rows(state, run) {
+            frame.centered_text_in(
+                AFTERMATH_CONTENT_BOX.x,
+                y,
+                AFTERMATH_CONTENT_BOX.width,
+                &text,
+                color,
+                1,
+            );
+        }
         draw_defeated_hero(frame, 52, 106, state);
     } else {
         frame.centered_text_in(
@@ -2933,15 +5078,406 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
             1,
         );
     }
-    if (state.screen_ticks / 30).is_multiple_of(2) {
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            126,
-            AFTERMATH_CONTENT_BOX.width,
-            "A/B/START:MENU",
+    frame.centered_text_in(
+        AFTERMATH_CONTENT_BOX.x,
+        AFTERMATH_PROMPT_Y,
+        AFTERMATH_CONTENT_BOX.width,
+        RESULT_PROMPT,
+        PARCH,
+        1,
+    );
+}
+
+fn mastery_rune_color(stage: usize) -> Color {
+    match stage {
+        0 | 1 => CYAN,
+        2 => AMBER,
+        _ => MAGENTA,
+    }
+}
+
+fn pending_reviews(lessons: &[Lesson], concept: Concept) -> usize {
+    lessons
+        .iter()
+        .filter(|lesson| lesson.outstanding && lesson.concept == Some(concept))
+        .count()
+}
+
+fn codex_lesson_counter(index: usize, total: usize) -> String {
+    format!("LESSON {:02}/{:02}", (index + 1).min(999), total.min(999))
+}
+
+fn codex_lesson_status(lesson: &Lesson) -> (&'static str, Color) {
+    match (lesson.outstanding, lesson.spaced_check, lesson.peeked) {
+        (true, _, true) => ("PENDING PEEKED", AMBER),
+        (true, _, false) => ("REVIEW PENDING", AMBER),
+        (false, true, true) => ("CHECK PEEKED", AMBER),
+        (false, true, false) => ("CHECK PENDING", AMBER),
+        (false, false, _) => ("LEARNED", CYAN),
+    }
+}
+
+/// The answer panel's prompt while a pending answer is sealed.
+const CODEX_REVEAL_PROMPT: &str = "A:REVEAL ANSWER";
+/// The self-test prompt for a sealed lesson that has no recorded pick.
+const CODEX_THINK_PROMPT: &str = "THINK, THEN A:REVEAL";
+const CODEX_CHOSE_HEADING: &str = "YOU CHOSE";
+const CODEX_ONCE_CHOSE: &str = "ONCE CHOSE: ";
+
+/// The player's recorded wrong pick, marked `-` so the misconception never
+/// depends on color alone.
+fn codex_pick_line(pick: &str) -> String {
+    format!("- {}", truncate(pick, QUIZ_CHOICE_CHARS))
+}
+
+/// A learned lesson's one-line reminder of the misconception it replaced. A
+/// pick too long for one rationale row is cut at a word boundary and marked
+/// `...`, so it never reads as a different, shorter choice.
+fn codex_once_chose_line(pick: &str) -> String {
+    let line = format!("{CODEX_ONCE_CHOSE}{pick}");
+    if line.chars().count() <= RATIONALE_COLUMNS {
+        return line;
+    }
+    let cut = wrap_text(&line, RATIONALE_COLUMNS - 3)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    format!("{cut}...")
+}
+
+/// Draws a sealed lesson's self-test at `y`: the player's pick and the
+/// misconception it reveals, or a prompt to recall the answer first when the
+/// save recorded no pick. The heading, the pick, and the misconception's first
+/// row start `gap` pixels apart.
+fn draw_codex_self_test(frame: &mut Framebuffer, x: i32, y: i32, gap: i32, lesson: &Lesson) {
+    let Some((pick, why)) = lesson.misconception.as_ref() else {
+        frame.text(x, y, CODEX_THINK_PROMPT, MIST, 1);
+        return;
+    };
+    frame.text(x, y, CODEX_CHOSE_HEADING, CYAN_DIM, 1);
+    frame.text(x, y + gap, &codex_pick_line(pick), RED, 1);
+    let why_y = y + 2 * gap;
+    if why.trim().is_empty() {
+        frame.text(x, why_y, CODEX_THINK_PROMPT, MIST, 1);
+    } else {
+        frame.wrapped_text(x, why_y, why, MIST, RATIONALE_COLUMNS, RATIONALE_ROWS);
+    }
+}
+
+/// Draws the `ONCE CHOSE` reminder on a learned lesson's row below its
+/// rationale, when the lesson remembers a misconception.
+fn draw_codex_once_chose(frame: &mut Framebuffer, x: i32, rationale_y: i32, lesson: &Lesson) {
+    if lesson.outstanding {
+        return;
+    }
+    if let Some((pick, _)) = lesson.misconception.as_ref() {
+        let y = rationale_y + RATIONALE_ROWS as i32 * LINE_HEIGHT;
+        frame.text(x, y, &codex_once_chose_line(pick), MIST, 1);
+    }
+}
+
+/// Learned and pending-review halves of the Codex totals line.
+fn codex_totals(lessons: &[Lesson]) -> (String, String, Color) {
+    let pending = lessons.iter().filter(|lesson| lesson.outstanding).count();
+    let learned = format!("LEARNED {:02}", (lessons.len() - pending).min(99));
+    if pending == 0 {
+        (learned, "ALL CLEAR".into(), MIST)
+    } else {
+        (learned, format!("REVIEW {:02}", pending.min(99)), AMBER)
+    }
+}
+
+/// The legend the Codex totals row shows while a lens with a pending review
+/// has a cracked rune.
+const CODEX_CRACKED_LEGEND: &str = "CRACKED = REVIEW DUE";
+/// The legend while every cracked rune is held back by recent accuracy alone:
+/// there is no review to take, only fresh answers to get right.
+const CODEX_SLIPPED_LEGEND: &str = "CRACKED = LOW ACCURACY";
+
+/// The cracked-rune legend the totals row in `bounds` shows instead of the
+/// learned and pending counts: only while a rune is cracked, and only when
+/// the legend fits inside the row's panel border.
+fn codex_totals_show_legend(bounds: UiBox, legend: Option<&str>) -> Option<&str> {
+    legend.filter(|legend| text_width(legend, 1) <= bounds.width - 4)
+}
+
+fn draw_codex_totals(
+    frame: &mut Framebuffer,
+    bounds: UiBox,
+    lessons: &[Lesson],
+    legend: Option<&str>,
+) {
+    if let Some(legend) = codex_totals_show_legend(bounds, legend) {
+        frame.centered_text_box(bounds, legend, AMBER, 1);
+        return;
+    }
+    let (learned, review, review_color) = codex_totals(lessons);
+    let width = text_width(&format!("{learned}  {review}"), 1);
+    let x = bounds.x + (bounds.width - width) / 2;
+    let y = bounds.y + (bounds.height - 7) / 2;
+    frame.text(x, y, &learned, CYAN, 1);
+    let review_x = x + (learned.chars().count() as i32 + 2) * GLYPH_ADVANCE;
+    frame.text(review_x, y, &review, review_color, 1);
+}
+
+fn draw_codex_panel(frame: &mut Framebuffer, bounds: UiBox) {
+    frame.rect(bounds.x, bounds.y, bounds.width, bounds.height, VOID);
+    frame.outline(bounds.x, bounds.y, bounds.width, bounds.height, CYAN_DIM);
+}
+
+/// Draws a lesson's lens label ending just left of its three mastery runes at
+/// `runes_x`; a lesson without a lens shows `GENERAL` and no runes.
+fn draw_codex_lens(
+    frame: &mut Framebuffer,
+    runes_x: i32,
+    y: i32,
+    concept: Option<Concept>,
+    state: &GameState,
+) {
+    let Some(concept) = concept else {
+        let label_x = runes_x + 19 - text_width("GENERAL", 1);
+        frame.text(label_x, y, "GENERAL", MIST, 1);
+        return;
+    };
+    let stage = state.mastery_stage(concept);
+    let label_x = runes_x - 6 - text_width(concept.label(), 1);
+    frame.text(label_x, y, concept.label(), PARCH, 1);
+    draw_mastery_meter(
+        frame,
+        runes_x,
+        y,
+        stage,
+        state.mastery_cracks(concept),
+        mastery_rune_color(stage),
+    );
+}
+
+fn draw_codex_rationale(frame: &mut Framebuffer, x: i32, y: i32, lesson: &Lesson) {
+    if lesson.rationale.trim().is_empty() {
+        frame.text(x, y, "NO RATIONALE WAS RECORDED", MIST, 1);
+    } else {
+        frame.wrapped_text(
+            x,
+            y,
+            &lesson.rationale,
             PARCH,
+            RATIONALE_COLUMNS,
+            RATIONALE_ROWS,
+        );
+    }
+}
+
+fn render_codex(frame: &mut Framebuffer, state: &GameState) {
+    if state.uses_visual_template(VisualTemplate::Codex) {
+        render_oracle_codex(frame, state);
+        return;
+    }
+    let Some((index, lesson)) = state.codex_lesson() else {
+        render_codex_mastery(frame, state);
+        return;
+    };
+    frame.clear(NAVY);
+    frame.rect(0, 0, WIDTH as i32, 16, INK);
+    frame.text(
+        5,
+        4,
+        &codex_lesson_counter(index, state.lessons().len()),
+        SKY,
+        1,
+    );
+    draw_codex_lens(frame, 214, 4, lesson.concept, state);
+    let (status, status_color) = codex_lesson_status(lesson);
+    frame.text(5, 21, status, status_color, 1);
+    frame.rect(5, 31, 230, 38, INK);
+    frame.outline(5, 31, 230, 38, SKY);
+    frame.wrapped_text(
+        11,
+        35,
+        &lesson.question,
+        PARCH,
+        QUIZ_QUESTION_COLUMNS,
+        QUIZ_QUESTION_ROWS,
+    );
+    frame.rect(5, 72, 230, 15, INK);
+    if state.codex_answer_sealed(lesson) {
+        // The sealed self-test sits on the lesson card's void panel, where
+        // the misconception's red stays readable.
+        frame.text(9, 76, CODEX_REVEAL_PROMPT, MIST, 1);
+        frame.rect(5, 90, 230, 52, VOID);
+        frame.outline(5, 90, 230, 52, MIST);
+        draw_codex_self_test(frame, 11, 95, 10, lesson);
+    } else {
+        frame.text(9, 76, ">", GOLD, 1);
+        frame.text(
+            21,
+            76,
+            &truncate(&lesson.answer, QUIZ_CHOICE_CHARS),
+            GREEN,
             1,
         );
+        frame.rect(5, 90, 230, 52, INK);
+        frame.outline(5, 90, 230, 52, MIST);
+        frame.text(11, 95, "WHY IT HOLDS", SKY, 1);
+        draw_codex_rationale(frame, 11, 107, lesson);
+        draw_codex_once_chose(frame, 11, 107, lesson);
+    }
+    frame.text(5, 151, "L/R:PAGE", MIST, 1);
+    frame.text(199, 151, "B:BACK", MIST, 1);
+}
+
+fn render_codex_mastery(frame: &mut Framebuffer, state: &GameState) {
+    frame.clear(NAVY);
+    frame.rect(0, 0, WIDTH as i32, 16, INK);
+    frame.text(5, 4, "ORACLE CODEX", GOLD, 1);
+    frame.text(195, 4, "MASTERY", SKY, 1);
+    frame.outline(30, 24, 180, 82, SKY);
+    let lessons = state.lessons();
+    for (row, concept) in Concept::ALL.into_iter().enumerate() {
+        let y = 32 + row as i32 * 14;
+        let stage = state.mastery_stage(concept);
+        frame.text(
+            42,
+            y,
+            concept.label(),
+            if stage > 0 { PARCH } else { MIST },
+            1,
+        );
+        draw_mastery_meter(
+            frame,
+            128,
+            y,
+            stage,
+            state.mastery_cracks(concept),
+            mastery_rune_color(stage),
+        );
+        let pending = pending_reviews(lessons, concept);
+        if pending > 0 {
+            frame.text(156, y, &format!("!{}", pending.min(99)), AMBER, 1);
+        }
+    }
+    if lessons.is_empty() {
+        frame.centered_text(116, "NO LESSONS YET", GOLD, 1);
+        frame.centered_text(130, "ANSWER TRIALS TO WRITE LESSONS", MIST, 1);
+    } else {
+        draw_codex_totals(
+            frame,
+            UiBox {
+                x: 0,
+                y: 116,
+                width: WIDTH as i32,
+                height: 7,
+            },
+            lessons,
+            state.mastery_crack_legend(),
+        );
+        frame.text(5, 151, "L/R:PAGE", MIST, 1);
+    }
+    frame.text(199, 151, "B:BACK", MIST, 1);
+}
+
+fn render_oracle_codex(frame: &mut Framebuffer, state: &GameState) {
+    let Some((index, lesson)) = state.codex_lesson() else {
+        render_oracle_codex_mastery(frame, state);
+        return;
+    };
+    frame.blit_rgb(ORACLE_TRIAL);
+    frame.blit_rgba(
+        ORACLE_PORTRAITS[state.hero_style],
+        HERO_PORTRAIT_SIZE,
+        HERO_PORTRAIT_SIZE,
+        8,
+        5,
+        1,
+    );
+    draw_codex_panel(frame, CODEX_LESSON_HEADER_BOX);
+    frame.text(
+        44,
+        7,
+        &codex_lesson_counter(index, state.lessons().len()),
+        CYAN,
+        1,
+    );
+    draw_codex_lens(frame, 214, 7, lesson.concept, state);
+    let (status, status_color) = codex_lesson_status(lesson);
+    frame.text(44, 20, status, status_color, 1);
+    frame.text(147, 20, "L/R:PAGE B:BACK", MIST, 1);
+
+    draw_codex_panel(frame, CODEX_QUESTION_BOX);
+    frame.wrapped_text(
+        CODEX_TEXT_X,
+        CODEX_QUESTION_Y,
+        &lesson.question,
+        PARCH,
+        QUIZ_QUESTION_COLUMNS,
+        QUIZ_QUESTION_ROWS,
+    );
+
+    draw_codex_panel(frame, CODEX_ANSWER_BOX);
+    draw_codex_panel(frame, CODEX_RATIONALE_BOX);
+    if state.codex_answer_sealed(lesson) {
+        frame.text(CODEX_TEXT_X, CODEX_ANSWER_Y, CODEX_REVEAL_PROMPT, MIST, 1);
+        draw_codex_self_test(frame, CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_CHOSE_GAP, lesson);
+        return;
+    }
+    draw_oracle_rune(frame, CODEX_TEXT_X, CODEX_ANSWER_Y, true, GREEN);
+    frame.text(
+        CODEX_ANSWER_TEXT_X,
+        CODEX_ANSWER_Y,
+        &truncate(&lesson.answer, QUIZ_CHOICE_CHARS),
+        GREEN,
+        1,
+    );
+    frame.text(CODEX_TEXT_X, CODEX_WHY_Y, "WHY IT HOLDS", CYAN_DIM, 1);
+    draw_codex_rationale(frame, CODEX_TEXT_X, CODEX_RATIONALE_Y, lesson);
+    draw_codex_once_chose(frame, CODEX_TEXT_X, CODEX_RATIONALE_Y, lesson);
+}
+
+fn render_oracle_codex_mastery(frame: &mut Framebuffer, state: &GameState) {
+    frame.blit_rgb(ORACLE_CHRONICLE);
+    frame.centered_text_box(CODEX_HEADING_BOX, "ORACLE CODEX", AMBER, 1);
+    let lessons = state.lessons();
+    for (row, concept) in Concept::ALL.into_iter().enumerate() {
+        let y = CODEX_LENS_ROW_Y + row as i32 * CODEX_LENS_ROW_PITCH;
+        let stage = state.mastery_stage(concept);
+        frame.text(
+            CODEX_LENS_LABEL_X,
+            y,
+            concept.label(),
+            if stage > 0 { PARCH } else { MIST },
+            1,
+        );
+        draw_mastery_meter(
+            frame,
+            CODEX_LENS_RUNES_X,
+            y,
+            stage,
+            state.mastery_cracks(concept),
+            mastery_rune_color(stage),
+        );
+        let pending = pending_reviews(lessons, concept);
+        if pending > 0 {
+            frame.text(
+                CODEX_LENS_PENDING_X,
+                y,
+                &format!("!{}", pending.min(99)),
+                AMBER,
+                1,
+            );
+        }
+    }
+    draw_codex_panel(frame, CODEX_TOTALS_BOX);
+    draw_codex_panel(frame, CODEX_PROMPT_BOX);
+    if lessons.is_empty() {
+        frame.centered_text_box(CODEX_TOTALS_BOX, "NO LESSONS YET", AMBER, 1);
+        frame.centered_text_box(CODEX_PROMPT_BOX, "ANSWER A TRIAL  B:BACK", MIST, 1);
+    } else {
+        draw_codex_totals(
+            frame,
+            CODEX_TOTALS_BOX,
+            lessons,
+            state.mastery_crack_legend(),
+        );
+        frame.centered_text_box(CODEX_PROMPT_BOX, "L/R:READ LESSONS  B:BACK", MIST, 1);
     }
 }
 
@@ -2975,7 +5511,7 @@ fn render_battle(frame: &mut Framebuffer, state: &GameState) {
     frame.rect(0, 0, WIDTH as i32, 69, INK);
     frame.text(6, 5, &truncate(&state.active_boss, 37), RED, 1);
     draw_crab(frame, 34, 45, 1);
-    draw_boss(frame, 183, 29, state.screen_ticks, 1);
+    draw_boss(frame, 183, 29, state.motion_ticks(), 1);
     frame.rect(0, 68, WIDTH as i32, 2, SKY);
     frame.outline(4, 75, 232, 68, MIST);
     for (index, (line, stderr)) in state.logs.iter().rev().take(7).rev().enumerate() {
@@ -3087,11 +5623,15 @@ fn handle_effect(
     answered_question_recorder: &AnsweredQuestionRecorder,
 ) {
     match effect {
-        EngineEffect::RunQuest(command) => run_quest(command, sender.clone(), Arc::clone(child)),
+        EngineEffect::RunQuest { command, quest } => {
+            run_quest(command, quest, sender.clone(), Arc::clone(child))
+        }
         EngineEffect::AbortQuest => {
             if let Ok(mut guard) = child.lock() {
                 if let Some(process) = guard.as_mut() {
-                    let _ = process.kill();
+                    // The shell runs the quest's tools as its own children,
+                    // and they hold the output pipes: stop all of them.
+                    external_tools::kill_process_tree(process);
                 }
             }
         }
@@ -3099,63 +5639,69 @@ fn handle_effect(
             cartridge_id,
             level,
             count,
+            seq,
         } => {
             let sender = sender.clone();
             let loader = Arc::clone(question_loader);
             thread::spawn(move || {
-                let questions = loader(cartridge_id.clone(), level, count);
+                let result = loader(cartridge_id.clone(), level, count);
                 let _ = sender.send(EngineCommand::Questions {
                     cartridge_id,
-                    questions,
+                    result,
+                    seq,
                 });
             });
         }
         EngineEffect::RecordAnsweredQuestion {
             cartridge_id,
+            evidence,
+        } => answered_question_recorder(cartridge_id, ProgressEvent::Answered(evidence)),
+        EngineEffect::MarkPeeked {
+            cartridge_id,
             question,
-        } => answered_question_recorder(cartridge_id, question),
+        } => answered_question_recorder(cartridge_id, ProgressEvent::Peeked { question }),
     }
 }
 
 fn run_quest(
     command: String,
+    quest: u64,
     sender: mpsc::Sender<EngineCommand>,
     slot: Arc<Mutex<Option<Child>>>,
 ) {
+    let refuse = |line: String| {
+        let _ = sender.send(EngineCommand::QuestOutput {
+            line,
+            stderr: true,
+            quest,
+        });
+        let _ = sender.send(EngineCommand::QuestDone {
+            success: false,
+            quest,
+        });
+    };
     let mut guard = match slot.lock() {
         Ok(guard) => guard,
         Err(_) => return,
     };
     if guard.is_some() {
-        let _ = sender.send(EngineCommand::QuestOutput {
-            line: "A QUEST IS ALREADY RUNNING".into(),
-            stderr: true,
-        });
-        let _ = sender.send(EngineCommand::QuestDone { success: false });
+        refuse("A QUEST IS ALREADY RUNNING".into());
         return;
     }
     let Some(mut shell) = external_tools::quest_shell_command() else {
-        let _ = sender.send(EngineCommand::QuestOutput {
-            line: "FAILED TO START: INSTALL GIT FOR WINDOWS OR SET CQA_SHELL".into(),
-            stderr: true,
-        });
-        let _ = sender.send(EngineCommand::QuestDone { success: false });
+        refuse("FAILED TO START: INSTALL GIT FOR WINDOWS OR SET CQA_SHELL".into());
         return;
     };
-    let mut child = match shell
+    shell
         .arg("-c")
         .arg(command)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    external_tools::isolate_process_tree(&mut shell);
+    let mut child = match shell.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let _ = sender.send(EngineCommand::QuestOutput {
-                line: format!("FAILED TO START: {error}"),
-                stderr: true,
-            });
-            let _ = sender.send(EngineCommand::QuestDone { success: false });
+            refuse(format!("FAILED TO START: {error}"));
             return;
         }
     };
@@ -3164,37 +5710,77 @@ fn run_quest(
     *guard = Some(child);
     drop(guard);
 
-    let out_sender = sender.clone();
-    let out_reader = thread::spawn(move || {
-        if let Some(stdout) = stdout {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let _ = out_sender.send(EngineCommand::QuestOutput {
-                    line,
-                    stderr: false,
-                });
+    // Cleared once the quest is reported done: a reader a surviving helper
+    // keeps alive forwards nothing after that and exits on its next line.
+    let forwarding = Arc::new(AtomicBool::new(true));
+    let (drained_sender, drained) = mpsc::channel();
+    let spawn_reader = |pipe: Option<Box<dyn std::io::Read + Send>>, stderr: bool| {
+        let sender = sender.clone();
+        let drained = drained_sender.clone();
+        let forwarding = Arc::clone(&forwarding);
+        thread::spawn(move || {
+            if let Some(pipe) = pipe {
+                for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                    if !forwarding.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let _ = sender.send(EngineCommand::QuestOutput {
+                        line,
+                        stderr,
+                        quest,
+                    });
+                }
             }
-        }
-    });
-    let err_sender = sender.clone();
-    let err_reader = thread::spawn(move || {
-        if let Some(stderr) = stderr {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let _ = err_sender.send(EngineCommand::QuestOutput { line, stderr: true });
-            }
-        }
-    });
+            let _ = drained.send(());
+        });
+    };
+    spawn_reader(stdout.map(|pipe| Box::new(pipe) as _), false);
+    spawn_reader(stderr.map(|pipe| Box::new(pipe) as _), true);
+    drop(drained_sender);
     thread::spawn(move || {
-        let _ = out_reader.join();
-        let _ = err_reader.join();
-        let process = slot.lock().ok().and_then(|mut guard| guard.take());
-        let success = process
-            .and_then(|mut child| child.wait().ok())
-            .is_some_and(|status| status.success());
-        let _ = sender.send(EngineCommand::QuestDone { success });
+        let (status, mut process) = wait_for_quest_shell(&slot);
+        // Output still in flight gets a short grace period. A helper the
+        // finished quest left running could hold the pipes open forever, so
+        // the quest's tree is stopped and its readers abandoned instead of
+        // joined. On Windows `taskkill /T` cannot find the tree of a shell
+        // that has already exited, so such a helper can outlive the quest;
+        // `forwarding` and the quest generation keep its output out of any
+        // later battle either way.
+        let deadline = Instant::now() + QUEST_OUTPUT_GRACE;
+        let drained_all = (0..2).all(|_| {
+            drained
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_ok()
+        });
+        if let (false, Some(process)) = (drained_all, process.as_mut()) {
+            external_tools::kill_process_tree(process);
+        }
+        forwarding.store(false, Ordering::SeqCst);
+        let success = status.is_some_and(|status| status.success());
+        let _ = sender.send(EngineCommand::QuestDone { success, quest });
     });
 }
 
-fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+/// Waits for the quest shell itself (not its pipes) to exit and takes it out
+/// of `slot`, so the next quest can start as soon as this one is over. The
+/// slot stays locked only for each poll, so an abort can reach the shell.
+fn wait_for_quest_shell(slot: &Mutex<Option<Child>>) -> (Option<ExitStatus>, Option<Child>) {
+    loop {
+        {
+            let Ok(mut guard) = slot.lock() else {
+                return (None, None);
+            };
+            match guard.as_mut().map(Child::try_wait) {
+                Some(Ok(None)) => {}
+                Some(Ok(Some(status))) => return (Some(status), guard.take()),
+                Some(Err(_)) | None => return (None, guard.take()),
+            }
+        }
+        thread::sleep(QUEST_POLL_INTERVAL);
+    }
+}
+
+pub(crate) fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
@@ -3262,6 +5848,7 @@ fn title_lines(title: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::learning::MASTERY_THRESHOLDS;
     use crate::scene_machine::{
         SceneHandler, SceneMachineDefinition, SceneMachineTemplate, SceneSignal, SceneSpec,
         SceneTransition,
@@ -3285,8 +5872,13 @@ mod tests {
                 question: "WHO OWNS THE GAME LOOP?".into(),
                 choices: vec!["BEVY".into(), "CSS".into(), "WEBKIT".into(), "HTML".into()],
                 answer: 0,
+                ..Default::default()
             }],
             question_batch_ends: Vec::new(),
+            question_batch_levels: Vec::new(),
+            lessons: Vec::new(),
+            mastery: Mastery::new(),
+            question_attempts: HashMap::new(),
         }
     }
 
@@ -3459,25 +6051,156 @@ mod tests {
         engine
     }
 
+    fn press(engine: &mut GameEngine, button: Button) {
+        issue(
+            engine,
+            EngineCommand::Input {
+                button,
+                pressed: true,
+            },
+        );
+        issue(
+            engine,
+            EngineCommand::Input {
+                button,
+                pressed: false,
+            },
+        );
+    }
+
+    fn engine_state(engine: &GameEngine) -> &GameState {
+        engine.app.world().resource::<GameState>()
+    }
+
+    /// Answers the engine's newest question request with `questions`.
+    fn deliver(engine: &mut GameEngine, cartridge_id: &str, questions: Vec<QuizQuestion>) {
+        let seq = engine_state(engine).question_request_seq;
+        issue(
+            engine,
+            EngineCommand::Questions {
+                cartridge_id: cartridge_id.into(),
+                result: Ok(questions),
+                seq,
+            },
+        );
+    }
+
+    /// Fails the engine's newest question request with `reason`.
+    fn fail(engine: &mut GameEngine, cartridge_id: &str, reason: &str) {
+        let seq = engine_state(engine).question_request_seq;
+        issue(
+            engine,
+            EngineCommand::Questions {
+                cartridge_id: cartridge_id.into(),
+                result: Err(reason.into()),
+                seq,
+            },
+        );
+    }
+
+    fn current_question(engine: &GameEngine) -> QuizQuestion {
+        let state = engine_state(engine);
+        let run = state.quiz.as_ref().unwrap();
+        state.cartridge.as_ref().unwrap().questions[run.question].clone()
+    }
+
+    /// The display slot that currently shows the correct answer.
+    fn answer_slot(engine: &GameEngine) -> usize {
+        let question = current_question(engine);
+        let run = engine_state(engine).quiz.as_ref().unwrap();
+        run.display_order(question.choices.len())
+            .iter()
+            .position(|source| *source == question.answer)
+            .unwrap()
+    }
+
+    /// Moves focus to the answer slot, or to the slot after it for a miss.
+    fn focus_choice(engine: &mut GameEngine, correct: bool) {
+        let choice_count = current_question(engine).choices.len();
+        let answer = answer_slot(engine);
+        let target = if correct {
+            answer
+        } else {
+            (answer + 1) % choice_count
+        };
+        while engine_state(engine).quiz.as_ref().unwrap().selected != target {
+            press(engine, Button::Down);
+        }
+    }
+
+    fn commit(engine: &mut GameEngine, correct: bool) {
+        focus_choice(engine, correct);
+        press(engine, Button::A);
+    }
+
+    /// Waits out the lesson hold and continues past the lesson card.
+    fn finish_lesson(engine: &mut GameEngine) {
+        for _ in 0..QUIZ_FEEDBACK_TICKS {
+            engine.update();
+        }
+        press(engine, Button::A);
+    }
+
+    fn concept_question(index: usize) -> QuizQuestion {
+        QuizQuestion {
+            question: format!("WHICH LAYER OWNS CONCERN {index}?"),
+            choices: vec![
+                format!("THE ENGINE LAYER {index}"),
+                format!("THE SHELL LAYER {index}"),
+                format!("THE STYLE LAYER {index}"),
+                format!("THE BUILD LAYER {index}"),
+            ],
+            answer: 0,
+            concept: Some(Concept::Responsibility),
+            rationales: vec![
+                "THE ENGINE OWNS STATE AND RULES.".into(),
+                "THE SHELL ONLY FORWARDS INPUT.".into(),
+                "STYLES DRAW THE DEVICE CASE.".into(),
+                "THE BUILD PACKAGES THE APP.".into(),
+            ],
+            review: Review::Fresh,
+        }
+    }
+
+    /// A quiz engine playing one batch of distinct concept questions.
+    fn batch_quiz_engine(count: usize) -> GameEngine {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        let _ = engine.take_effects();
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        for button in [Button::Start, Button::A, Button::Start] {
+            press(&mut engine, button);
+        }
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (0..count).map(concept_question).collect(),
+        );
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        engine
+    }
+
     #[test]
     fn committing_an_answer_records_that_question_for_future_runs() {
         let mut engine = playing_quiz_engine();
         let _ = engine.take_effects();
 
-        issue(
-            &mut engine,
-            EngineCommand::Input {
-                button: Button::A,
-                pressed: true,
-            },
-        );
+        commit(&mut engine, true);
 
         assert!(engine.take_effects().iter().any(|effect| matches!(
             effect,
             EngineEffect::RecordAnsweredQuestion {
                 cartridge_id,
-                question,
-            } if cartridge_id == "/tmp/engine-test" && question == "WHO OWNS THE GAME LOOP?"
+                evidence,
+            } if cartridge_id == "/tmp/engine-test"
+                && evidence.question == "WHO OWNS THE GAME LOOP?"
+                && evidence.correct
         )));
     }
 
@@ -3880,6 +6603,31 @@ mod tests {
                 trial_header,
                 text_bounds(44, 7, "TRIAL 99", 1),
             ),
+            (
+                "trial batch progress",
+                trial_header,
+                text_bounds(44, 7, "RETRY 12/13", 1),
+            ),
+            (
+                "trial lens banner",
+                trial_header,
+                text_bounds(
+                    trial_banner_x("INVARIANTS RUNE III"),
+                    20,
+                    "INVARIANTS RUNE III",
+                    1,
+                ),
+            ),
+            (
+                "trial insight banner",
+                trial_header,
+                text_bounds(
+                    trial_banner_x("INSIGHT III RISES"),
+                    20,
+                    "INSIGHT III RISES",
+                    1,
+                ),
+            ),
             ("trial ward", trial_header, trial_ward),
             ("trial streak multiplier", trial_header, trial_streak),
             ("trial score runes", trial_header, trial_score_runes),
@@ -3915,9 +6663,9 @@ mod tests {
                 centered_text_box_bounds(ASCENSION_LEVEL_BOX, "LEVEL 99", 1),
             ),
             (
-                "ascension batch",
+                "ascension batch recap",
                 ascension_batch,
-                centered_text_box_bounds(ASCENSION_BATCH_BOX, "BATCH 99", 1),
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 99/99", 1),
             ),
             (
                 "ascension controls",
@@ -3925,24 +6673,19 @@ mod tests {
                 centered_text_box_bounds(MENU_FOOTER_BOX, "A / START:CONTINUE", 1),
             ),
             (
-                "aftermath tier",
-                aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 87, "ORACLE-BOUND", 1),
+                "ascension next lenses",
+                menu_footer,
+                centered_text_box_bounds(MENU_FOOTER_BOX, "NEXT: INVARIANTS+TRADEOFFS", 1),
             ),
             (
                 "aftermath title",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 24, "VISION CLOSED", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_TITLE_Y, "VISION CLOSED", 1),
             ),
             (
                 "aftermath controls",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 126, "A/B/START:MENU", 1),
-            ),
-            (
-                "aftermath insight rune",
-                aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 114, "RUNE III", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_PROMPT_Y, RESULT_PROMPT, 1),
             ),
         ] {
             assert!(
@@ -4035,9 +6778,9 @@ mod tests {
                 centered_text_box_bounds(ASCENSION_LEVEL_BOX, "LEVEL 99", 1),
             ),
             (
-                "ascension batch",
+                "ascension batch recap",
                 ascension_batch,
-                centered_text_box_bounds(ASCENSION_BATCH_BOX, "BATCH 99", 1),
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 99/99", 1),
             ),
         ] {
             assert!(
@@ -4064,17 +6807,12 @@ mod tests {
             (
                 "aftermath title",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 24, "VISION CLOSED", 1),
-            ),
-            (
-                "aftermath score",
-                aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 59, "9999", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_TITLE_Y, "VISION CLOSED", 1),
             ),
             (
                 "aftermath controls",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 126, "A/B/START:MENU", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_PROMPT_Y, RESULT_PROMPT, 1),
             ),
         ] {
             assert!(
@@ -4106,6 +6844,21 @@ mod tests {
                 "trial tier and controls",
                 text_bounds(44, 20, "ORACLE-BOUND", 1),
                 text_bounds(126, 20, "A:ANSWER B:LEAVE", 1),
+            ),
+            (
+                "trial batch progress and ward",
+                text_bounds(44, 7, "RETRY 12/13", 1),
+                trial_ward,
+            ),
+            (
+                "trial tier and lens banner",
+                text_bounds(44, 20, "ORACLE-BOUND", 1),
+                text_bounds(
+                    trial_banner_x("INVARIANTS RUNE III"),
+                    20,
+                    "INVARIANTS RUNE III",
+                    1,
+                ),
             ),
             ("trial ward and streak", trial_ward, trial_streak),
             (
@@ -4145,6 +6898,41 @@ mod tests {
             );
         }
 
+        // The widest batch counter clears the ward meter, and the widest lens
+        // banner is pulled left inside the header outline while keeping a
+        // 4px gap after the widest tier label.
+        let progress = text_bounds(44, 7, "RETRY 12/13", 1);
+        assert!(trial_ward.x - (progress.x + progress.width) >= 4);
+        let tier = text_bounds(44, 20, "ORACLE-BOUND", 1);
+        for banner in [
+            "INVARIANTS RUNE III",
+            "TRADEOFFS RUNE III",
+            "INSIGHT III RISES",
+        ] {
+            let bounds = text_bounds(trial_banner_x(banner), 20, banner, 1);
+            assert!(
+                bounds.x - (tier.x + tier.width) >= 4,
+                "{banner} crowds the tier"
+            );
+            assert!(
+                bounds.x + bounds.width < trial_header.x + trial_header.width - 1,
+                "{banner} touches the header outline"
+            );
+        }
+        assert_eq!(trial_banner_x("A:ANSWER B:LEAVE"), TRIAL_BANNER_X);
+        // The legacy counter ends before the hero token at x=47.
+        assert!(text_bounds(5, 4, "R12/13", 1).width + 5 < 47);
+        for (name, color, fill) in [
+            ("trial retry counter", AMBER, VOID),
+            ("legacy retry counter", AMBER, INK),
+            ("lens banner I", mastery_rune_color(1), VOID),
+            ("lens banner II", mastery_rune_color(2), VOID),
+            ("lens banner III", mastery_rune_color(3), VOID),
+        ] {
+            let ratio = contrast_ratio(color, fill);
+            assert!(ratio >= 4.5, "{name} contrast {ratio:.2}:1");
+        }
+
         for (name, foreground) in [
             ("parchment", PARCH),
             ("mist", MIST),
@@ -4161,6 +6949,596 @@ mod tests {
                 "{name} foreground contrast {ratio:.2}:1 is below 4.5:1"
             );
         }
+    }
+
+    /// A result-screen state whose every debrief row carries its widest copy:
+    /// an unlit insight, the widest tier, two-digit counts, and a lens woken to
+    /// its third rune.
+    fn worst_case_debrief_state() -> GameState {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.lessons = (0..120)
+            .map(|index| Lesson {
+                question: format!("MISSED {index}"),
+                outstanding: true,
+                ..Lesson::default()
+            })
+            .collect();
+        cartridge.mastery = Mastery::from([(
+            Concept::Invariant,
+            LensRecord {
+                first_try: 5,
+                ..LensRecord::default()
+            },
+        )]);
+        GameState {
+            cartridge: Some(cartridge),
+            quiz: Some(QuizRun {
+                score: 0,
+                level: 99,
+                ledger: RunLedger {
+                    first_try: 150,
+                    first_try_right: 120,
+                    redeemed: 120,
+                    last_batch: (120, 150),
+                    ..RunLedger::default()
+                },
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn debrief_rows_stay_contained_disjoint_and_readable_on_their_panels() {
+        let state = worst_case_debrief_state();
+        let run = state.quiz.as_ref().unwrap();
+        let panel = ui_box_bounds(AFTERMATH_CONTENT_BOX);
+        let rows = aftermath_rows(&state, run);
+        assert_eq!(
+            rows.iter()
+                .map(|(_, text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "SCORE 0000",
+                "INSIGHT UNLIT",
+                "ORACLE-BOUND",
+                "LEVEL 99",
+                "1ST TRY 99/99",
+                "REDEEMED 99",
+                "REVIEW 99",
+                "INVARIANTS III",
+            ],
+            "the worst case fills every ledger row"
+        );
+        let mut children = vec![(
+            "title".to_string(),
+            centered_text_in_bounds(panel, AFTERMATH_TITLE_Y, "VISION CLOSED", 1),
+            vec![RED],
+        )];
+        for (y, text, color) in &rows {
+            // Every color the row can take: the insight, tier, and lens rows
+            // change color with their stage.
+            let colors = vec![*color, CYAN, AMBER, MAGENTA, MIST, PARCH];
+            children.push((
+                text.clone(),
+                centered_text_in_bounds(panel, *y, text, 1),
+                colors,
+            ));
+        }
+        // Alternative copy for a row, at that row's baseline.
+        for (row, alternative) in [
+            (0, "SCORE 9999"),
+            (1, "INSIGHT III"),
+            (2, "INITIATE"),
+            (6, "ALL CLEAR"),
+            (7, "SEE CODEX"),
+        ] {
+            let bounds = centered_text_in_bounds(panel, rows[row].0, alternative, 1);
+            assert!(
+                bounds_contains(panel, bounds),
+                "{alternative} exceeds the aftermath panel"
+            );
+        }
+        children.push((
+            "prompt".to_string(),
+            centered_text_in_bounds(panel, AFTERMATH_PROMPT_Y, RESULT_PROMPT, 1),
+            vec![PARCH],
+        ));
+        for (name, bounds, colors) in &children {
+            assert!(
+                bounds_contains(panel, *bounds),
+                "aftermath {name} {bounds:?} exceeds the panel {panel:?}"
+            );
+            let fill = brightest_plate_color(ORACLE_AFTERMATH, *bounds);
+            for color in colors {
+                let ratio = contrast_ratio(*color, fill);
+                assert!(
+                    ratio >= 4.5,
+                    "aftermath {name} contrast {ratio:.2}:1 against plate fill {:?} is below 4.5:1",
+                    (fill.0, fill.1, fill.2)
+                );
+            }
+        }
+        for (index, (left_name, left, _)) in children.iter().enumerate() {
+            for (right_name, right, _) in &children[index + 1..] {
+                assert!(
+                    bounds_are_disjoint(*left, *right),
+                    "aftermath {left_name} {left:?} overlaps {right_name} {right:?}"
+                );
+            }
+        }
+
+        // The legacy result: centered rows inside the frame, clear of the
+        // hero and sigil standing to their left, readable on ink.
+        let frame_interior = LayoutBounds {
+            x: 9,
+            y: 9,
+            width: 222,
+            height: 142,
+        };
+        let hero = LayoutBounds {
+            x: GAME_OVER_SIGIL_X - 12,
+            y: 99,
+            width: HERO_SPRITE_WIDTH as i32,
+            height: HERO_SPRITE_HEIGHT as i32,
+        };
+        let sigil = LayoutBounds {
+            x: GAME_OVER_SIGIL_X - 24,
+            y: 110 - 13,
+            width: 49,
+            height: 27,
+        };
+        let mut legacy = vec![
+            (
+                "heading".to_string(),
+                centered_text_bounds(24, "GAME OVER", 2),
+            ),
+            (
+                "prompt".to_string(),
+                centered_text_bounds(143, RESULT_PROMPT, 1),
+            ),
+        ];
+        let legacy_copy = [
+            "SCORE 9999",
+            "INSIGHT UNLIT",
+            "LEVEL 99 REACHED",
+            "1ST TRY 99/99",
+            "REDEEMED 99",
+            "REVIEW 99",
+            "INVARIANTS III",
+        ];
+        for (text, y) in legacy_copy.into_iter().zip(GAME_OVER_ROW_YS) {
+            legacy.push((text.to_string(), centered_text_bounds(y, text, 1)));
+        }
+        for (name, bounds) in &legacy {
+            assert!(
+                bounds_contains(frame_interior, *bounds),
+                "legacy {name} {bounds:?} exceeds the frame"
+            );
+            assert!(
+                bounds_are_disjoint(*bounds, hero),
+                "legacy {name} overlaps the hero"
+            );
+            assert!(
+                bounds_are_disjoint(*bounds, sigil),
+                "legacy {name} overlaps the sigil"
+            );
+        }
+        for (index, (left_name, left)) in legacy.iter().enumerate() {
+            for (right_name, right) in &legacy[index + 1..] {
+                assert!(
+                    bounds_are_disjoint(*left, *right),
+                    "legacy {left_name} overlaps {right_name}"
+                );
+            }
+        }
+        for color in [GOLD, SKY, PARCH, CYAN, MIST, AMBER, MAGENTA] {
+            let ratio = contrast_ratio(color, INK);
+            assert!(
+                ratio >= 4.5,
+                "legacy {:?} on ink is {ratio:.2}:1",
+                (color.0, color.1, color.2)
+            );
+        }
+
+        // The Ascension recap boxes and the legacy level-up lines.
+        let batch = inset(ASCENSION_BATCH_BOX);
+        let footer = inset(MENU_FOOTER_BOX);
+        let recap = centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 99/99", 1);
+        assert!(bounds_contains(batch, recap), "{recap:?} exceeds {batch:?}");
+        let hero_column = LayoutBounds {
+            x: 108,
+            y: 0,
+            width: HERO_SPRITE_WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        assert!(bounds_are_disjoint(
+            ui_box_bounds(ASCENSION_BATCH_BOX),
+            hero_column
+        ));
+        assert!(bounds_are_disjoint(
+            ui_box_bounds(ASCENSION_BATCH_BOX),
+            ui_box_bounds(ASCENSION_LEVEL_BOX)
+        ));
+        for level in 2..=5 {
+            let next = next_focus_label(level);
+            let bounds = centered_text_box_bounds(MENU_FOOTER_BOX, &next, 1);
+            assert!(bounds_contains(footer, bounds), "{next} exceeds the footer");
+            let legacy_next = centered_text_bounds(LEVEL_UP_FOOTER_Y, &next, 1);
+            assert!(
+                bounds_contains(frame_interior, legacy_next),
+                "{next} exceeds the frame"
+            );
+            assert!(bounds_are_disjoint(
+                legacy_next,
+                centered_text_bounds(130, "1ST TRY 99/99", 1)
+            ));
+        }
+        assert!(bounds_are_disjoint(
+            centered_text_bounds(22, "LEVEL UP!", 2),
+            centered_text_bounds(42, "ORACLE BOND DEEPENS", 1)
+        ));
+        assert!(
+            centered_text_bounds(42, "ORACLE BOND DEEPENS", 1).y + 7 < 72 - 13,
+            "the legacy bond title clears the sigil"
+        );
+        for (name, foreground, background) in [
+            ("recap", PARCH, VOID),
+            ("next lenses", CYAN, VOID),
+            ("legacy bond title", CYAN, NAVY),
+            ("legacy recap", CYAN, NAVY),
+            ("legacy next lenses", MIST, NAVY),
+        ] {
+            let ratio = contrast_ratio(foreground, background);
+            assert!(ratio >= 4.5, "{name} contrast {ratio:.2}:1 is below 4.5:1");
+        }
+    }
+
+    #[test]
+    fn the_result_prompt_stays_lit_on_every_frame() {
+        for template in [true, false] {
+            let mut state = worst_case_debrief_state();
+            if !template {
+                state.cartridge = Some(quiz_cartridge());
+            }
+            let (x_range, prompt_y) = if template {
+                let panel = AFTERMATH_CONTENT_BOX;
+                (
+                    panel.x as usize..(panel.x + panel.width) as usize,
+                    AFTERMATH_PROMPT_Y as usize,
+                )
+            } else {
+                (0..WIDTH, 143)
+            };
+            let y_range = prompt_y..prompt_y + 7;
+            for ticks in [0, 29, 30, 45, 60, 95] {
+                state.screen_ticks = ticks;
+                let mut frame = Framebuffer::default();
+                if template {
+                    render_oracle_aftermath(&mut frame, &state);
+                } else {
+                    render_game_over(&mut frame, &state);
+                }
+                assert!(
+                    color_pixels_in_region(&frame.pixels, PARCH, x_range.clone(), y_range.clone())
+                        > 20,
+                    "the result prompt is drawn at tick {ticks} (template={template})"
+                );
+                if ticks == 30 {
+                    let name = if template {
+                        "debrief-aftermath-worst"
+                    } else {
+                        "debrief-game-over-legacy"
+                    };
+                    maybe_write_preview(name, &frame.pixels);
+                }
+            }
+            state.quiz.as_mut().unwrap().level = 3;
+            let mut level_up = Framebuffer::default();
+            let name = if template {
+                render_oracle_ascension(&mut level_up, &state);
+                "debrief-ascension-deepens"
+            } else {
+                render_level_up(&mut level_up, &state);
+                "debrief-level-up-legacy"
+            };
+            maybe_write_preview(name, &level_up.pixels);
+        }
+    }
+
+    /// Asserts `frame` shows exactly `text` in `color` at `bounds` over the
+    /// pixels `background` holds there.
+    fn assert_text_drawn(
+        frame: &Framebuffer,
+        background: &Framebuffer,
+        bounds: LayoutBounds,
+        text: &str,
+        color: Color,
+    ) {
+        let mut expected = Framebuffer {
+            pixels: background.pixels.clone(),
+        };
+        expected.text(bounds.x, bounds.y, text, color, 1);
+        let x_range = bounds.x as usize..(bounds.x + bounds.width) as usize;
+        let y_range = bounds.y as usize..(bounds.y + bounds.height) as usize;
+        assert!(
+            frame_region(&frame.pixels, x_range.clone(), y_range.clone())
+                == frame_region(&expected.pixels, x_range, y_range),
+            "`{text}` is not drawn at {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn debrief_screens_draw_the_rows_they_report() {
+        let plain = |color| {
+            let mut frame = Framebuffer::default();
+            frame.clear(color);
+            frame
+        };
+        let mut state = worst_case_debrief_state();
+        // A batch recap distinct from the run totals, so the screens must read
+        // the completed batch's snapshot.
+        state.quiz.as_mut().unwrap().ledger.last_batch = (4, 6);
+
+        // The Aftermath draws every row it computes, lens row included.
+        let mut plate = Framebuffer::default();
+        plate.blit_rgb(ORACLE_AFTERMATH);
+        let mut frame = Framebuffer::default();
+        render_oracle_aftermath(&mut frame, &state);
+        let panel = ui_box_bounds(AFTERMATH_CONTENT_BOX);
+        let rows = aftermath_rows(&state, state.quiz.as_ref().unwrap());
+        assert_eq!(rows.len(), AFTERMATH_ROW_YS.len());
+        for (y, text, color) in &rows {
+            assert_text_drawn(
+                &frame,
+                &plate,
+                centered_text_in_bounds(panel, *y, text, 1),
+                text,
+                *color,
+            );
+        }
+
+        // The Ascension heading follows the tier crossing, and the recap and
+        // hold footer name the batch just survived and the lenses ahead.
+        let void = plain(VOID);
+        for (level, title) in [(3, "ORACLE BOND DEEPENS"), (4, "ORACLE BOND ASCENDS")] {
+            state.quiz.as_mut().unwrap().level = level;
+            let mut frame = Framebuffer::default();
+            render_oracle_ascension(&mut frame, &state);
+            assert_text_drawn(
+                &frame,
+                &void,
+                centered_text_in_bounds(ui_box_bounds(ASCENSION_TITLE_BOX), 73, title, 1),
+                title,
+                AMBER,
+            );
+            assert_text_drawn(
+                &frame,
+                &void,
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 4/6", 1),
+                "1ST TRY 4/6",
+                PARCH,
+            );
+            let next = next_focus_label(level);
+            assert_text_drawn(
+                &frame,
+                &void,
+                centered_text_box_bounds(MENU_FOOTER_BOX, &next, 1),
+                &next,
+                CYAN,
+            );
+        }
+
+        // The legacy screens carry the same debrief.
+        let template = state.cartridge.take().unwrap();
+        let mut legacy = quiz_cartridge();
+        legacy.lessons = template.lessons;
+        legacy.mastery = template.mastery;
+        state.cartridge = Some(legacy);
+        state.quiz.as_mut().unwrap().level = 3;
+        let mut frame = Framebuffer::default();
+        render_level_up(&mut frame, &state);
+        let navy = plain(NAVY);
+        let next = next_focus_label(3);
+        for (y, text, color) in [
+            (42, "ORACLE BOND DEEPENS", CYAN),
+            (130, "1ST TRY 4/6", CYAN),
+            (LEVEL_UP_FOOTER_Y, next.as_str(), MIST),
+        ] {
+            assert_text_drawn(&frame, &navy, centered_text_bounds(y, text, 1), text, color);
+        }
+
+        let mut frame = Framebuffer::default();
+        render_game_over(&mut frame, &state);
+        let run = state.quiz.as_ref().unwrap();
+        let insight = InsightStage::from_score(run.score);
+        let mut rows = vec![
+            ("SCORE 0000".to_string(), GOLD),
+            ("INSIGHT UNLIT".to_string(), insight.color()),
+            ("LEVEL 3 REACHED".to_string(), SKY),
+        ];
+        rows.extend(ledger_rows(&state, run));
+        assert_eq!(rows.len(), GAME_OVER_ROW_YS.len(), "the lens row is shown");
+        let ink = plain(INK);
+        for ((text, color), y) in rows.iter().zip(GAME_OVER_ROW_YS) {
+            assert_text_drawn(&frame, &ink, centered_text_bounds(y, text, 1), text, *color);
+        }
+    }
+
+    #[test]
+    fn the_bond_ascends_only_across_a_tier_and_names_the_next_lenses() {
+        assert_eq!(bond_title(2), "ORACLE BOND ASCENDS", "initiate to adept");
+        assert_eq!(bond_title(3), "ORACLE BOND DEEPENS", "adept stays adept");
+        assert_eq!(
+            bond_title(4),
+            "ORACLE BOND ASCENDS",
+            "adept to oracle-bound"
+        );
+        assert_eq!(bond_title(5), "ORACLE BOND DEEPENS");
+        for level in 2..=5 {
+            let [first, second] = Concept::focus_for_level(level) else {
+                panic!("each level focuses on two lenses");
+            };
+            assert_eq!(
+                next_focus_label(level),
+                format!("NEXT: {}+{}", first.label(), second.label())
+            );
+        }
+        assert_eq!(next_focus_label(4), "NEXT: INVARIANTS+TRADEOFFS");
+    }
+
+    #[test]
+    fn woken_lens_names_the_largest_rise_since_the_run_began() {
+        let mut state = GameState {
+            cartridge: Some(quiz_cartridge()),
+            ..Default::default()
+        };
+        start_quiz_run(&mut state);
+        assert_eq!(woken_lens(&state), None, "no evidence, no rise");
+
+        let cartridge = state.cartridge.as_mut().unwrap();
+        cartridge.mastery = Mastery::from([
+            (
+                Concept::Purpose,
+                LensRecord {
+                    first_try: 1,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Interaction,
+                LensRecord {
+                    first_try: 3,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Tradeoff,
+                LensRecord {
+                    redeemed: 3,
+                    ..LensRecord::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            woken_lens(&state),
+            Some((Concept::Interaction, 2)),
+            "the largest rise wins and ties go to the earlier lens"
+        );
+
+        // A new run starts from the stages already lit: nothing has woken yet.
+        start_quiz_run(&mut state);
+        assert_eq!(
+            state.quiz.as_ref().unwrap().ledger.stages_at_start,
+            [1, 0, 2, 0, 2]
+        );
+        assert_eq!(woken_lens(&state), None);
+    }
+
+    #[test]
+    fn the_run_ledger_counts_first_tries_redemptions_and_open_reviews() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        // A second batch is queued, so every miss's review keeps its full gap.
+        {
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            let questions = (10..10 + QUESTION_BATCH_SIZE)
+                .map(concept_question)
+                .collect();
+            append_question_batch(&mut state, questions, 2);
+        }
+        // q0 and q1 right, q2 missed (its review closes the batch three
+        // questions later), q3 and q4 right, q5 missed (its review carries
+        // into the next batch), the q2 review relearned, and after the
+        // level-up two new questions right and the q5 review missed on the
+        // last ward.
+        for correct in [true, true, false, true, true, false] {
+            assert_eq!(current_question(&engine).review, Review::Fresh);
+            commit(&mut engine, correct);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(current_question(&engine).review, Review::InSession);
+        commit(&mut engine, true);
+        finish_lesson(&mut engine);
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        while engine.screen() == Screen::LevelUp {
+            engine.update();
+        }
+        for _ in 0..2 {
+            assert_eq!(current_question(&engine).review, Review::Fresh);
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(current_question(&engine).review, Review::InSession);
+        commit(&mut engine, false);
+
+        let state = engine_state(&engine);
+        let ledger = &state.quiz.as_ref().unwrap().ledger;
+        assert_eq!(ledger.first_try, 8);
+        assert_eq!(ledger.first_try_right, 6);
+        assert_eq!(ledger.redeemed, 1);
+        assert_eq!(ledger.last_batch, (4, 6), "the first batch's first tries");
+        assert_eq!(
+            ledger.batch_first_try, 2,
+            "the second batch never completed"
+        );
+        assert_eq!(
+            open_reviews(state),
+            state
+                .lessons()
+                .iter()
+                .filter(|lesson| lesson.outstanding)
+                .count()
+        );
+        assert_eq!(open_reviews(state), 1, "q2 was relearned; q5 stays open");
+        let rows = ledger_rows(state, state.quiz.as_ref().unwrap());
+        assert_eq!(
+            rows.iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            // Six first-try successes earn three runes by volume, but three
+            // of the newest five graded answers (60%) and q5's open miss
+            // hold rune III back; the same-launch relearning is no evidence.
+            ["1ST TRY 6/8", "REDEEMED 01", "REVIEW 01", "ROLES II"]
+        );
+        assert_eq!(state.mastery_cracks(Concept::Responsibility), 1);
+        finish_lesson(&mut engine);
+        assert_eq!(engine.screen(), Screen::GameOver);
+
+        let mut state = engine.app.world_mut().resource_mut::<GameState>();
+        start_quiz_run(&mut state);
+        let ledger = &state.quiz.as_ref().unwrap().ledger;
+        assert_eq!(
+            (ledger.first_try, ledger.first_try_right, ledger.redeemed),
+            (0, 0, 0),
+            "a new run starts a fresh ledger"
+        );
+        assert_eq!(
+            ledger.stages_at_start[1], 2,
+            "from the roles runes already lit"
+        );
+        assert_eq!(woken_lens(&state), None);
+    }
+
+    #[test]
+    fn a_completed_batch_snapshots_its_first_tries_for_the_level_up() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        // q0 missed; its review arrives after three more and joins the batch.
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        while engine.screen() == Screen::Quiz {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let ledger = &engine_state(&engine).quiz.as_ref().unwrap().ledger;
+        assert_eq!(ledger.last_batch, (5, 6), "six first tries, one missed");
+        assert_eq!(ledger.redeemed, 1);
+        assert_eq!(
+            (ledger.batch_first_try, ledger.batch_first_try_right),
+            (0, 0),
+            "the next batch counts from zero"
+        );
+        assert_eq!((ledger.first_try, ledger.first_try_right), (6, 5));
     }
 
     #[test]
@@ -4227,6 +7605,7 @@ mod tests {
     fn correct_answers_apply_the_staged_flow_multiplier_to_runtime_score() {
         let mut engine = playing_quiz_engine();
         let expected_scores = [100, 200, 400, 600, 800, 1_100, 1_400, 1_700, 2_000];
+        focus_choice(&mut engine, true);
 
         for (index, expected_score) in expected_scores.into_iter().enumerate() {
             issue(
@@ -4265,17 +7644,21 @@ mod tests {
     #[test]
     fn quiz_review_names_rune_flow_and_ward_threshold_changes() {
         let mut run = QuizRun {
-            question: 0,
-            completed_batches: 0,
-            selected: 0,
-            hearts: 3,
             score: 400,
-            level: 1,
             streak: 3,
-            leveled_up: false,
             feedback: Some((true, QUIZ_FEEDBACK_TICKS)),
+            ..QuizRun::new()
         };
-        assert_eq!(quiz_feedback_banner(&run), "RUNE I AWAKENS");
+        assert_eq!(quiz_feedback_banner(&run), "INSIGHT I RISES");
+
+        // A woken lens rune outranks the Insight crossing.
+        run.lens_woke = Some((Concept::Responsibility, 1));
+        assert_eq!(quiz_feedback_banner(&run), "ROLES RUNE I");
+        assert_eq!(quiz_feedback_color(&run).1, mastery_rune_color(1).1);
+        run.lens_woke = Some((Concept::Invariant, 3));
+        assert_eq!(quiz_feedback_banner(&run), "INVARIANTS RUNE III");
+        assert_eq!(quiz_feedback_color(&run).1, MAGENTA.1);
+        run.lens_woke = None;
 
         run.score = 600;
         run.streak = 4;
@@ -4527,6 +7910,40 @@ mod tests {
             },
         );
         assert_eq!(engine.screen(), Screen::Quiz);
+
+        // A and Start stay inert until the hold ends; the card then waits.
+        press(&mut engine, Button::A);
+        press(&mut engine, Button::Start);
+        assert!(engine_state(&engine)
+            .quiz
+            .as_ref()
+            .unwrap()
+            .feedback
+            .is_some());
+        for _ in 0..QUIZ_FEEDBACK_TICKS {
+            engine.update();
+        }
+        for _ in 0..300 {
+            engine.update();
+        }
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(run.feedback.map(|(_, hold)| hold), Some(0));
+        assert_eq!(run.question, 0, "the lesson card must not auto-advance");
+        for button in [Button::B, Button::B, Button::Up, Button::Down] {
+            press(&mut engine, button);
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        assert!(engine_state(&engine)
+            .quiz
+            .as_ref()
+            .unwrap()
+            .feedback
+            .is_some());
+
+        press(&mut engine, Button::Start);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert!(run.feedback.is_none());
+        assert_eq!(run.question, 1);
     }
 
     #[test]
@@ -4701,21 +8118,20 @@ mod tests {
                 pressed: true,
             },
         );
-        issue(
+        deliver(
             &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![QuizQuestion {
-                    question: "WHAT ARRIVED SAFELY?".into(),
-                    choices: vec![
-                        "A QUESTION".into(),
-                        "A KEY PRESS".into(),
-                        "A GLITCH".into(),
-                        "A COMMAND".into(),
-                    ],
-                    answer: 0,
-                }],
-            },
+            "/tmp/engine-test",
+            vec![QuizQuestion {
+                question: "WHAT ARRIVED SAFELY?".into(),
+                choices: vec![
+                    "A QUESTION".into(),
+                    "A KEY PRESS".into(),
+                    "A GLITCH".into(),
+                    "A COMMAND".into(),
+                ],
+                answer: 0,
+                ..Default::default()
+            }],
         );
         assert_eq!(engine.screen(), Screen::Quiz);
         let unanswered = engine.frame().to_vec();
@@ -4743,16 +8159,15 @@ mod tests {
         second.questions[0].question = "SECOND CARTRIDGE".into();
         issue(&mut engine, EngineCommand::Cartridge(Some(first)));
         issue(&mut engine, EngineCommand::Cartridge(Some(second)));
-        issue(
+        deliver(
             &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![QuizQuestion {
-                    question: "STALE".into(),
-                    choices: vec!["A".into()],
-                    answer: 0,
-                }],
-            },
+            "/tmp/engine-test",
+            vec![QuizQuestion {
+                question: "STALE".into(),
+                choices: vec!["A".into()],
+                answer: 0,
+                ..Default::default()
+            }],
         );
         let state = engine.app.world().resource::<GameState>();
         assert_eq!(
@@ -4834,21 +8249,20 @@ mod tests {
         }
         assert_eq!(engine.screen(), Screen::Oracle);
 
-        issue(
+        deliver(
             &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![QuizQuestion {
-                    question: "WHAT SHOULD THE ENGINE OWN?".into(),
-                    choices: vec![
-                        "GAMEPLAY STATE".into(),
-                        "DEVICE STYLES".into(),
-                        "WINDOW CHROME".into(),
-                        "HOST POINTERS".into(),
-                    ],
-                    answer: 0,
-                }],
-            },
+            "/tmp/engine-test",
+            vec![QuizQuestion {
+                question: "WHAT SHOULD THE ENGINE OWN?".into(),
+                choices: vec![
+                    "GAMEPLAY STATE".into(),
+                    "DEVICE STYLES".into(),
+                    "WINDOW CHROME".into(),
+                    "HOST POINTERS".into(),
+                ],
+                answer: 0,
+                ..Default::default()
+            }],
         );
         assert_eq!(engine.screen(), Screen::Quiz);
     }
@@ -4892,14 +8306,12 @@ mod tests {
             state.quiz = Some(QuizRun {
                 question: 1,
                 completed_batches: 1,
-                selected: 0,
-                hearts: 3,
                 score: 100,
-                level: 1,
                 streak: 1,
-                leveled_up: false,
-                feedback: None,
+                ..QuizRun::new()
             });
+            // The live run's quiz ran out of questions.
+            state.screen = Screen::Quiz;
             state.transition(Screen::Oracle);
         }
 
@@ -4913,16 +8325,15 @@ mod tests {
         }
         assert_eq!(engine.screen(), Screen::Oracle);
 
-        issue(
+        deliver(
             &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![QuizQuestion {
-                    question: "WHAT ARRIVED NEXT?".into(),
-                    choices: vec!["A NEW QUESTION".into(), "NOTHING".into()],
-                    answer: 0,
-                }],
-            },
+            "/tmp/engine-test",
+            vec![QuizQuestion {
+                question: "WHAT ARRIVED NEXT?".into(),
+                choices: vec!["A NEW QUESTION".into(), "NOTHING".into()],
+                answer: 0,
+                ..Default::default()
+            }],
         );
         assert_eq!(engine.screen(), Screen::Quiz);
         let state = engine.app.world().resource::<GameState>();
@@ -5096,6 +8507,7 @@ mod tests {
                 cartridge_id,
                 level: 1,
                 count: 6,
+                ..
             }] if cartridge_id == "/tmp/engine-test"
         ));
     }
@@ -5126,13 +8538,7 @@ mod tests {
             );
         }
         assert_eq!(engine.screen(), Screen::Oracle);
-        issue(
-            &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: Vec::new(),
-            },
-        );
+        deliver(&mut engine, "/tmp/engine-test", Vec::new());
 
         for _ in 0..300 {
             engine.update();
@@ -5145,6 +8551,7 @@ mod tests {
                 cartridge_id,
                 level: 1,
                 count: 6,
+                ..
             } if cartridge_id == "/tmp/engine-test"
         )));
     }
@@ -5177,18 +8584,14 @@ mod tests {
         for _ in 0..75 {
             engine.update();
         }
+        // The four-question batch is short, so the prefetch tops it up at
+        // its own level instead of jumping ahead to level 2.
         assert!(matches!(
             engine.take_effects().as_slice(),
-            [EngineEffect::RequestQuestions { level: 2, .. }]
+            [EngineEffect::RequestQuestions { level: 1, .. }]
         ));
 
-        issue(
-            &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: Vec::new(),
-            },
-        );
+        deliver(&mut engine, "/tmp/engine-test", Vec::new());
         assert!(engine.take_effects().is_empty());
 
         for _ in 0..299 {
@@ -5198,7 +8601,7 @@ mod tests {
         engine.update();
         assert!(matches!(
             engine.take_effects().as_slice(),
-            [EngineEffect::RequestQuestions { level: 2, .. }]
+            [EngineEffect::RequestQuestions { level: 1, .. }]
         ));
     }
 
@@ -5243,101 +8646,35 @@ mod tests {
 
     #[test]
     fn surviving_a_complete_ai_batch_levels_up() {
-        let mut engine = GameEngine::new();
-        let mut cartridge = quiz_cartridge();
-        let question = cartridge.questions[0].clone();
-        cartridge.questions.clear();
-        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
-        let _ = engine.take_effects();
-        issue(&mut engine, EngineCommand::Power(true));
-        finish_opening(&mut engine);
-        for button in [Button::Start, Button::A, Button::Start] {
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button,
-                    pressed: true,
-                },
-            );
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button,
-                    pressed: false,
-                },
-            );
-        }
-        issue(
-            &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![question; QUESTION_BATCH_SIZE],
-            },
-        );
-        for _ in 0..75 {
-            engine.update();
-        }
-        assert_eq!(engine.screen(), Screen::Quiz);
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
 
-        for (index, wrong) in [true, false, false, true, false, false]
+        // Two misses add two review copies, so the batch closes after eight
+        // commitments: the six originals plus both retries.
+        let batch_length = QUESTION_BATCH_SIZE + 2;
+        for (index, wrong) in [true, false, false, true, false, false, false, false]
             .into_iter()
             .enumerate()
         {
-            if wrong {
-                issue(
-                    &mut engine,
-                    EngineCommand::Input {
-                        button: Button::Down,
-                        pressed: true,
-                    },
-                );
-                issue(
-                    &mut engine,
-                    EngineCommand::Input {
-                        button: Button::Down,
-                        pressed: false,
-                    },
-                );
-            }
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button: Button::A,
-                    pressed: true,
-                },
-            );
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button: Button::A,
-                    pressed: false,
-                },
-            );
-            for _ in 0..45 {
-                engine.update();
-            }
-            if index + 1 < QUESTION_BATCH_SIZE {
-                assert_eq!(engine.screen(), Screen::Quiz);
+            commit(&mut engine, !wrong);
+            finish_lesson(&mut engine);
+            if index + 1 < batch_length {
+                assert_eq!(engine.screen(), Screen::Quiz, "commitment {index}");
             }
         }
 
         assert_eq!(engine.screen(), Screen::LevelUp);
-        let run = engine
-            .app
-            .world()
-            .resource::<GameState>()
-            .quiz
-            .as_ref()
-            .unwrap();
+        let state = engine_state(&engine);
+        let run = state.quiz.as_ref().unwrap();
         assert_eq!(run.level, 2);
         assert_eq!(run.hearts, 1);
+        assert_eq!(run.question, batch_length);
+        assert_eq!(state.batch_ends, vec![batch_length]);
     }
 
     #[test]
     fn losing_the_last_heart_at_a_batch_boundary_does_not_level_up() {
         let mut engine = GameEngine::new();
         let mut cartridge = quiz_cartridge();
-        let question = cartridge.questions[0].clone();
         cartridge.questions.clear();
         issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
         let _ = engine.take_effects();
@@ -5359,37 +8696,18 @@ mod tests {
                 },
             );
         }
-        issue(
+        deliver(
             &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![question; 3],
-            },
+            "/tmp/engine-test",
+            (0..3).map(concept_question).collect(),
         );
         for _ in 0..75 {
             engine.update();
         }
 
         for _ in 0..3 {
-            for button in [Button::Down, Button::A] {
-                issue(
-                    &mut engine,
-                    EngineCommand::Input {
-                        button,
-                        pressed: true,
-                    },
-                );
-                issue(
-                    &mut engine,
-                    EngineCommand::Input {
-                        button,
-                        pressed: false,
-                    },
-                );
-            }
-            for _ in 0..45 {
-                engine.update();
-            }
+            commit(&mut engine, false);
+            finish_lesson(&mut engine);
         }
 
         assert_eq!(engine.screen(), Screen::GameOver);
@@ -5397,6 +8715,22 @@ mod tests {
         let run = state.quiz.as_ref().unwrap();
         assert_eq!(run.level, 1);
         assert_eq!(run.completed_batches, 0);
+        // The deck was too short for either survivable miss to keep its retry
+        // gap, so both copies were deferred; the final, ward-breaking miss
+        // had none. Once the run is over, the three committed questions leave
+        // the deck, the deferred copies are dropped, and each outstanding
+        // identity returns once, in play order, as a same-launch review for
+        // the next run.
+        assert!(state.deferred_retries.is_empty());
+        let questions = &state.cartridge.as_ref().unwrap().questions;
+        assert_eq!(
+            questions
+                .iter()
+                .map(|question| (question.question.clone(), question.review))
+                .collect::<Vec<_>>(),
+            [0, 1, 2].map(|index| (concept_question(index).question, Review::InSession))
+        );
+        assert_eq!(state.batch_ends, vec![3]);
     }
 
     #[test]
@@ -5429,23 +8763,8 @@ mod tests {
         assert_eq!(engine.screen(), Screen::Quiz);
 
         for _ in 0..4 {
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button: Button::A,
-                    pressed: true,
-                },
-            );
-            issue(
-                &mut engine,
-                EngineCommand::Input {
-                    button: Button::A,
-                    pressed: false,
-                },
-            );
-            for _ in 0..45 {
-                engine.update();
-            }
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
         }
 
         assert_eq!(engine.screen(), Screen::Quiz);
@@ -5459,8 +8778,2766 @@ mod tests {
                 cartridge_id,
                 level: 2,
                 count: 6,
+                ..
             } if cartridge_id == "/tmp/engine-test"
         )));
+    }
+
+    #[test]
+    fn question_identity_matches_the_save_normalization() {
+        assert_eq!(
+            question_identity("  who owns\tthe\n game   loop? "),
+            "WHO OWNS THE GAME LOOP?"
+        );
+        assert_eq!(
+            question_identity("WHO OWNS THE GAME LOOP?"),
+            question_identity("who owns the game loop?")
+        );
+    }
+
+    #[test]
+    fn committing_maps_the_focused_display_slot_to_its_source_choice() {
+        for correct in [true, false] {
+            let mut engine = batch_quiz_engine(1);
+            let _ = engine.take_effects();
+            let question = current_question(&engine);
+            let slot = answer_slot(&engine);
+            {
+                let run = engine_state(&engine).quiz.as_ref().unwrap();
+                let mut order = run.order.clone();
+                assert_eq!(run.display_order(4)[slot], question.answer);
+                order.sort_unstable();
+                assert_eq!(order, [0, 1, 2, 3], "the display order is a permutation");
+            }
+
+            commit(&mut engine, correct);
+
+            let run = engine_state(&engine).quiz.as_ref().unwrap();
+            assert_eq!(run.feedback.map(|(result, _)| result), Some(correct));
+            assert!(engine.take_effects().iter().any(|effect| matches!(
+                effect,
+                EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                    if evidence.correct == correct
+                        && evidence.concept == Some(Concept::Responsibility)
+                        && evidence.review == Review::Fresh
+            )));
+        }
+    }
+
+    #[test]
+    fn provider_first_answers_spread_across_every_display_slot() {
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..60).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            quiz: Some(QuizRun::new()),
+            ..Default::default()
+        };
+        let mut slot_counts = [0; 4];
+        for index in 0..60 {
+            state.quiz.as_mut().unwrap().question = index;
+            present_current_question(&mut state);
+            let run = state.quiz.as_ref().unwrap();
+            assert_eq!(run.presented, Some(index));
+            assert_eq!(run.selected, 0);
+            let slot = run.order.iter().position(|source| *source == 0).unwrap();
+            slot_counts[slot] += 1;
+        }
+        assert!(
+            slot_counts.iter().all(|count| *count >= 5),
+            "the answer must not favor a slot: {slot_counts:?}"
+        );
+    }
+
+    #[test]
+    fn every_retry_waits_the_full_gap_and_may_carry_into_the_next_batch() {
+        assert_eq!(retry_insertion_index(1, 12), Some(5));
+        assert_eq!(retry_insertion_index(5, 12), Some(9));
+        assert_eq!(retry_insertion_index(2, 6), Some(6), "the deck's end is ok");
+        assert_eq!(retry_insertion_index(3, 6), None);
+        assert_eq!(retry_insertion_index(0, 1), None);
+
+        // A miss at every slot of a full batch that another batch follows.
+        for slot in 0..QUESTION_BATCH_SIZE {
+            let mut questions: Vec<_> = (0..12).map(concept_question).collect();
+            let mut batch_ends = vec![6, 12];
+            let mut deferred = Vec::new();
+            let placed = schedule_retry(&mut questions, &mut batch_ends, &mut deferred, slot);
+            let Some(RetrySlot::At(index)) = placed else {
+                panic!("slot {slot}: {placed:?}");
+            };
+            assert!(deferred.is_empty());
+            let between = index - slot - 1;
+            assert_eq!(between, RETRY_GAP, "slot {slot} retried at {index}");
+            assert_eq!(questions[index].question, concept_question(slot).question);
+            assert_eq!(questions[index].review, Review::InSession);
+            assert_eq!(questions[slot].review, Review::Fresh);
+            // A copy that fits the current batch extends it; a later one
+            // joins the next batch, so the current batch closes on time.
+            let expected = if index <= 6 { vec![7, 13] } else { vec![6, 13] };
+            assert_eq!(batch_ends, expected, "slot {slot}");
+        }
+
+        // With no batch after it, a late miss waits for the next delivery.
+        let mut questions: Vec<_> = (0..6).map(concept_question).collect();
+        let mut batch_ends = vec![6];
+        let mut deferred = Vec::new();
+        assert_eq!(
+            schedule_retry(&mut questions, &mut batch_ends, &mut deferred, 5),
+            Some(RetrySlot::Deferred)
+        );
+        assert_eq!((questions.len(), batch_ends.clone()), (6, vec![6]));
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].0, 5 + 1 + RETRY_GAP);
+        assert_eq!(deferred[0].1.review, Review::InSession);
+        assert_eq!(
+            schedule_retry(&mut questions, &mut batch_ends, &mut deferred, 99),
+            None
+        );
+    }
+
+    #[test]
+    fn a_miss_on_the_last_slot_levels_up_and_returns_three_questions_later() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        // A second batch is already queued behind the first.
+        {
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            let questions = (10..10 + QUESTION_BATCH_SIZE)
+                .map(concept_question)
+                .collect();
+            append_question_batch(&mut state, questions, 2);
+            assert_eq!(state.batch_ends, vec![6, 12]);
+        }
+        for _ in 0..QUESTION_BATCH_SIZE - 1 {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        let missed = current_question(&engine);
+        commit(&mut engine, false);
+        assert_eq!(engine_state(&engine).batch_ends, vec![6, 13]);
+        finish_lesson(&mut engine);
+        assert_eq!(engine.screen(), Screen::LevelUp, "the batch closes at six");
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().level, 2);
+        while engine.screen() == Screen::LevelUp {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        for _ in 0..RETRY_GAP {
+            assert_eq!(current_question(&engine).review, Review::Fresh);
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        let retry = current_question(&engine);
+        assert_eq!(retry.question, missed.question);
+        assert_eq!(retry.review, Review::InSession);
+    }
+
+    #[test]
+    fn a_deferred_retry_lands_at_its_due_index_after_the_next_delivery() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        for _ in 0..3 {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        let missed = current_question(&engine);
+        commit(&mut engine, false);
+        {
+            let state = engine_state(&engine);
+            assert_eq!(state.deferred_retries.len(), 1, "slot 3 cannot fit a gap");
+            assert_eq!(state.batch_ends, vec![6]);
+            assert_eq!(
+                state.quiz.as_ref().unwrap().retry_note,
+                Some(RetryNote::Later),
+                "the lesson card promises no distance the deck cannot keep yet"
+            );
+        }
+        finish_lesson(&mut engine);
+        for _ in 0..2 {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (10..10 + QUESTION_BATCH_SIZE)
+                .map(concept_question)
+                .collect(),
+        );
+        let state = engine_state(&engine);
+        let run = state.quiz.as_ref().unwrap();
+        assert!(state.deferred_retries.is_empty());
+        let questions = &state.cartridge.as_ref().unwrap().questions;
+        let due = 3 + 1 + RETRY_GAP;
+        assert!(due > run.question, "a fresh question comes first");
+        assert_eq!(questions[due].question, missed.question);
+        assert_eq!(questions[due].review, Review::InSession);
+        assert_eq!(state.batch_ends, vec![6, 13]);
+    }
+
+    #[test]
+    fn a_delivered_repeat_of_a_journaled_stem_is_relearning_not_a_first_try() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        {
+            // A later delivery repeated the first stem as a "fresh" question.
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            state.cartridge.as_mut().unwrap().questions[1] = concept_question(0);
+        }
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        let _ = engine.take_effects();
+        assert_eq!(current_question(&engine).review, Review::Fresh);
+        commit(&mut engine, true);
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                if evidence.correct && evidence.review == Review::InSession
+        )));
+        let record = engine_state(&engine).lens_record(Concept::Responsibility);
+        assert_eq!((record.first_try, record.relearned), (0, 1), "{record:?}");
+        assert!(
+            !engine_state(&engine).quiz.as_ref().unwrap().redeemed,
+            "no REDEEMED banner for a copy that was never flagged as a review"
+        );
+    }
+
+    #[test]
+    fn a_deferred_retry_waits_until_a_delivery_reaches_its_gap() {
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..6).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            screen: Screen::Oracle,
+            quiz: Some(QuizRun {
+                question: 6,
+                ..QuizRun::new()
+            }),
+            batch_ends: vec![6],
+            batch_levels: vec![1],
+            ..Default::default()
+        };
+        let mut review = concept_question(5);
+        review.review = Review::InSession;
+        state.deferred_retries.push((5 + 1 + RETRY_GAP, review));
+
+        // One new question is not enough: placing the copy now would leave
+        // only one question between the miss and its retry.
+        append_question_batch(&mut state, vec![concept_question(10)], 2);
+        assert_eq!(state.deferred_retries.len(), 1);
+        assert_eq!(state.cartridge.as_ref().unwrap().questions.len(), 7);
+
+        append_question_batch(&mut state, (11..16).map(concept_question).collect(), 2);
+        assert!(state.deferred_retries.is_empty());
+        let questions = &state.cartridge.as_ref().unwrap().questions;
+        assert_eq!(questions[9].question, concept_question(5).question);
+        assert_eq!(questions[9].review, Review::InSession);
+        assert_eq!(state.batch_ends, vec![6, 13]);
+
+        // Outside a live run nothing is placed; a new run requeues instead.
+        state.screen = Screen::GameOver;
+        state.deferred_retries.push((20, concept_question(1)));
+        append_question_batch(&mut state, (20..26).map(concept_question).collect(), 3);
+        assert_eq!(state.deferred_retries.len(), 1);
+    }
+
+    #[test]
+    fn a_missed_question_returns_in_a_new_slot_and_redeems_its_lesson() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let missed = current_question(&engine);
+        let first_slot = answer_slot(&engine);
+        let picked = engine_state(&engine)
+            .quiz
+            .as_ref()
+            .unwrap()
+            .display_order(missed.choices.len())[(first_slot + 1) % missed.choices.len()];
+        let misconception = Some((
+            missed.choices[picked].clone(),
+            missed.rationales[picked].clone(),
+        ));
+
+        commit(&mut engine, false);
+        {
+            let state = engine_state(&engine);
+            let cartridge = state.cartridge.as_ref().unwrap();
+            assert_eq!(cartridge.questions.len(), QUESTION_BATCH_SIZE + 1);
+            assert_eq!(state.batch_ends, vec![QUESTION_BATCH_SIZE + 1]);
+            assert_eq!(
+                cartridge.lessons,
+                vec![Lesson {
+                    question: missed.question.clone(),
+                    answer: missed.choices[0].clone(),
+                    rationale: missed.rationales[0].clone(),
+                    concept: Some(Concept::Responsibility),
+                    outstanding: true,
+                    misconception: misconception.clone(),
+                    peeked: false,
+                    spaced_check: false,
+                }],
+                "the journal remembers the pick and the misconception it reveals"
+            );
+            assert_eq!(cartridge.mastery[&Concept::Responsibility].missed, 1);
+        }
+        finish_lesson(&mut engine);
+
+        for _ in 0..RETRY_GAP {
+            assert_eq!(current_question(&engine).review, Review::Fresh);
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+
+        let review = current_question(&engine);
+        assert_eq!(review.review, Review::InSession);
+        assert_eq!(review.question, missed.question);
+        assert_ne!(
+            answer_slot(&engine),
+            first_slot,
+            "a retry must move the answer so position cannot be memorized"
+        );
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().attempt, 1);
+
+        let _ = engine.take_effects();
+        commit(&mut engine, true);
+        let state = engine_state(&engine);
+        let run = state.quiz.as_ref().unwrap();
+        assert!(run.redeemed);
+        assert_eq!(quiz_feedback_banner(run), "REDEEMED");
+        let cartridge = state.cartridge.as_ref().unwrap();
+        assert_eq!(cartridge.lessons.len(), 1 + RETRY_GAP);
+        assert!(
+            !cartridge.lessons[0].outstanding,
+            "redemption clears the miss"
+        );
+        assert_eq!(
+            cartridge.lessons[0].misconception, misconception,
+            "a learned lesson still recalls the misconception it replaced"
+        );
+        assert_eq!(
+            cartridge.mastery[&Concept::Responsibility],
+            learning::LensRecord {
+                first_try: RETRY_GAP as u32,
+                missed: 1,
+                // A same-launch retry is relearning: it lights no rune and
+                // is not graded in the recent window.
+                relearned: 1,
+                recent: 0b0111,
+                recent_len: 1 + RETRY_GAP as u8,
+                ..learning::LensRecord::default()
+            }
+        );
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                if evidence.correct && evidence.review == Review::InSession
+        )));
+    }
+
+    #[test]
+    fn rune_crossings_take_precedence_over_redemption() {
+        let mut run = QuizRun {
+            score: 300,
+            streak: 1,
+            redeemed: true,
+            feedback: Some((true, QUIZ_FEEDBACK_TICKS)),
+            ..QuizRun::new()
+        };
+        assert_eq!(quiz_feedback_banner(&run), "INSIGHT I RISES");
+        run.score = 400;
+        assert_eq!(quiz_feedback_banner(&run), "REDEEMED");
+        assert_eq!(quiz_feedback_color(&run).1, GREEN.1);
+        run.redeemed = false;
+        // `REVIEW` only ever names retries; a plain success is CLEAR SIGHT.
+        assert_eq!(quiz_feedback_banner(&run), "CLEAR SIGHT");
+    }
+
+    fn channels(color: Color) -> (u8, u8, u8) {
+        (color.0, color.1, color.2)
+    }
+
+    fn trial_counter(engine: &GameEngine) -> (String, (u8, u8, u8)) {
+        let (text, color) = question_counter(engine_state(engine), ("TRIAL ", "RETRY "), CYAN);
+        (text, channels(color))
+    }
+
+    fn state_mut(engine: &mut GameEngine) -> Mut<'_, GameState> {
+        engine.app.world_mut().resource_mut::<GameState>()
+    }
+
+    fn retry_note(engine: &GameEngine) -> Option<RetryNote> {
+        engine_state(engine).quiz.as_ref().unwrap().retry_note
+    }
+
+    #[test]
+    fn the_header_counts_the_batch_and_labels_the_returning_retry() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        assert_eq!(engine_state(&engine).batch_progress(), Some((1, 6)));
+        assert_eq!(trial_counter(&engine), ("TRIAL 1/6".into(), channels(CYAN)));
+
+        commit(&mut engine, false);
+        let note = retry_note(&engine).unwrap();
+        assert_eq!(note, RetryNote::In(RETRY_GAP));
+        assert_eq!(note.label(), "BACK IN 3");
+        {
+            // The note tells the real insertion distance.
+            let state = engine_state(&engine);
+            let run = state.quiz.as_ref().unwrap();
+            let questions = &state.cartridge.as_ref().unwrap().questions;
+            let returns = (run.question + 1..questions.len())
+                .find(|index| questions[*index].review.is_review())
+                .unwrap();
+            assert_eq!(RetryNote::In(returns - run.question - 1), note);
+        }
+        assert_eq!(
+            trial_counter(&engine).0,
+            "TRIAL 1/7",
+            "the miss grows its batch"
+        );
+        let mut missed = Framebuffer::default();
+        render_oracle_trial(&mut missed, engine_state(&engine));
+        maybe_write_preview("07e-trial-miss-returns", &missed.pixels);
+        finish_lesson(&mut engine);
+        assert_eq!(retry_note(&engine), None);
+        assert_eq!(trial_counter(&engine).0, "TRIAL 2/7");
+
+        for place in 2..=RETRY_GAP + 1 {
+            assert_eq!(trial_counter(&engine).0, format!("TRIAL {place}/7"));
+            commit(&mut engine, true);
+            assert_eq!(retry_note(&engine), None, "successes carry no note");
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(current_question(&engine).review, Review::InSession);
+        assert_eq!(
+            trial_counter(&engine),
+            ("RETRY 5/7".into(), channels(AMBER))
+        );
+        assert_eq!(
+            question_counter(engine_state(&engine), ("Q", "R"), SKY).0,
+            "R5/7"
+        );
+        let mut retry = Framebuffer::default();
+        render_oracle_trial(&mut retry, engine_state(&engine));
+        maybe_write_preview("07f-trial-retry", &retry.pixels);
+        let mut legacy_retry = Framebuffer::default();
+        render_quiz(&mut legacy_retry, engine_state(&engine));
+        maybe_write_preview("quiz-legacy-retry", &legacy_retry.pixels);
+        commit(&mut engine, true);
+        assert_eq!(
+            trial_counter(&engine).0,
+            "RETRY 5/7",
+            "the label holds through the retry's own lesson card"
+        );
+        finish_lesson(&mut engine);
+        assert_eq!(current_question(&engine).review, Review::Fresh);
+        assert_eq!(trial_counter(&engine), ("TRIAL 6/7".into(), channels(CYAN)));
+
+        // The next batch counts from one again.
+        let next_batch = GameState {
+            batch_ends: vec![7, 13],
+            quiz: Some(QuizRun {
+                completed_batches: 1,
+                question: 7,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(next_batch.batch_progress(), Some((1, 6)));
+
+        // An open short batch (two carried questions awaiting their top-up,
+        // one miss already inserted) counts toward the full batch of new
+        // questions plus that review copy, not 3/3 and not 3/6.
+        let mut cartridge = oracle_template_cartridge();
+        let mut retry = concept_question(0);
+        retry.review = Review::InSession;
+        cartridge.questions = vec![concept_question(0), concept_question(1), retry];
+        let mut open_batch = GameState {
+            cartridge: Some(cartridge),
+            batch_ends: vec![3],
+            quiz: Some(QuizRun {
+                question: 2,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            open_batch.batch_progress(),
+            Some((3, QUESTION_BATCH_SIZE + 1))
+        );
+        // The top-up then fills the batch to exactly that length, so the
+        // counter's end never jumps without a miss.
+        append_question_batch(&mut open_batch, (2..6).map(concept_question).collect(), 1);
+        assert_eq!(open_batch.batch_ends, [QUESTION_BATCH_SIZE + 1]);
+        assert_eq!(
+            open_batch.batch_progress(),
+            Some((3, QUESTION_BATCH_SIZE + 1))
+        );
+    }
+
+    #[test]
+    fn a_delivery_tops_batches_up_by_new_questions_while_reviews_ride_along() {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions = (0..4).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            batch_ends: vec![4],
+            batch_levels: vec![1],
+            ..Default::default()
+        };
+        let mut review = concept_question(20);
+        review.review = Review::InSession;
+        let delivery = std::iter::once(review)
+            .chain((4..9).map(concept_question))
+            .collect();
+        append_question_batch(&mut state, delivery, 2);
+        // The open batch takes the review plus two new questions, so it
+        // holds a full six new ones; the other three open the next batch.
+        assert_eq!(state.batch_ends, [QUESTION_BATCH_SIZE + 1, 10]);
+        assert_eq!(state.batch_levels, [1, 2]);
+        assert!(state.batch_is_full(0));
+        assert!(!state.batch_is_full(1));
+    }
+
+    #[test]
+    fn a_parked_delivery_cannot_requeue_a_stem_the_journal_retired() {
+        let answered = concept_question(0);
+        let missed = concept_question(1);
+        let fresh = concept_question(2);
+        let mut cartridge = oracle_template_cartridge();
+        // The run that answered both has ended, so the deck is drained.
+        cartridge.questions.clear();
+        record_lesson(&mut cartridge.lessons, &answered, true, answered.answer);
+        record_lesson(
+            &mut cartridge.lessons,
+            &missed,
+            false,
+            (missed.answer + 1) % 4,
+        );
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            ..Default::default()
+        };
+        let deck = |state: &GameState| {
+            state
+                .cartridge
+                .as_ref()
+                .unwrap()
+                .questions
+                .iter()
+                .map(|question| (question.question.clone(), question.review))
+                .collect::<Vec<_>>()
+        };
+        // The delivery was generated while both were still unanswered, so it
+        // carries them as new questions.
+        append_question_batch(
+            &mut state,
+            vec![answered.clone(), missed.clone(), fresh.clone()],
+            1,
+        );
+        assert_eq!(
+            deck(&state),
+            [
+                (missed.question.clone(), Review::InSession),
+                (fresh.question.clone(), Review::Fresh)
+            ],
+            "a retired stem is skipped and an outstanding one is a review"
+        );
+
+        // Once the miss is redeemed, a stale copy of it is retired too.
+        let mut state = GameState {
+            cartridge: state.cartridge.take().map(|mut cartridge| {
+                cartridge.questions.clear();
+                record_lesson(&mut cartridge.lessons, &missed, true, missed.answer);
+                cartridge
+            }),
+            ..Default::default()
+        };
+        let mut stale_review = missed.clone();
+        stale_review.review = Review::InSession;
+        append_question_batch(&mut state, vec![stale_review], 1);
+        assert!(deck(&state).is_empty());
+    }
+
+    #[test]
+    fn the_ascension_names_the_lenses_of_the_batch_generated_next() {
+        // A saved level-3 batch was just cleared at run level 1, so the batch
+        // coming next is generated at level 4, not at the run's level 2.
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            screen: Screen::LevelUp,
+            batch_ends: vec![QUESTION_BATCH_SIZE],
+            batch_levels: vec![3],
+            quiz: Some(QuizRun {
+                level: 2,
+                completed_batches: 1,
+                question: QUESTION_BATCH_SIZE,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(state.upcoming_batch_level(), 4);
+        state.questions_loading = true;
+        state.question_request_level = 4;
+        assert_eq!(state.upcoming_batch_level(), 4);
+        let next = next_focus_label(4);
+        assert_ne!(next, next_focus_label(2));
+
+        let mut void = Framebuffer::default();
+        void.clear(VOID);
+        let mut frame = Framebuffer::default();
+        render_oracle_ascension(&mut frame, &state);
+        assert_text_drawn(
+            &frame,
+            &void,
+            centered_text_box_bounds(MENU_FOOTER_BOX, &next, 1),
+            &next,
+            CYAN,
+        );
+        let mut navy = Framebuffer::default();
+        navy.clear(NAVY);
+        let mut legacy = Framebuffer::default();
+        render_level_up(&mut legacy, &state);
+        assert_text_drawn(
+            &legacy,
+            &navy,
+            centered_text_bounds(LEVEL_UP_FOOTER_Y, &next, 1),
+            &next,
+            MIST,
+        );
+
+        // A batch already queued names its own level.
+        state.batch_ends.push(2 * QUESTION_BATCH_SIZE);
+        state.batch_levels.push(5);
+        assert_eq!(state.upcoming_batch_level(), 5);
+    }
+
+    #[test]
+    fn the_legacy_lesson_footer_carries_a_woken_rune_iii_banner_readably() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        commit(&mut engine, true);
+        state_mut(&mut engine).quiz.as_mut().unwrap().lens_woke = Some((Concept::Invariant, 3));
+        let state = engine_state(&engine);
+        let run = state.quiz.as_ref().unwrap();
+        let banner = quiz_feedback_banner(run);
+        assert_eq!(banner, "INVARIANTS RUNE III");
+        assert_eq!(channels(quiz_feedback_color(run)), channels(MAGENTA));
+        let mut frame = Framebuffer::default();
+        render_quiz(&mut frame, state);
+        maybe_write_preview("quiz-legacy-rune-iii", &frame.pixels);
+        let bounds = text_bounds(5, 151, &banner, 1);
+        let x = bounds.x as usize..(bounds.x + bounds.width) as usize;
+        let y = bounds.y as usize..(bounds.y + bounds.height) as usize;
+        let banner_pixels = color_pixels_in_region(&frame.pixels, MAGENTA, x.clone(), y.clone());
+        let ground_pixels = color_pixels_in_region(&frame.pixels, INK, x.clone(), y.clone());
+        assert!(banner_pixels > 0);
+        assert_eq!(
+            banner_pixels + ground_pixels,
+            x.len() * y.len(),
+            "the banner is drawn on the footer's INK strip"
+        );
+        for stage in 1..=3 {
+            let ratio = contrast_ratio(mastery_rune_color(stage), INK);
+            assert!(ratio >= 4.5, "rune {stage} banner contrast {ratio:.2}:1");
+        }
+    }
+
+    #[test]
+    fn a_broken_ward_sends_the_miss_to_the_next_run() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        for hearts in [2, 1] {
+            commit(&mut engine, false);
+            assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().hearts, hearts);
+            assert!(matches!(retry_note(&engine), Some(RetryNote::In(_))));
+            finish_lesson(&mut engine);
+        }
+        commit(&mut engine, false);
+        assert_eq!(retry_note(&engine), Some(RetryNote::NextRun));
+        assert_eq!(RetryNote::NextRun.label(), "NEXT RUN");
+        assert_eq!(RetryNote::In(0).label(), "UP NEXT");
+        assert_eq!(RetryNote::In(9).label(), "BACK IN 9");
+        assert_eq!(RetryNote::In(12).label(), "LATER");
+        assert_eq!(RetryNote::Later.label(), "LATER");
+    }
+
+    #[test]
+    fn waking_a_lens_rune_banners_blinks_and_sounds_above_insight() {
+        use audio::Cue;
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let banner =
+            |engine: &GameEngine| quiz_feedback_banner(engine_state(engine).quiz.as_ref().unwrap());
+
+        // 0 -> 1 evidence wakes rune I.
+        focus_choice(&mut engine, true);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::LensWake(1)));
+        assert_eq!(
+            engine_state(&engine).quiz.as_ref().unwrap().lens_woke,
+            Some((Concept::Responsibility, 1))
+        );
+        assert_eq!(banner(&engine), "ROLES RUNE I");
+
+        // The newest footer rune blinks through the hold, then settles lit.
+        let rune_x = (TRIAL_LESSON_BOX.x
+            + 1
+            + (TRIAL_LESSON_BOX.width - 2 - text_width(&"W".repeat(RATIONALE_COLUMNS), 1)) / 2
+            + text_width(Concept::Responsibility.label(), 1)
+            + 4) as usize;
+        let footer_y = trial_lesson_footer_y() as usize;
+        let rune_centers = |engine: &mut GameEngine| {
+            let screen_ticks = engine_state(engine).screen_ticks;
+            let samples = (0..16u64)
+                .map(|tick| {
+                    state_mut(engine).screen_ticks = tick;
+                    let mut frame = Framebuffer::default();
+                    render_oracle_trial(&mut frame, engine_state(engine));
+                    frame_region(
+                        &frame.pixels,
+                        rune_x + 2..rune_x + 3,
+                        footer_y + 3..footer_y + 4,
+                    )
+                })
+                .collect::<HashSet<_>>();
+            state_mut(engine).screen_ticks = screen_ticks;
+            samples
+        };
+        assert_eq!(
+            rune_centers(&mut engine).len(),
+            2,
+            "the woken rune blinks during the hold"
+        );
+        state_mut(&mut engine).reduced_motion = true;
+        let still = rune_centers(&mut engine);
+        assert_eq!(still.len(), 1, "reduced motion keeps the rune lit");
+        state_mut(&mut engine).reduced_motion = false;
+        for _ in 0..QUIZ_FEEDBACK_TICKS {
+            engine.update();
+        }
+        assert_eq!(
+            rune_centers(&mut engine),
+            still,
+            "the rune settles lit once the card is live"
+        );
+        press(&mut engine, Button::A);
+
+        // 1 -> 2 evidence crosses nothing.
+        commit(&mut engine, true);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().lens_woke, None);
+        assert_eq!(banner(&engine), "CLEAR SIGHT");
+        finish_lesson(&mut engine);
+
+        // 2 -> 3 evidence wakes rune II on the same commit that crosses
+        // Insight I and flow x2: the lens rune takes the banner and the cue.
+        focus_choice(&mut engine, true);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::LensWake(2)));
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert!(crossed_insight_stage(run).is_some());
+        assert_eq!(banner(&engine), "ROLES RUNE II");
+        state_mut(&mut engine).reduced_motion = true;
+        let mut woke = Framebuffer::default();
+        render_oracle_trial(&mut woke, engine_state(&engine));
+        maybe_write_preview("07g-trial-lens-rune", &woke.pixels);
+        state_mut(&mut engine).reduced_motion = false;
+        finish_lesson(&mut engine);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().lens_woke, None);
+    }
+
+    #[test]
+    fn leaving_an_active_question_needs_a_second_b_inside_the_window() {
+        let mut engine = batch_quiz_engine(2);
+
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::Quiz);
+        assert_eq!(
+            quiz_feedback_banner(engine_state(&engine).quiz.as_ref().unwrap()),
+            "B AGAIN:LEAVE"
+        );
+
+        // Any other button disarms the confirmation.
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::Quiz);
+
+        // So does the timeout.
+        for _ in 0..QUIZ_LEAVE_CONFIRM_TICKS {
+            engine.update();
+        }
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().leave_armed, 0);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::Quiz);
+
+        // B cannot arm during the lesson hold or on the lesson card.
+        commit(&mut engine, true);
+        press(&mut engine, Button::B);
+        for _ in 0..QUIZ_FEEDBACK_TICKS {
+            engine.update();
+        }
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::Quiz);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().leave_armed, 0);
+
+        // A second B on the window's last live tick leaves the run.
+        press(&mut engine, Button::A);
+        press(&mut engine, Button::B);
+        for _ in 0..QUIZ_LEAVE_CONFIRM_TICKS - 3 {
+            engine.update();
+        }
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    fn lesson_question() -> QuizQuestion {
+        QuizQuestion {
+            question: "WHY SEPARATE GAME STATE FROM THE DEVICE SHELL?".into(),
+            choices: vec![
+                "TO KEEP RESPONSIBILITIES CLEAR".into(),
+                "TO DUPLICATE RUNTIME STATE".into(),
+                "TO HIDE INPUT TRANSITIONS".into(),
+                "TO COUPLE RENDERING TO CSS".into(),
+            ],
+            answer: 0,
+            concept: Some(Concept::Responsibility),
+            rationales: vec![
+                "THE ENGINE OWNS RULES AND TICKS, SO THE SHELL ONLY DRAWS FRAMES AND FORWARDS INPUT."
+                    .into(),
+                "ONE OWNER KEEPS STATE TRUE; A SECOND COPY IN THE SHELL WOULD DRIFT FROM THE ENGINE."
+                    .into(),
+                "INPUT EDGES ARE EXPLICIT ENGINE EVENTS; THE SPLIT DOES NOT HIDE THEM.".into(),
+                "THE ENGINE RENDERS CPU PIXELS; CSS ONLY STYLES THE DEVICE CASE.".into(),
+            ],
+            review: Review::Fresh,
+        }
+    }
+
+    /// 31-character choices and rationales that fill all three 34-column rows.
+    fn worst_case_lesson_question() -> QuizQuestion {
+        let row = format!("{} {}", "W".repeat(16), "W".repeat(17));
+        QuizQuestion {
+            question: "Q".repeat(QUIZ_QUESTION_COLUMNS),
+            choices: ["A", "B", "C", "D"]
+                .map(|letter| letter.repeat(QUIZ_CHOICE_CHARS))
+                .to_vec(),
+            answer: 0,
+            concept: Some(Concept::Invariant),
+            rationales: vec![[row.as_str(), row.as_str(), row.as_str()].join(" "); 4],
+            review: Review::Fresh,
+        }
+    }
+
+    fn lesson_state(question: QuizQuestion, correct: bool, live: bool) -> GameState {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions = vec![question];
+        cartridge.mastery.insert(
+            Concept::Responsibility,
+            learning::LensRecord {
+                first_try: 3,
+                ..Default::default()
+            },
+        );
+        GameState {
+            cartridge: Some(cartridge),
+            screen: Screen::Quiz,
+            quiz: Some(QuizRun {
+                hearts: if correct { 3 } else { 2 },
+                score: if correct { 200 } else { 100 },
+                streak: if correct { 2 } else { 0 },
+                selected: if correct { 0 } else { 1 },
+                feedback: Some((correct, if live { 0 } else { QUIZ_FEEDBACK_TICKS })),
+                retry_note: (!correct).then_some(RetryNote::In(RETRY_GAP)),
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lesson_panel_copy_stays_contained_disjoint_and_readable() {
+        let question = worst_case_lesson_question();
+        assert!(question.rationales.iter().all(|rationale| wrap_text(
+            rationale,
+            RATIONALE_COLUMNS
+        )
+        .len()
+            == RATIONALE_ROWS
+            && learning::rationale_fits(rationale)));
+        let panel = ui_box_bounds(TRIAL_LESSON_BOX);
+        let interior = LayoutBounds {
+            x: panel.x + 1,
+            y: panel.y + 1,
+            width: panel.width - 2,
+            height: panel.height - 2,
+        };
+        let screen = LayoutBounds {
+            x: 0,
+            y: 0,
+            width: WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        let question_copy = text_bounds(
+            28,
+            35 + (QUIZ_QUESTION_ROWS as i32 - 1) * LINE_HEIGHT,
+            &"Q".repeat(QUIZ_QUESTION_COLUMNS),
+            1,
+        );
+        assert!(bounds_contains(screen, panel));
+        assert!(bounds_are_disjoint(panel, question_copy));
+
+        for (name, correct, expected_lines) in [("missed", false, 8), ("correct", true, 4)] {
+            let lines = lesson_lines(&question, 1, correct, trial_lesson_copy_box());
+            assert_eq!(lines.len(), expected_lines, "{name}");
+            let column_x = lines[0].x;
+            let column_end = column_x + text_width(&"W".repeat(RATIONALE_COLUMNS), 1);
+            let footer_y = trial_lesson_footer_y();
+            let label = text_bounds(column_x, footer_y, Concept::Invariant.label(), 1);
+            let runes = LayoutBounds {
+                x: label.x + label.width + 4,
+                y: footer_y,
+                width: 19,
+                height: 7,
+            };
+            let prompt = text_bounds(
+                column_end - text_width(LESSON_CONTINUE, 1),
+                footer_y,
+                LESSON_CONTINUE,
+                1,
+            );
+            let rule = LayoutBounds {
+                x: column_x,
+                y: footer_y - 3,
+                width: column_end - column_x,
+                height: 1,
+            };
+            let mut children: Vec<(String, LayoutBounds)> = lines
+                .iter()
+                .map(|line| {
+                    (
+                        line.text.clone(),
+                        text_bounds(line.x, line.y, &line.text, 1),
+                    )
+                })
+                .collect();
+            children.extend([
+                ("lens label".to_string(), label),
+                ("lens runes".to_string(), runes),
+                ("continue prompt".to_string(), prompt),
+                ("footer rule".to_string(), rule),
+            ]);
+            // Every retry note fits between the widest lens's runes and the
+            // continue prompt with at least 4px on each side.
+            // The notes are alternatives, so only the widest joins the
+            // pairwise sibling check.
+            for note in [
+                RetryNote::In(0),
+                RetryNote::In(12),
+                RetryNote::NextRun,
+                RetryNote::In(RETRY_GAP),
+            ] {
+                let text = note.label();
+                let bounds = text_bounds(
+                    trial_retry_note_x(column_x, column_end, Some(Concept::Invariant), &text),
+                    footer_y,
+                    &text,
+                    1,
+                );
+                assert!(
+                    bounds.x - (runes.x + runes.width) >= 4
+                        && prompt.x - (bounds.x + bounds.width) >= 4,
+                    "{name} {text} {bounds:?} crowds the lens runes {runes:?} or {prompt:?}"
+                );
+                assert!(bounds_contains(interior, bounds), "{name} {text}");
+                if note == RetryNote::In(RETRY_GAP) {
+                    assert_eq!(text, "BACK IN 3");
+                    children.push((format!("retry note {text}"), bounds));
+                }
+            }
+            // Without a lens the note still clears the prompt.
+            let lensless = text_bounds(
+                trial_retry_note_x(column_x, column_end, None, "BACK IN 9"),
+                footer_y,
+                "BACK IN 9",
+                1,
+            );
+            assert!(bounds_contains(interior, lensless));
+            assert!(prompt.x - (lensless.x + lensless.width) >= 4);
+            for (child_name, child) in &children {
+                assert!(
+                    bounds_contains(interior, *child),
+                    "{name} {child_name} {child:?} exceeds the lesson panel {interior:?}"
+                );
+            }
+            for (index, (left_name, left)) in children.iter().enumerate() {
+                for (right_name, right) in &children[index + 1..] {
+                    assert!(
+                        bounds_are_disjoint(*left, *right),
+                        "{name} {left_name} overlaps {right_name}"
+                    );
+                }
+            }
+            for line in &lines {
+                assert!(
+                    bounds_contains(
+                        ui_box_bounds(trial_lesson_copy_box()),
+                        text_bounds(line.x, line.y, &line.text, 1)
+                    ),
+                    "{name} line `{}` leaves the copy region",
+                    line.text
+                );
+            }
+            assert_eq!(lines.last().unwrap().tone, LessonTone::AnswerWhy);
+            assert!(lines[0].text.starts_with(if correct { "+ " } else { "- " }));
+        }
+
+        let legacy_panel = ui_box_bounds(QUIZ_LESSON_BOX);
+        let legacy_interior = LayoutBounds {
+            x: legacy_panel.x + 1,
+            y: legacy_panel.y + 1,
+            width: legacy_panel.width - 2,
+            height: legacy_panel.height - 2,
+        };
+        let legacy_lines = lesson_lines(&question, 1, false, quiz_lesson_copy_box());
+        for (index, line) in legacy_lines.iter().enumerate() {
+            let bounds = text_bounds(line.x, line.y, &line.text, 1);
+            assert!(
+                bounds_contains(legacy_interior, bounds),
+                "legacy {}",
+                line.text
+            );
+            for other in &legacy_lines[index + 1..] {
+                assert!(bounds_are_disjoint(
+                    bounds,
+                    text_bounds(other.x, other.y, &other.text, 1)
+                ));
+            }
+        }
+        let legacy_banner = text_bounds(5, 151, "INVARIANTS RUNE III", 1);
+        let legacy_prompt = text_bounds(
+            235 - text_width(LESSON_CONTINUE, 1),
+            151,
+            LESSON_CONTINUE,
+            1,
+        );
+        assert!(bounds_are_disjoint(legacy_banner, legacy_prompt));
+        assert!(bounds_are_disjoint(legacy_panel, legacy_banner));
+        // The legacy footer adds the retry note only where it keeps a glyph
+        // cell from both the same-colored ward banner and A:CONTINUE; the
+        // widest banners drop it.
+        for banner in [
+            "WARD STRAINED",
+            "WARD FRACTURES",
+            "WARD BROKEN",
+            "INVARIANTS RUNE III",
+        ] {
+            let banner_bounds = text_bounds(5, 151, banner, 1);
+            for note in ["BACK IN 3", "UP NEXT", "NEXT RUN"] {
+                if let Some(x) = quiz_retry_note_x(banner, note) {
+                    let note_bounds = text_bounds(x, 151, note, 1);
+                    assert!(note_bounds.x - (banner_bounds.x + banner_bounds.width) >= 6);
+                    assert!(legacy_prompt.x - (note_bounds.x + note_bounds.width) >= 6);
+                }
+            }
+        }
+        // Every ward banner a miss can show keeps its note.
+        for (banner, note) in [
+            ("WARD STRAINED", "BACK IN 3"),
+            ("WARD FRACTURES", "BACK IN 3"),
+            ("WARD BROKEN", "NEXT RUN"),
+        ] {
+            assert!(quiz_retry_note_x(banner, note).is_some(), "{banner} {note}");
+        }
+        assert!(quiz_retry_note_x("INVARIANTS RUNE III", "BACK IN 3").is_none());
+        let ratio = contrast_ratio(AMBER, NAVY);
+        assert!(ratio >= 4.5, "legacy retry note contrast {ratio:.2}:1");
+        assert!(bounds_contains(screen, legacy_prompt));
+        let legacy_leave = text_bounds(
+            235 - text_width("B AGAIN:LEAVE", 1),
+            151,
+            "B AGAIN:LEAVE",
+            1,
+        );
+        assert!(bounds_are_disjoint(
+            text_bounds(5, 151, "A:ANSWER", 1),
+            legacy_leave
+        ));
+        assert!(bounds_contains(screen, legacy_leave));
+
+        for tone in [
+            LessonTone::Misconception,
+            LessonTone::MisconceptionWhy,
+            LessonTone::Answer,
+            LessonTone::AnswerWhy,
+        ] {
+            let ratio = contrast_ratio(tone.color(), VOID);
+            assert!(
+                ratio >= 4.5,
+                "{tone:?} contrast {ratio:.2}:1 on the lesson panel"
+            );
+        }
+        for (name, color) in [
+            ("lens", CYAN_DIM),
+            ("continue", CYAN),
+            ("retry note", AMBER),
+        ] {
+            let ratio = contrast_ratio(color, VOID);
+            assert!(
+                ratio >= 4.5,
+                "{name} contrast {ratio:.2}:1 on the lesson panel"
+            );
+        }
+    }
+
+    #[test]
+    fn lesson_cards_render_the_misconception_and_the_answer() {
+        let answer_line = |state: &GameState| {
+            current_lesson(state, trial_lesson_copy_box())
+                .unwrap()
+                .into_iter()
+                .find(|line| line.tone == LessonTone::Answer)
+                .unwrap()
+        };
+
+        let missed = lesson_state(lesson_question(), false, true);
+        let mut missed_frame = Framebuffer::default();
+        render_oracle_trial(&mut missed_frame, &missed);
+        maybe_write_preview("oracle-lesson-missed", &missed_frame.pixels);
+        let missed_lines = current_lesson(&missed, trial_lesson_copy_box()).unwrap();
+        assert_eq!(missed_lines[0].text, "- TO DUPLICATE RUNTIME STATE");
+        assert_eq!(missed_lines.len(), 8);
+        let pick = &missed_lines[0];
+        assert!(
+            color_pixels_in_region(
+                &missed_frame.pixels,
+                RED,
+                pick.x as usize..(pick.x + text_width(&pick.text, 1)) as usize,
+                pick.y as usize..pick.y as usize + 7,
+            ) > 0,
+            "the misconception is drawn in red"
+        );
+        let answer = answer_line(&missed);
+        assert_eq!(answer.text, "+ TO KEEP RESPONSIBILITIES CLEAR");
+        assert!(
+            color_pixels_in_region(
+                &missed_frame.pixels,
+                GREEN,
+                answer.x as usize..(answer.x + text_width(&answer.text, 1)) as usize,
+                answer.y as usize..answer.y as usize + 7,
+            ) > 0
+        );
+
+        let correct = lesson_state(lesson_question(), true, true);
+        let mut correct_frame = Framebuffer::default();
+        render_oracle_trial(&mut correct_frame, &correct);
+        maybe_write_preview("oracle-lesson-correct", &correct_frame.pixels);
+        let panel = TRIAL_LESSON_BOX;
+        let panel_x = panel.x as usize..(panel.x + panel.width) as usize;
+        let panel_y = panel.y as usize..(panel.y + panel.height) as usize;
+        assert_eq!(
+            color_pixels_in_region(&correct_frame.pixels, RED, panel_x.clone(), panel_y.clone()),
+            0,
+            "a correct lesson shows no misconception"
+        );
+        assert_eq!(answer_line(&correct).tone, LessonTone::Answer);
+
+        let held = lesson_state(lesson_question(), true, false);
+        let mut held_frame = Framebuffer::default();
+        render_oracle_trial(&mut held_frame, &held);
+        let footer_y = trial_lesson_footer_y() as usize;
+        assert_ne!(
+            frame_region(&held_frame.pixels, panel_x.clone(), footer_y..footer_y + 7),
+            frame_region(
+                &correct_frame.pixels,
+                panel_x.clone(),
+                footer_y..footer_y + 7
+            ),
+            "A:CONTINUE appears only once input is live"
+        );
+
+        let mut legacy = lesson_state(
+            QuizQuestion {
+                rationales: Vec::new(),
+                concept: None,
+                ..lesson_question()
+            },
+            false,
+            true,
+        );
+        legacy.cartridge.as_mut().unwrap().codequest = None;
+        let legacy_lines = current_lesson(&legacy, quiz_lesson_copy_box()).unwrap();
+        assert_eq!(
+            legacy_lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "- TO DUPLICATE RUNTIME STATE",
+                "+ TO KEEP RESPONSIBILITIES CLEAR"
+            ],
+            "legacy questions show only the verdict and answer"
+        );
+        let mut legacy_frame = Framebuffer::default();
+        render_quiz(&mut legacy_frame, &legacy);
+        maybe_write_preview("quiz-lesson-legacy", &legacy_frame.pixels);
+
+        let mut untemplated = lesson_state(lesson_question(), false, true);
+        untemplated.cartridge.as_mut().unwrap().codequest = None;
+        let mut untemplated_frame = Framebuffer::default();
+        render_quiz(&mut untemplated_frame, &untemplated);
+        maybe_write_preview("quiz-lesson-rationales", &untemplated_frame.pixels);
+        assert!(
+            color_pixels_in_region(
+                &untemplated_frame.pixels,
+                RED,
+                QUIZ_LESSON_BOX.x as usize..(QUIZ_LESSON_BOX.x + QUIZ_LESSON_BOX.width) as usize,
+                QUIZ_LESSON_BOX.y as usize..(QUIZ_LESSON_BOX.y + QUIZ_LESSON_BOX.height) as usize,
+            ) > 0,
+            "the untemplated quiz shows the misconception too"
+        );
+
+        let worst = lesson_state(worst_case_lesson_question(), false, true);
+        let mut worst_frame = Framebuffer::default();
+        render_oracle_trial(&mut worst_frame, &worst);
+        maybe_write_preview("oracle-lesson-worst-case", &worst_frame.pixels);
+
+        // The widest lens banner beside the widest tier label.
+        let mut woke = lesson_state(worst_case_lesson_question(), true, true);
+        let run = woke.quiz.as_mut().unwrap();
+        run.level = 4;
+        run.lens_woke = Some((Concept::Invariant, 3));
+        woke.cartridge.as_mut().unwrap().mastery.insert(
+            Concept::Invariant,
+            learning::LensRecord {
+                first_try: 5,
+                ..Default::default()
+            },
+        );
+        let mut woke_frame = Framebuffer::default();
+        render_oracle_trial(&mut woke_frame, &woke);
+        maybe_write_preview("oracle-lesson-lens-worst-case", &woke_frame.pixels);
+        let banner_x = trial_banner_x("INVARIANTS RUNE III") as usize;
+        assert!(
+            color_pixels_in_region(
+                &woke_frame.pixels,
+                MAGENTA,
+                banner_x..banner_x + text_width("INVARIANTS RUNE III", 1) as usize,
+                20..27,
+            ) > 0,
+            "the rune III banner is drawn in the stage's magenta"
+        );
+    }
+
+    fn request_seqs(effects: &[EngineEffect]) -> Vec<(u32, u64)> {
+        effects
+            .iter()
+            .filter_map(|effect| match effect {
+                EngineEffect::RequestQuestions { level, seq, .. } => Some((*level, *seq)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn scene_spec(
+        id: &str,
+        handler: SceneHandler,
+        transitions: &[(SceneSignal, &str, Option<u64>)],
+    ) -> SceneSpec {
+        SceneSpec {
+            id: id.into(),
+            handler,
+            transitions: transitions
+                .iter()
+                .map(|(signal, target, after_ticks)| SceneTransition {
+                    signal: *signal,
+                    target: (*target).into(),
+                    after_ticks: *after_ticks,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_first_request_that_fails_before_power_on_is_retried_before_the_oracle() {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        assert_eq!(request_seqs(&engine.take_effects()).len(), 1);
+        // The unverified provider answers at once with nothing.
+        deliver(&mut engine, "/tmp/engine-test", Vec::new());
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        assert!(
+            request_seqs(&engine.take_effects()).is_empty(),
+            "the retry delay still holds"
+        );
+        assert_eq!(
+            creation_oracle_status(engine_state(&engine), true),
+            "VISION CLOUDY - RETRYING"
+        );
+
+        let mut requests = Vec::new();
+        for _ in 0..300 {
+            engine.update();
+            requests.extend(request_seqs(&engine.take_effects()));
+        }
+
+        assert_ne!(engine.screen(), Screen::Oracle);
+        assert_eq!(requests.len(), 1, "one catch-up request before the Oracle");
+        assert_eq!(requests[0].0, 1);
+        let state = engine_state(&engine);
+        assert!(state.questions_loading);
+        assert_eq!(creation_oracle_status(state, true), "ORACLE IS WRITING");
+        assert_eq!(creation_oracle_status(state, false), "ORACLE IS WRITING...");
+    }
+
+    #[test]
+    fn hero_creation_status_names_the_oracles_real_state() {
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions.clear();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            ..Default::default()
+        };
+        assert_eq!(creation_oracle_status(&state, true), "CONTACTING ORACLE");
+        assert_eq!(
+            creation_oracle_status(&state, false),
+            "CONTACTING ORACLE..."
+        );
+        state.question_retry_ticks = 12;
+        assert_eq!(
+            creation_oracle_status(&state, true),
+            "VISION CLOUDY - RETRYING"
+        );
+        assert_eq!(
+            creation_oracle_status(&state, false),
+            "ORACLE WILL RETRY..."
+        );
+        state.questions_loading = true;
+        assert_eq!(creation_oracle_status(&state, true), "ORACLE IS WRITING");
+        state.cartridge.as_mut().unwrap().questions = vec![concept_question(0)];
+        assert_eq!(creation_oracle_status(&state, true), "ORACLE READY");
+        // A question the session already answered is not ready for a new run.
+        state.consumed_questions = 1;
+        assert_eq!(creation_oracle_status(&state, true), "ORACLE IS WRITING");
+    }
+
+    #[test]
+    fn a_new_run_drops_answered_questions_and_brings_outstanding_misses_back_first() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let first_questions: Vec<_> = (0..3).map(concept_question).collect();
+        assert_eq!(
+            current_question(&engine).question,
+            first_questions[0].question
+        );
+        let broken_ward_slot = {
+            for _ in 0..2 {
+                commit(&mut engine, false);
+                finish_lesson(&mut engine);
+            }
+            let slot = answer_slot(&engine);
+            commit(&mut engine, false);
+            finish_lesson(&mut engine);
+            slot
+        };
+        assert_eq!(engine.screen(), Screen::GameOver);
+
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::CharacterCreation);
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::Oracle);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+
+        // The ward-breaking miss had no in-run retry, so it returns first as a
+        // review in new slots; the two misses whose review copies were never
+        // reached come back through those copies, not as duplicates.
+        let state = engine_state(&engine);
+        let deck: Vec<_> = state
+            .cartridge
+            .as_ref()
+            .unwrap()
+            .questions
+            .iter()
+            .map(|question| (question.question.clone(), question.review))
+            .collect();
+        let expected: Vec<_> = [
+            (2, Review::InSession),
+            (3, Review::Fresh),
+            (0, Review::InSession),
+            (1, Review::InSession),
+            (4, Review::Fresh),
+            (5, Review::Fresh),
+        ]
+        .into_iter()
+        .map(|(index, review)| (concept_question(index).question, review))
+        .collect();
+        assert_eq!(deck, expected);
+        assert_eq!(state.batch_ends, vec![QUESTION_BATCH_SIZE]);
+        let run = state.quiz.as_ref().unwrap();
+        assert_eq!((run.question, run.level, run.completed_batches), (0, 1, 0));
+        assert_eq!(run.hearts, 3);
+        assert_eq!(run.attempt, 1);
+        assert_ne!(answer_slot(&engine), broken_ward_slot);
+        assert_ne!(
+            current_question(&engine).question,
+            first_questions[0].question
+        );
+    }
+
+    #[test]
+    fn short_deliveries_merge_until_a_full_batch_is_survived() {
+        let mut engine = waiting_oracle_engine();
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (0..4).map(concept_question).collect(),
+        );
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        assert_eq!(engine_state(&engine).batch_ends, vec![4]);
+        // The open batch is topped up at its own level.
+        assert_eq!(
+            request_seqs(&engine.take_effects())
+                .iter()
+                .map(|(level, _)| *level)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (4..8).map(concept_question).collect(),
+        );
+        assert!(engine_state(&engine).pending_questions.is_some());
+
+        for _ in 0..4 {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(
+            engine.screen(),
+            Screen::Oracle,
+            "four answers are not a batch"
+        );
+        engine.update();
+        {
+            let state = engine_state(&engine);
+            assert_eq!(state.batch_ends, vec![6, 8]);
+            assert_eq!(state.batch_levels, vec![1, 1]);
+            assert_eq!(state.quiz.as_ref().unwrap().level, 1);
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        // The new questions follow one level-up (the full first batch), so
+        // the prefetch asks for level 2, not a level already queued.
+        assert_eq!(
+            request_seqs(&engine.take_effects())
+                .iter()
+                .map(|(level, _)| *level)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+
+        for _ in 0..2 {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!((run.question, run.level, run.completed_batches), (6, 2, 1));
+    }
+
+    #[test]
+    fn rebatching_splits_saved_batches_into_full_batches_with_their_levels() {
+        let fresh = |count| (0..count).map(concept_question).collect::<Vec<_>>();
+        assert_eq!(
+            rebatch(&[1, 7], &[2, 3], &fresh(7)),
+            (vec![6, 7], vec![3, 3])
+        );
+        assert_eq!(rebatch(&[], &[], &fresh(4)), (vec![4], vec![1]));
+        assert_eq!(
+            rebatch(&[6, 12], &[1, 2], &fresh(12)),
+            (vec![6, 12], vec![1, 2])
+        );
+        assert_eq!(rebatch(&[3], &[1], &[]), (vec![], vec![]));
+        // Review copies ride along in a batch without counting toward it.
+        let mut deck = fresh(9);
+        deck[0].review = Review::InSession;
+        deck[3].review = Review::Spaced;
+        assert_eq!(rebatch(&[9], &[1], &deck), (vec![8, 9], vec![1, 1]));
+    }
+
+    #[test]
+    fn review_copies_do_not_fill_a_short_batch() {
+        let mut engine = waiting_oracle_engine();
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (0..4).map(concept_question).collect(),
+        );
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (4..8).map(concept_question).collect(),
+        );
+        assert!(engine_state(&engine).pending_questions.is_some());
+
+        // Two misses add two review copies to the short batch: six questions,
+        // but only four of them new.
+        for correct in [false, false, true, true, true, true] {
+            commit(&mut engine, correct);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(
+            engine.screen(),
+            Screen::Oracle,
+            "four new questions and two reviews are not a batch"
+        );
+        engine.update();
+        {
+            let state = engine_state(&engine);
+            let run = state.quiz.as_ref().unwrap();
+            assert_eq!((run.question, run.level, run.completed_batches), (6, 1, 0));
+            assert_eq!(
+                state.batch_ends,
+                vec![8, 10],
+                "the held delivery tops the batch up to six new questions"
+            );
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        for _ in 0..2 {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!((run.question, run.level, run.completed_batches), (8, 2, 1));
+    }
+
+    #[test]
+    fn a_review_that_outlives_its_run_returns_in_a_new_layout() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let missed = concept_question(0).question;
+        let first_slot = answer_slot(&engine);
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        for _ in 0..RETRY_GAP {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(current_question(&engine).question, missed);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().attempt, 1);
+        let review_slot = answer_slot(&engine);
+        assert_ne!(review_slot, first_slot);
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+
+        // Leave before the second review copy comes up, then start again.
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        press(&mut engine, Button::A);
+        press(&mut engine, Button::Start);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        while current_question(&engine).question != missed {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(current_question(&engine).review, Review::InSession);
+        assert_eq!(
+            engine_state(&engine).quiz.as_ref().unwrap().attempt,
+            2,
+            "the rotation continues from the run that missed it"
+        );
+        assert_ne!(answer_slot(&engine), review_slot);
+    }
+
+    #[test]
+    fn a_saved_review_resumes_its_choice_rotation_after_a_relaunch() {
+        let mut review = concept_question(0);
+        review.review = Review::Spaced;
+        let identity = question_identity(&review.question);
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = vec![review];
+        cartridge.question_attempts.insert(identity.clone(), 2);
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        for button in [Button::Start, Button::A, Button::Start] {
+            press(&mut engine, button);
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(run.attempt, 2);
+        assert_eq!(
+            run.order,
+            learning::presentation_order(&identity, 2).to_vec()
+        );
+
+        commit(&mut engine, false);
+        assert_eq!(
+            engine_state(&engine)
+                .cartridge
+                .as_ref()
+                .unwrap()
+                .question_attempts[&identity],
+            3
+        );
+    }
+
+    #[test]
+    fn a_delivery_never_queues_a_question_already_in_the_deck() {
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..2).map(concept_question).collect();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            batch_ends: vec![2],
+            batch_levels: vec![1],
+            ..Default::default()
+        };
+        let mut respelled = concept_question(0);
+        respelled.question = respelled.question.to_ascii_lowercase();
+        append_question_batch(
+            &mut state,
+            vec![
+                concept_question(1),
+                respelled,
+                concept_question(2),
+                concept_question(2),
+            ],
+            1,
+        );
+        assert_eq!(
+            state
+                .cartridge
+                .as_ref()
+                .unwrap()
+                .questions
+                .iter()
+                .map(|question| question.question.clone())
+                .collect::<Vec<_>>(),
+            (0..3)
+                .map(|index| concept_question(index).question)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(state.batch_ends, vec![3]);
+    }
+
+    #[test]
+    fn a_regenerated_missed_question_plays_as_a_review_and_redeems() {
+        let mut engine = waiting_oracle_engine();
+        // The loader marks a regenerated stem the player missed as a
+        // same-launch review.
+        let mut regenerated = concept_question(0);
+        regenerated.review = Review::InSession;
+        let identity = question_identity(&regenerated.question);
+        deliver(&mut engine, "/tmp/engine-test", vec![regenerated]);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(run.attempt, 1);
+        assert_eq!(
+            run.order,
+            learning::presentation_order(&identity, 1).to_vec(),
+            "not the order the player missed it in"
+        );
+
+        let _ = engine.take_effects();
+        commit(&mut engine, true);
+        assert!(engine_state(&engine).quiz.as_ref().unwrap().redeemed);
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                if evidence.correct && evidence.review == Review::InSession
+        )));
+    }
+
+    #[test]
+    fn leaving_the_run_by_any_manifest_route_ends_it() {
+        use SceneHandler as H;
+        use SceneSignal as S;
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..2 * QUESTION_BATCH_SIZE).map(concept_question).collect();
+        cartridge.machine = Box::new(
+            SceneMachineDefinition::compile(
+                "menu",
+                vec![
+                    scene_spec(
+                        "menu",
+                        H::QuizMenu,
+                        &[(S::NewRun, "oracle", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "oracle",
+                        H::Oracle,
+                        &[(S::QuestionsReady, "quiz", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "quiz",
+                        H::ConceptQuiz,
+                        &[
+                            (S::NeedsQuestion, "oracle", None),
+                            (S::BatchComplete, "menu", None),
+                            (S::HeartsEmpty, "menu", None),
+                            (S::Back, "menu", None),
+                        ],
+                    ),
+                ],
+            )
+            .unwrap(),
+        );
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        press(&mut engine, Button::A);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        for _ in 0..QUESTION_BATCH_SIZE {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        engine.update();
+
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Oracle);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(
+            engine.screen(),
+            Screen::Quiz,
+            "the ready questions are asked"
+        );
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(
+            (run.question, run.level, run.completed_batches, run.score),
+            (0, 1, 0, 0),
+            "a fresh run"
+        );
+        assert_eq!(
+            current_question(&engine).question,
+            concept_question(QUESTION_BATCH_SIZE).question
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aborting_a_quest_stops_its_whole_process_tree_and_frees_the_slot() {
+        let marker = std::env::temp_dir().join(format!("cqa-quest-abort-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let (sender, receiver) = mpsc::channel();
+        let slot = Arc::new(Mutex::new(None));
+        let loader: QuestionLoader = Arc::new(|_, _, _| Ok(Vec::new()));
+        let recorder: AnsweredQuestionRecorder = Arc::new(|_, _| {});
+        let effect =
+            |effect: EngineEffect| handle_effect(effect, &sender, &slot, &loader, &recorder);
+        let next = || {
+            receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the quest should report")
+        };
+
+        // The shell's child holds the output pipes, as cargo or npm would.
+        effect(EngineEffect::RunQuest {
+            command: format!(
+                "(sleep 3; touch '{}') & echo started; wait",
+                marker.display()
+            ),
+            quest: 1,
+        });
+        while !matches!(next(), EngineCommand::QuestOutput { line, .. } if line == "started") {}
+        let aborted = Instant::now();
+        effect(EngineEffect::AbortQuest);
+        loop {
+            if let EngineCommand::QuestDone { success, quest } = next() {
+                assert!(!success);
+                assert_eq!(quest, 1);
+                break;
+            }
+        }
+        // The child sleeps 3 s, so finishing well inside that proves the abort
+        // did not wait it out. The bound leaves room for slow CI runners (a
+        // macOS runner exceeded half of QUEST_OUTPUT_GRACE); whether the child
+        // itself was stopped is checked through its marker below.
+        let abort_time = aborted.elapsed();
+        assert!(
+            abort_time < Duration::from_secs(2),
+            "the abort did not wait out the quest's 3 s child ({abort_time:?})"
+        );
+
+        effect(EngineEffect::RunQuest {
+            command: "echo again".into(),
+            quest: 2,
+        });
+        let mut lines = Vec::new();
+        let success = loop {
+            match next() {
+                EngineCommand::QuestOutput { line, quest, .. } => {
+                    assert_eq!(quest, 2);
+                    lines.push(line);
+                }
+                EngineCommand::QuestDone { success, .. } => break success,
+                _ => {}
+            }
+        };
+        assert_eq!(lines, ["again"], "the next quest is not refused");
+        assert!(success);
+
+        thread::sleep(Duration::from_millis(3_500).saturating_sub(aborted.elapsed()));
+        assert!(
+            !marker.exists(),
+            "the aborted quest's children were stopped"
+        );
+    }
+
+    #[test]
+    fn saved_batch_levels_drive_the_prefetch_while_the_run_starts_at_initiate() {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(concept_question).collect();
+        cartridge.question_batch_ends = vec![QUESTION_BATCH_SIZE];
+        cartridge.question_batch_levels = vec![3];
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        let _ = engine.take_effects();
+        for button in [Button::Start, Button::A, Button::Start] {
+            press(&mut engine, button);
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        assert_eq!(engine_state(&engine).quiz.as_ref().unwrap().level, 1);
+        assert_eq!(
+            request_seqs(&engine.take_effects())
+                .iter()
+                .map(|(level, _)| *level)
+                .collect::<Vec<_>>(),
+            vec![4],
+            "a queued level-3 batch is not requested again"
+        );
+    }
+
+    #[test]
+    fn a_superseded_question_reply_cannot_land() {
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions.clear();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(cartridge.clone())),
+        );
+        let first = request_seqs(&engine.take_effects());
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        let second = request_seqs(&engine.take_effects());
+        assert_eq!((first.len(), second.len()), (1, 1));
+        assert_ne!(first[0].1, second[0].1);
+
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                result: Ok(vec![concept_question(0)]),
+                seq: first[0].1,
+            },
+        );
+        let state = engine_state(&engine);
+        assert!(
+            state.questions_loading,
+            "the newer request is still in flight"
+        );
+        assert_eq!(state.question_count(), 0);
+
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                result: Ok(vec![concept_question(1)]),
+                seq: second[0].1,
+            },
+        );
+        let state = engine_state(&engine);
+        assert!(!state.questions_loading);
+        assert_eq!(
+            state.cartridge.as_ref().unwrap().questions[0].question,
+            concept_question(1).question
+        );
+    }
+
+    fn oracle_line_texts(state: &GameState) -> Vec<String> {
+        state
+            .oracle_line()
+            .map(|line| {
+                oracle_line_segments(&line, SANCTUM_ORACLE_LINE_BOX.width)
+                    .into_iter()
+                    .map(|(text, _)| text)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn question_failures_reach_the_oracle_line_and_clear_on_success() {
+        let mut engine = waiting_oracle_engine();
+        let current = engine_state(&engine).question_request_seq;
+        assert!(engine_state(&engine).questions_loading);
+
+        // A superseded request's failure, or another cartridge's, says
+        // nothing about the request still in flight.
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                result: Err("TIMED OUT".into()),
+                seq: current.wrapping_sub(1),
+            },
+        );
+        fail(&mut engine, "/tmp/other-cartridge", "TIMED OUT");
+        let state = engine_state(&engine);
+        assert!(state.questions_loading, "the current request is in flight");
+        assert_eq!(state.question_failure, None);
+        assert_eq!(state.question_retry_ticks, 0);
+        assert_eq!(state.oracle_line(), None);
+
+        fail(&mut engine, "/tmp/engine-test", "timed out");
+        let state = engine_state(&engine);
+        assert!(!state.questions_loading);
+        assert_eq!(state.question_failure.as_deref(), Some("TIMED OUT"));
+        assert_eq!(
+            state.oracle_line(),
+            Some(OracleLine::Failure {
+                reason: "TIMED OUT".into(),
+                retry_in: Some(5),
+            })
+        );
+        assert_eq!(oracle_line_texts(state), ["TIMED OUT", "- RETRY IN 5S"]);
+        let frame = engine.frame();
+        let line = LEGACY_ORACLE_LINE_BOX;
+        let line_x = line.x as usize..(line.x + line.width) as usize;
+        let line_y = line.y as usize..(line.y + line.height) as usize;
+        assert!(
+            color_pixels_in_region(frame, AMBER, line_x.clone(), line_y.clone()) > 0,
+            "the Datafall header names the failure"
+        );
+
+        let mut requests = Vec::new();
+        for _ in 0..300 {
+            engine.update();
+            requests.extend(request_seqs(&engine.take_effects()));
+        }
+        assert_eq!(requests.len(), 1, "the existing retry delay still holds");
+        let state = engine_state(&engine);
+        assert!(state.questions_loading);
+        assert_eq!(
+            oracle_line_texts(state),
+            ["TIMED OUT", "- RETRYING"],
+            "without a journal the line keeps the last reason while retrying"
+        );
+
+        deliver(&mut engine, "/tmp/engine-test", vec![concept_question(0)]);
+        let state = engine_state(&engine);
+        assert_eq!(state.question_failure, None, "success clears the reason");
+        assert_eq!(state.oracle_line(), None);
+        let mut cleared = Framebuffer::default();
+        render_oracle(&mut cleared, state);
+        assert_eq!(
+            color_pixels_in_region(&cleared.pixels, AMBER, line_x, line_y),
+            0,
+            "the header returns to one row"
+        );
+    }
+
+    #[test]
+    fn an_empty_batch_is_reported_as_a_failure_too() {
+        let mut engine = waiting_oracle_engine();
+        deliver(&mut engine, "/tmp/engine-test", Vec::new());
+        let state = engine_state(&engine);
+        assert_eq!(state.question_failure.as_deref(), Some("NO NEW QUESTIONS"));
+        assert!(state.question_retry_ticks > 0);
+
+        // Inserting a cartridge forgets the previous cartridge's failure.
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        assert_eq!(engine_state(&engine).question_failure, None);
+    }
+
+    #[test]
+    fn failure_reasons_are_sanitized_to_one_short_device_line() {
+        assert_eq!(oracle_failure_reason("timed out"), "TIMED OUT");
+        assert_eq!(
+            oracle_failure_reason("CLI\nUNAVAILABLE \u{2014} \u{2713} not found"),
+            "CLI UNAVAILABLE NOT"
+        );
+        assert_eq!(
+            oracle_failure_reason("ONE TWO THREE FOUR FIVE SIX SEVEN"),
+            "ONE TWO THREE FOUR FIVE"
+        );
+        assert_eq!(
+            oracle_failure_reason("SUPERCALIFRAGILISTICEXPIALIDOCIOUS"),
+            "SUPERCALIFRAGILISTICEXPI"
+        );
+        for empty in ["", "   ", "\u{2603}\u{2603}"] {
+            assert_eq!(oracle_failure_reason(empty), "GENERATION FAILED");
+        }
+        for reason in [
+            "RATE LIMITED",
+            "a much longer reason than the oracle line has room to show",
+        ] {
+            let short = oracle_failure_reason(reason);
+            assert!(short.chars().count() <= ORACLE_FAILURE_CHARS, "{short}");
+            assert!(short
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == ' '));
+        }
+    }
+
+    fn recall_lesson(answer: &str, concept: Option<Concept>, outstanding: bool) -> Lesson {
+        Lesson {
+            question: format!("WHAT IS {answer}?"),
+            answer: answer.into(),
+            rationale: String::new(),
+            concept,
+            outstanding,
+            misconception: None,
+            peeked: false,
+            spaced_check: false,
+        }
+    }
+
+    /// A waiting Oracle state whose journal holds `lessons`.
+    fn waiting_state_with(lessons: Vec<Lesson>) -> GameState {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions.clear();
+        cartridge.lessons = lessons;
+        GameState {
+            cartridge: Some(cartridge),
+            ai_provider: Some("CLAUDE".into()),
+            quiz: Some(QuizRun::new()),
+            questions_loading: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_oracle_recalls_missed_lessons_first_and_cycles_the_journal() {
+        let mut state = waiting_state_with(vec![
+            recall_lesson("OLDEST CLEARED", Some(Concept::Purpose), false),
+            recall_lesson("OLDER MISS", Some(Concept::Interaction), true),
+            recall_lesson("NEWER CLEARED", None, false),
+            recall_lesson("NEWEST MISS", Some(Concept::Invariant), true),
+        ]);
+        let answer_at = |state: &mut GameState, ticks: u64| {
+            state.screen_ticks = ticks;
+            state.recalled_lesson().map(|lesson| lesson.answer.clone())
+        };
+        let expected = [
+            "NEWEST MISS",
+            "OLDER MISS",
+            "NEWER CLEARED",
+            "OLDEST CLEARED",
+        ];
+        for (slot, answer) in expected.iter().enumerate() {
+            let start = slot as u64 * ORACLE_RECALL_TICKS;
+            assert_eq!(answer_at(&mut state, start).as_deref(), Some(*answer));
+            assert_eq!(
+                answer_at(&mut state, start + ORACLE_RECALL_TICKS - 1).as_deref(),
+                Some(*answer),
+                "each lesson holds for its whole slot"
+            );
+        }
+        assert_eq!(
+            answer_at(&mut state, 4 * ORACLE_RECALL_TICKS).as_deref(),
+            Some("NEWEST MISS"),
+            "the cycle wraps back to the top"
+        );
+
+        state.screen_ticks = 0;
+        assert_eq!(
+            oracle_line_texts(&state),
+            ["REVIEW", "INVARIANTS:", "NEWEST MISS"]
+        );
+        state.screen_ticks = 2 * ORACLE_RECALL_TICKS;
+        assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
+
+        // A failure waiting out its retry delay takes the line and keeps it
+        // for the retry's first second; a retry still in flight after that
+        // gives the line back to the journal.
+        state.question_failure = Some("RATE LIMITED".into());
+        state.questions_loading = false;
+        state.question_retry_ticks = 61;
+        assert_eq!(oracle_line_texts(&state), ["RATE LIMITED", "- RETRY IN 2S"]);
+        state.question_retry_ticks = 0;
+        state.questions_loading = true;
+        state.question_request_ticks = ORACLE_RETRY_HOLD_TICKS - 1;
+        assert_eq!(oracle_line_texts(&state), ["RATE LIMITED", "- RETRYING"]);
+        state.question_request_ticks = ORACLE_RETRY_HOLD_TICKS;
+        assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
+
+        // A ready question has no failure to explain, but recall continues.
+        state.question_retry_ticks = 120;
+        state.cartridge.as_mut().unwrap().questions = vec![concept_question(0)];
+        assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
+
+        assert_eq!(waiting_state_with(Vec::new()).oracle_line(), None);
+    }
+
+    fn recalled_answers(state: &GameState) -> Vec<String> {
+        state
+            .recall_order()
+            .into_iter()
+            .map(|lesson| lesson.answer.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_oracle_never_shows_the_answer_of_a_review_still_queued() {
+        let missed = concept_question(0);
+        let cleared = concept_question(1);
+        let missed_answer = missed.choices[missed.answer].clone();
+        let cleared_answer = cleared.choices[cleared.answer].clone();
+        let mut state = waiting_state_with(Vec::new());
+        {
+            let cartridge = state.cartridge.as_mut().unwrap();
+            record_lesson(&mut cartridge.lessons, &cleared, true, cleared.answer);
+            record_lesson(
+                &mut cartridge.lessons,
+                &missed,
+                false,
+                (missed.answer + 1) % 4,
+            );
+            cartridge.questions = vec![missed.clone(), cleared.clone(), concept_question(2)];
+        }
+        state.batch_ends = vec![3];
+        state.batch_levels = vec![1];
+        state.consumed_questions = 2;
+        state.questions_loading = false;
+
+        // Between runs the whole deck is still ahead of the player.
+        assert_eq!(recalled_answers(&state), [cleared_answer.as_str()]);
+
+        // The next run opens with the miss as a review, after the Oracle's
+        // ready dwell: that dwell must not print the review's answer.
+        state.transition(Screen::Oracle);
+        let deck = &state.cartridge.as_ref().unwrap().questions;
+        assert!(deck[0].review.is_review() && deck[0].question == missed.question);
+        for ticks in 0..75 {
+            state.screen_ticks = ticks;
+            let texts = oracle_line_texts(&state).join(" ");
+            assert!(
+                !texts.contains(&missed_answer),
+                "tick {ticks}: the queued review's answer is shown: {texts}"
+            );
+        }
+        state.screen_ticks = 0;
+        assert_eq!(
+            oracle_line_texts(&state),
+            ["RECALL", "ROLES:", cleared_answer.as_str()],
+            "a cleared lesson is still recalled with its answer"
+        );
+
+        // Once the review is behind the player, its lesson may be recalled.
+        state.quiz.as_mut().unwrap().question = 1;
+        assert_eq!(recalled_answers(&state), [missed_answer, cleared_answer]);
+    }
+
+    #[test]
+    fn a_fast_failing_retry_never_flashes_a_lesson_and_recall_starts_fresh() {
+        let mut engine = waiting_oracle_engine();
+        state_mut(&mut engine).cartridge.as_mut().unwrap().lessons = journal_lessons();
+        fail(&mut engine, "/tmp/engine-test", "AI DISABLED");
+        for cycle in 0..3 {
+            // The countdown runs out, the retry fires, and it fails again
+            // within a few frames, as CQA_NO_AI or a missing CLI does.
+            while engine_state(&engine).question_retry_ticks > 0 || cycle_start(&engine) {
+                engine.update();
+                assert!(
+                    matches!(
+                        engine_state(&engine).oracle_line(),
+                        Some(OracleLine::Failure { .. })
+                    ),
+                    "cycle {cycle}: the countdown keeps the failure"
+                );
+            }
+            for _ in 0..4 {
+                engine.update();
+                assert_eq!(
+                    oracle_line_texts(engine_state(&engine)),
+                    ["AI DISABLED", "- RETRYING"],
+                    "cycle {cycle}: a retry in flight keeps the failure"
+                );
+            }
+            fail(&mut engine, "/tmp/engine-test", "AI DISABLED");
+        }
+
+        // A slow retry hands the line to the journal after the hold, from the
+        // top of the recall order and written in from its first character.
+        while engine_state(&engine).question_retry_ticks > 0 || cycle_start(&engine) {
+            engine.update();
+        }
+        let mut held = 0;
+        while matches!(
+            engine_state(&engine).oracle_line(),
+            Some(OracleLine::Failure { .. })
+        ) {
+            engine.update();
+            held += 1;
+            assert!(held <= ORACLE_RETRY_HOLD_TICKS + 1, "the hold ends");
+        }
+        let state = engine_state(&engine);
+        assert!(state.questions_loading);
+        let line = state.oracle_line().unwrap();
+        let top = state.recall_order()[0].answer.clone();
+        assert!(
+            matches!(&line, OracleLine::Recall { answer, .. } if *answer == top),
+            "{line:?} does not start at {top}"
+        );
+        assert_eq!(
+            state.oracle_line_reveal(&line),
+            ORACLE_RECALL_REVEAL_PER_TICK
+        );
+    }
+
+    /// True while a failed request waits for the tick that sends its retry.
+    fn cycle_start(engine: &GameEngine) -> bool {
+        let state = engine_state(engine);
+        !state.questions_loading && state.question_failure.is_some()
+    }
+
+    #[test]
+    fn recalled_lessons_are_written_in_but_stay_static_under_reduced_motion() {
+        let header = |frame: &Framebuffer| {
+            frame.pixels[..WIDTH * SANCTUM_TALL_HEADER_HEIGHT as usize * 4].to_vec()
+        };
+        let mut state = waiting_state_with(journal_lessons());
+        let slot_start = ORACLE_RECALL_TICKS;
+        state.screen_ticks = slot_start;
+        let line = state.oracle_line().unwrap();
+        assert_eq!(
+            state.oracle_line_reveal(&line),
+            ORACLE_RECALL_REVEAL_PER_TICK
+        );
+        let mut arriving = Framebuffer::default();
+        render_oracle_sanctum(&mut arriving, &state);
+        maybe_write_preview("06f-sanctum-recall-arriving", &arriving.pixels);
+        state.screen_ticks = slot_start + 60;
+        let mut settled = Framebuffer::default();
+        render_oracle_sanctum(&mut settled, &state);
+        assert_ne!(
+            header(&arriving),
+            header(&settled),
+            "a new lesson is written in with motion"
+        );
+
+        state.reduced_motion = true;
+        assert_eq!(state.oracle_line_reveal(&line), usize::MAX);
+        for ticks in [
+            slot_start,
+            slot_start + 1,
+            slot_start + 30,
+            slot_start + 239,
+        ] {
+            state.screen_ticks = ticks;
+            let mut still = Framebuffer::default();
+            render_oracle_sanctum(&mut still, &state);
+            assert_eq!(
+                header(&still),
+                header(&settled),
+                "reduced motion shows the whole line at once and holds it still"
+            );
+        }
+    }
+
+    #[test]
+    fn recall_never_changes_datafall_play() {
+        let mut plain = waiting_oracle_engine();
+        let mut recalling = waiting_oracle_engine();
+        recalling
+            .app
+            .world_mut()
+            .resource_mut::<GameState>()
+            .cartridge
+            .as_mut()
+            .unwrap()
+            .lessons = journal_lessons();
+        for engine in [&mut plain, &mut recalling] {
+            issue(
+                engine,
+                EngineCommand::Input {
+                    button: Button::Right,
+                    pressed: true,
+                },
+            );
+            for _ in 0..240 {
+                engine.update();
+            }
+        }
+        let play = |engine: &GameEngine| {
+            let state = engine_state(engine);
+            format!(
+                "{:?} {} {} {}",
+                state.oracle_drops, state.oracle_hero_x, state.oracle_data, state.oracle_bug_hits
+            )
+        };
+        assert!(engine_state(&recalling).oracle_line().is_some());
+        assert_eq!(play(&plain), play(&recalling));
+        assert_eq!(recalling.screen(), Screen::Oracle);
+    }
+
+    #[test]
+    fn the_oracle_line_stays_contained_disjoint_and_readable() {
+        let screen = LayoutBounds {
+            x: 0,
+            y: 0,
+            width: WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        let longest_answer = "W".repeat(QUIZ_CHOICE_CHARS);
+        let worst_lines = [
+            OracleLine::Failure {
+                reason: "W".repeat(ORACLE_FAILURE_CHARS),
+                retry_in: Some(5),
+            },
+            OracleLine::Failure {
+                reason: "W".repeat(ORACLE_FAILURE_CHARS),
+                retry_in: None,
+            },
+            OracleLine::Recall {
+                outstanding: true,
+                concept: Some(Concept::Invariant),
+                answer: longest_answer.clone(),
+            },
+            OracleLine::Recall {
+                outstanding: false,
+                concept: Some(Concept::Invariant),
+                answer: "W".repeat(18),
+            },
+        ];
+        // The lens is kept whenever it fits beside the answer.
+        assert_eq!(
+            oracle_line_segments(&worst_lines[3], SANCTUM_ORACLE_LINE_BOX.width).len(),
+            3
+        );
+        assert_eq!(
+            oracle_line_segments(&worst_lines[2], SANCTUM_ORACLE_LINE_BOX.width)
+                .last()
+                .map(|(text, _)| text.clone()),
+            Some(longest_answer.clone()),
+            "the answer is never cut"
+        );
+
+        let drop_offset = DROP_SPRITE_SIZE as i32 / 2;
+        for (scene, band_height, band_color, line_box, row_one, hero) in [
+            (
+                "sanctum",
+                SANCTUM_TALL_HEADER_HEIGHT,
+                VOID,
+                SANCTUM_ORACLE_LINE_BOX,
+                vec![
+                    text_bounds(5, 4, "DATAFALL", 1),
+                    text_bounds(60, 4, "ORACLE-BOUND", 1),
+                    text_bounds(
+                        235 - text_width("CLAUDE:CHANNEL", 1),
+                        4,
+                        "CLAUDE:CHANNEL",
+                        1,
+                    ),
+                ],
+                LayoutBounds {
+                    x: ORACLE_HERO_MIN_X,
+                    y: 106,
+                    width: ORACLE_HERO_MAX_X + HERO_SPRITE_WIDTH as i32 - ORACLE_HERO_MIN_X,
+                    height: HERO_SPRITE_HEIGHT as i32,
+                },
+            ),
+            (
+                "legacy",
+                LEGACY_TALL_HEADER_HEIGHT,
+                NAVY,
+                LEGACY_ORACLE_LINE_BOX,
+                vec![
+                    text_bounds(4, 2, "ORACLE DATAFALL", 1),
+                    text_bounds(
+                        211 - text_width("CONTACTING CLAUDE", 1),
+                        2,
+                        "CONTACTING CLAUDE",
+                        1,
+                    ),
+                    text_bounds(216, 2, "...", 1),
+                ],
+                LayoutBounds {
+                    x: ORACLE_HERO_MIN_X,
+                    y: 111,
+                    width: ORACLE_HERO_MAX_X + 28 - ORACLE_HERO_MIN_X,
+                    height: 17,
+                },
+            ),
+        ] {
+            let band = LayoutBounds {
+                x: 0,
+                y: 0,
+                width: WIDTH as i32,
+                height: band_height,
+            };
+            let line = ui_box_bounds(line_box);
+            assert!(bounds_contains(screen, band), "{scene} band");
+            assert!(bounds_contains(band, line), "{scene} line inside its band");
+            for (index, element) in row_one.iter().enumerate() {
+                assert!(bounds_contains(band, *element), "{scene} row one {index}");
+                assert!(
+                    bounds_are_disjoint(*element, line),
+                    "{scene} row one {index} overlaps the line"
+                );
+            }
+            assert!(
+                bounds_are_disjoint(band, hero),
+                "{scene} band meets the hero"
+            );
+            for lane in [24, 54, 82, 112, 142, 210] {
+                let highest_drop = LayoutBounds {
+                    x: lane - drop_offset,
+                    y: 30 - drop_offset,
+                    width: DROP_SPRITE_SIZE as i32,
+                    height: DROP_SPRITE_SIZE as i32,
+                };
+                assert!(
+                    bounds_are_disjoint(band, highest_drop),
+                    "{scene} band would hide a falling drop in lane {lane}"
+                );
+            }
+            for worst in &worst_lines {
+                let segments = oracle_line_segments(worst, line_box.width);
+                let drawn = LayoutBounds {
+                    x: line_box.x,
+                    y: line_box.y,
+                    width: segments_width(&segments),
+                    height: 7,
+                };
+                assert!(
+                    bounds_contains(line, drawn),
+                    "{scene} {worst:?} overflows its line"
+                );
+                for (text, color) in &segments {
+                    assert!(
+                        contrast_ratio(*color, band_color) >= 4.5,
+                        "{scene} `{text}` is not readable on its band"
+                    );
+                }
+
+                // Every pixel the line draws stays inside its box.
+                let mut isolated = Framebuffer::default();
+                let state = GameState {
+                    reduced_motion: true,
+                    ..Default::default()
+                };
+                draw_oracle_line(&mut isolated, line_box, &state, worst);
+                for (index, pixel) in isolated.pixels.as_chunks::<4>().0.iter().enumerate() {
+                    if pixel[3] == 0 {
+                        continue;
+                    }
+                    let (x, y) = ((index % WIDTH) as i32, (index / WIDTH) as i32);
+                    assert!(
+                        bounds_contains(
+                            line,
+                            LayoutBounds {
+                                x,
+                                y,
+                                width: 1,
+                                height: 1,
+                            }
+                        ),
+                        "{scene} drew outside its line at ({x}, {y})"
+                    );
+                }
+            }
+        }
+
+        // With a line, nothing below the tall band changes: drops, hero,
+        // plate, and footer are exactly what the one-row scene shows.
+        let mut quiet = waiting_state_with(Vec::new());
+        quiet.oracle_drops = vec![OracleDrop {
+            x: 112,
+            y: 30,
+            kind: OracleDropKind::Data,
+        }];
+        let mut recalling = waiting_state_with(vec![recall_lesson(
+            &longest_answer,
+            Some(Concept::Invariant),
+            true,
+        )]);
+        recalling.oracle_drops = quiet.oracle_drops.clone();
+        recalling.screen_ticks = 60;
+        let mut cloudy = waiting_state_with(journal_lessons());
+        cloudy.oracle_drops = quiet.oracle_drops.clone();
+        cloudy.questions_loading = false;
+        cloudy.question_retry_ticks = 240;
+        cloudy.question_failure = Some("TIMED OUT".into());
+        let mut quiet_frame = Framebuffer::default();
+        render_oracle_sanctum(&mut quiet_frame, &quiet);
+        let below = SANCTUM_TALL_HEADER_HEIGHT as usize * WIDTH * 4;
+        for (name, state) in [
+            ("06c-sanctum-recall", &recalling),
+            ("06d-sanctum-cloudy", &cloudy),
+        ] {
+            let mut frame = Framebuffer::default();
+            render_oracle_sanctum(&mut frame, state);
+            maybe_write_preview(name, &frame.pixels);
+            assert_eq!(
+                frame.pixels[below..],
+                quiet_frame.pixels[below..],
+                "{name} changed the playfield"
+            );
+        }
+
+        let legacy_state = |lessons: Vec<Lesson>| {
+            let mut cartridge = quiz_cartridge();
+            cartridge.questions.clear();
+            cartridge.lessons = lessons;
+            GameState {
+                cartridge: Some(cartridge),
+                oracle_drops: recalling.oracle_drops.clone(),
+                screen_ticks: 60,
+                ..waiting_state_with(Vec::new())
+            }
+        };
+        let legacy_quiet = legacy_state(Vec::new());
+        let legacy_recalling = legacy_state(journal_lessons());
+        let mut legacy_quiet_frame = Framebuffer::default();
+        render_oracle(&mut legacy_quiet_frame, &legacy_quiet);
+        let mut legacy_frame = Framebuffer::default();
+        render_oracle(&mut legacy_frame, &legacy_recalling);
+        maybe_write_preview("06e-datafall-recall", &legacy_frame.pixels);
+        let legacy_below = LEGACY_TALL_HEADER_HEIGHT as usize * WIDTH * 4;
+        assert_eq!(
+            legacy_frame.pixels[legacy_below..],
+            legacy_quiet_frame.pixels[legacy_below..],
+            "the legacy line changed the playfield"
+        );
+    }
+
+    #[test]
+    fn a_reply_during_the_quiz_appends_to_a_pending_batch() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        {
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            state.screen = Screen::Quiz;
+            state.pending_questions =
+                Some(("/tmp/engine-test".into(), vec![concept_question(0)], 1));
+            state.questions_loading = true;
+        }
+        deliver(&mut engine, "/tmp/engine-test", vec![concept_question(1)]);
+        let pending = engine_state(&engine).pending_questions.as_ref().unwrap();
+        assert_eq!(
+            pending
+                .1
+                .iter()
+                .map(|question| question.question.clone())
+                .collect::<Vec<_>>(),
+            vec![concept_question(0).question, concept_question(1).question]
+        );
+    }
+
+    #[test]
+    fn returning_to_the_quiz_menu_focuses_begin() {
+        let mut engine = playing_quiz_engine();
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        // Leave the menu with its second option focused; coming back through
+        // the title must not keep that stale focus.
+        press(&mut engine, Button::Down);
+        assert_eq!(engine_state(&engine).menu_selected, 1);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::Title);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        assert_eq!(engine_state(&engine).menu_selected, 0);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::CharacterCreation);
+    }
+
+    #[test]
+    fn a_scene_graph_that_skips_hero_creation_still_plays_a_fresh_run() {
+        use SceneHandler as H;
+        use SceneSignal as S;
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(concept_question).collect();
+        cartridge.machine = Box::new(
+            SceneMachineDefinition::compile(
+                "menu",
+                vec![
+                    scene_spec(
+                        "menu",
+                        H::QuizMenu,
+                        &[(S::NewRun, "oracle", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "oracle",
+                        H::Oracle,
+                        &[(S::QuestionsReady, "quiz", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "quiz",
+                        H::ConceptQuiz,
+                        &[
+                            (S::NeedsQuestion, "oracle", None),
+                            (S::HeartsEmpty, "menu", None),
+                            (S::Back, "menu", None),
+                        ],
+                    ),
+                ],
+            )
+            .unwrap(),
+        );
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+
+        for run in 0..2 {
+            press(&mut engine, Button::A);
+            assert_eq!(engine.screen(), Screen::Oracle, "run {run}");
+            for _ in 0..75 {
+                engine.update();
+            }
+            assert_eq!(engine.screen(), Screen::Quiz, "run {run}");
+            let run_state = engine_state(&engine).quiz.as_ref().unwrap();
+            assert_eq!((run_state.question, run_state.hearts), (0, 3));
+            let _ = engine.take_effects();
+            commit(&mut engine, true);
+            assert!(engine.take_effects().iter().any(|effect| matches!(
+                effect,
+                EngineEffect::RecordAnsweredQuestion { evidence, .. } if evidence.correct
+            )));
+            finish_lesson(&mut engine);
+            press(&mut engine, Button::B);
+            press(&mut engine, Button::B);
+            assert_eq!(engine.screen(), Screen::QuizMenu, "run {run}");
+            assert!(engine_state(&engine).quiz.is_none(), "Back clears the run");
+        }
+        // The second run started on the question after the first run's answer.
+        assert_eq!(
+            engine_state(&engine).question_count(),
+            QUESTION_BATCH_SIZE - 2
+        );
+
+        // Even a quiz entered without a run answers B.
+        {
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            state.machine.as_mut().unwrap().reset();
+            state.signal(SceneSignal::NewRun);
+            state.signal(SceneSignal::QuestionsReady);
+            state.quiz = None;
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn level_up_requests_missing_questions_and_waits_for_the_manifest_hold() {
+        use SceneHandler as H;
+        use SceneSignal as S;
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        let _ = engine.take_effects();
+        {
+            let mut state = engine.app.world_mut().resource_mut::<GameState>();
+            state.powered = true;
+            state.machine = Some(SceneMachine::new(
+                SceneMachineDefinition::compile(
+                    "level-up",
+                    vec![
+                        scene_spec(
+                            "level-up",
+                            H::LevelUp,
+                            &[(S::QuestionsReady, "quiz", Some(120))],
+                        ),
+                        scene_spec(
+                            "quiz",
+                            H::ConceptQuiz,
+                            &[(S::BatchComplete, "level-up", None)],
+                        ),
+                    ],
+                )
+                .unwrap(),
+            ));
+            state.quiz = Some(QuizRun {
+                question: 1,
+                completed_batches: 1,
+                level: 2,
+                ..QuizRun::new()
+            });
+            state.transition(Screen::LevelUp);
+        }
+
+        engine.update();
+        assert_eq!(request_seqs(&engine.take_effects()).len(), 1);
+        deliver(&mut engine, "/tmp/engine-test", vec![concept_question(0)]);
+        assert!(engine_state(&engine).has_unanswered_question());
+
+        for _ in 0..70 {
+            engine.update();
+        }
+        let early = {
+            let mut frame = Framebuffer::default();
+            render_level_up(&mut frame, engine_state(&engine));
+            frame.pixels
+        };
+        press(&mut engine, Button::A);
+        assert_eq!(
+            engine.screen(),
+            Screen::LevelUp,
+            "A waits for the manifest's 120-tick hold"
+        );
+        for _ in 0..50 {
+            engine.update();
+        }
+        let ready = {
+            let mut frame = Framebuffer::default();
+            render_level_up(&mut frame, engine_state(&engine));
+            frame.pixels
+        };
+        assert_ne!(
+            frame_region(&early, 0..WIDTH, 143..150),
+            frame_region(&ready, 0..WIDTH, 143..150),
+            "the continue prompt appears with the hold"
+        );
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Quiz);
     }
 
     #[test]
@@ -5471,16 +11548,15 @@ mod tests {
             EngineCommand::Cartridge(Some(quiz_cartridge())),
         );
         engine.app.world_mut().resource_mut::<GameState>().screen = Screen::Quiz;
-        issue(
+        deliver(
             &mut engine,
-            EngineCommand::Questions {
-                cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![QuizQuestion {
-                    question: "NEW BATCH".into(),
-                    choices: vec!["A".into()],
-                    answer: 0,
-                }],
-            },
+            "/tmp/engine-test",
+            vec![QuizQuestion {
+                question: "NEW BATCH".into(),
+                choices: vec!["A".into()],
+                answer: 0,
+                ..Default::default()
+            }],
         );
         {
             let state = engine.app.world().resource::<GameState>();
@@ -5658,6 +11734,155 @@ mod tests {
 
         assert_eq!(engine.screen(), Screen::Title);
         assert!(engine.take_effects().is_empty());
+    }
+
+    #[test]
+    fn an_earlier_quests_output_never_lands_in_a_later_battle() {
+        let machine = SceneMachineDefinition::compile(
+            "quest-select",
+            vec![
+                SceneSpec {
+                    id: "quest-select".into(),
+                    handler: SceneHandler::QuestSelect,
+                    transitions: vec![SceneTransition {
+                        signal: SceneSignal::QuestSelected,
+                        target: "battle".into(),
+                        after_ticks: None,
+                    }],
+                },
+                SceneSpec {
+                    id: "battle".into(),
+                    handler: SceneHandler::Battle,
+                    transitions: vec![
+                        SceneTransition {
+                            signal: SceneSignal::Victory,
+                            target: "quest-select".into(),
+                            after_ticks: None,
+                        },
+                        SceneTransition {
+                            signal: SceneSignal::Defeat,
+                            target: "quest-select".into(),
+                            after_ticks: None,
+                        },
+                    ],
+                },
+            ],
+        )
+        .unwrap();
+        let mut cartridge = quiz_cartridge();
+        cartridge.mode = CartridgeMode::Custom;
+        cartridge.machine = Box::new(machine);
+        cartridge.quests = vec![QuestSpec {
+            name: "BUILD".into(),
+            boss: "NONE".into(),
+            command: "true".into(),
+        }];
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        engine.take_effects();
+        let start_quest = |engine: &mut GameEngine| {
+            press(engine, Button::A);
+            assert_eq!(engine.screen(), Screen::Battle);
+            match engine.take_effects().as_slice() {
+                [EngineEffect::RunQuest { quest, .. }] => *quest,
+                effects => panic!("expected one RunQuest, got {effects:?}"),
+            }
+        };
+        let output = |line: &str, quest| EngineCommand::QuestOutput {
+            line: line.into(),
+            stderr: false,
+            quest,
+        };
+        let logged = |engine: &GameEngine, line: &str| {
+            engine_state(engine)
+                .logs
+                .iter()
+                .any(|(logged, _)| logged == line)
+        };
+
+        let first = start_quest(&mut engine);
+        issue(&mut engine, output("FIRST", first));
+        assert!(logged(&engine, "FIRST"));
+        issue(
+            &mut engine,
+            EngineCommand::QuestDone {
+                success: true,
+                quest: first,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::QuestSelect);
+
+        let second = start_quest(&mut engine);
+        assert_ne!(first, second);
+        // A helper the first quest left running writes after the second began.
+        issue(&mut engine, output("LEFTOVER", first));
+        assert!(!logged(&engine, "LEFTOVER"), "a stale line is dropped");
+        issue(
+            &mut engine,
+            EngineCommand::QuestDone {
+                success: false,
+                quest: first,
+            },
+        );
+        assert_eq!(
+            engine.screen(),
+            Screen::Battle,
+            "a stale completion cannot end the current battle"
+        );
+        issue(&mut engine, output("SECOND", second));
+        assert!(logged(&engine, "SECOND"));
+    }
+
+    /// A helper that escapes the quest's process group keeps the output pipe
+    /// open past the grace period, as a Windows helper does once its shell
+    /// has exited. Nothing it writes after the quest is done is forwarded.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_surviving_quest_helper_forwards_nothing_after_the_quest_is_done() {
+        let (sender, receiver) = mpsc::channel();
+        let slot = Arc::new(Mutex::new(None));
+        let loader: QuestionLoader = Arc::new(|_, _, _| Ok(Vec::new()));
+        let recorder: AnsweredQuestionRecorder = Arc::new(|_, _| {});
+        handle_effect(
+            EngineEffect::RunQuest {
+                command: "setsid sh -c 'sleep 2; echo LEFTOVER; sleep 2' & echo done".into(),
+                quest: 7,
+            },
+            &sender,
+            &slot,
+            &loader,
+            &recorder,
+        );
+        let started = Instant::now();
+        let mut lines = Vec::new();
+        loop {
+            match receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the quest should report")
+            {
+                EngineCommand::QuestOutput { line, quest, .. } => {
+                    assert_eq!(quest, 7);
+                    lines.push(line);
+                }
+                EngineCommand::QuestDone { quest, .. } => {
+                    assert_eq!(quest, 7);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "done before the helper writes"
+        );
+        while let Ok(command) = receiver.recv_timeout(Duration::from_millis(3_000)) {
+            if let EngineCommand::QuestOutput { line, .. } = command {
+                lines.push(line);
+            }
+        }
+        assert_eq!(lines, ["done"], "the helper's late line is not forwarded");
     }
 
     #[test]
@@ -5863,21 +12088,28 @@ mod tests {
                 "TO COUPLE RENDERING TO CSS".into(),
             ],
             answer: 0,
+            ..Default::default()
         };
         let machine = SceneMachine::new((*cartridge.machine).clone());
         let mut state = GameState {
             cartridge: Some(cartridge),
             machine: Some(machine),
             quiz: Some(QuizRun {
-                question: 0,
                 completed_batches: 3,
-                selected: 0,
                 hearts: 2,
                 score: 420,
                 level: 4,
                 streak: 3,
                 leveled_up: true,
-                feedback: None,
+                ledger: RunLedger {
+                    first_try: 11,
+                    first_try_right: 7,
+                    redeemed: 2,
+                    last_batch: (4, 6),
+                    stages_at_start: [1, 2, 0, 1, 0],
+                    ..RunLedger::default()
+                },
+                ..QuizRun::new()
             }),
             questions_loading: true,
             screen_ticks: 90,
@@ -5944,13 +12176,37 @@ mod tests {
             previews.push(frame.pixels);
         }
 
+        let cartridge = state.cartridge.as_mut().unwrap();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        for (name, page, revealed) in [
+            ("oracle-codex-mastery", 0, false),
+            ("oracle-codex-lesson-sealed", 2, false),
+            ("oracle-codex-lesson", 2, true),
+        ] {
+            state.codex_page = page;
+            state.codex_revealed = revealed;
+            let mut frame = Framebuffer::default();
+            render_oracle_codex(&mut frame, &state);
+            maybe_write_preview(name, &frame.pixels);
+            previews.push(frame.pixels);
+        }
+        state.codex_page = 0;
+        state.codex_revealed = false;
+        // With a journal, the debrief names the lens that woke this run.
+        let mut ledger = Framebuffer::default();
+        render_oracle_aftermath(&mut ledger, &state);
+        maybe_write_preview("09b-aftermath-ledger", &ledger.pixels);
+
         state.quiz.as_mut().unwrap().selected = 1;
         state.quiz.as_mut().unwrap().feedback = Some((false, QUIZ_FEEDBACK_TICKS));
+        state.quiz.as_mut().unwrap().retry_note = Some(RetryNote::In(RETRY_GAP));
         let mut review = Framebuffer::default();
         render_oracle_trial(&mut review, &state);
         maybe_write_preview("07b-trial-review", &review.pixels);
 
         state.quiz.as_mut().unwrap().feedback = None;
+        state.quiz.as_mut().unwrap().retry_note = None;
         for (name, score, streak) in [
             ("07c-trial-rune-two", 900, 6),
             ("07d-trial-rune-three", 1_800, 9),
@@ -5971,7 +12227,7 @@ mod tests {
         let distinct = previews.iter().collect::<HashSet<_>>();
         assert_eq!(
             distinct.len(),
-            13,
+            16,
             "every reachable scene needs its own authored composition"
         );
         assert!(previews.iter().all(|frame| frame.len() == FRAME_BYTES));
@@ -6050,17 +12306,7 @@ mod tests {
     fn oracle_progression_changes_the_sanctum_without_relying_on_level_text() {
         let mut state = GameState {
             cartridge: Some(oracle_template_cartridge()),
-            quiz: Some(QuizRun {
-                question: 0,
-                completed_batches: 0,
-                selected: 0,
-                hearts: 3,
-                score: 0,
-                level: 1,
-                streak: 0,
-                leveled_up: false,
-                feedback: None,
-            }),
+            quiz: Some(QuizRun::new()),
             questions_loading: true,
             screen_ticks: 90,
             ..Default::default()
@@ -6134,6 +12380,333 @@ mod tests {
         assert_ne!(first.frame(), second.frame());
     }
 
+    fn last_cue(engine: &GameEngine) -> Option<audio::Cue> {
+        engine.app.world().resource::<AudioOut>().last_cue()
+    }
+
+    /// Presses and releases `button`, returning the cue each edge started.
+    fn tap_cues(engine: &mut GameEngine, button: Button) -> [Option<audio::Cue>; 2] {
+        [true, false].map(|pressed| {
+            issue(engine, EngineCommand::Input { button, pressed });
+            last_cue(engine)
+        })
+    }
+
+    #[test]
+    fn every_input_edge_starts_at_most_one_distinct_cue() {
+        use audio::Cue;
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+
+        let script = [
+            (Button::Start, Some(Cue::Confirm)),
+            (Button::Down, Some(Cue::Navigate(1))),
+            (Button::Up, Some(Cue::Navigate(0))),
+            (Button::Left, Some(Cue::Unavailable)),
+            (Button::A, Some(Cue::Confirm)),
+            (Button::Right, Some(Cue::Trait { row: 0, value: 1 })),
+            (Button::Down, Some(Cue::Navigate(1))),
+            (Button::A, Some(Cue::Trait { row: 1, value: 1 })),
+            (Button::Down, Some(Cue::Navigate(2))),
+            (Button::Left, Some(Cue::Trait { row: 2, value: 4 })),
+            (Button::Down, Some(Cue::Navigate(3))),
+            (Button::Right, Some(Cue::Unavailable)),
+            (Button::Start, Some(Cue::BeginRun)),
+            (Button::A, Some(Cue::Unavailable)),
+            (Button::Left, None),
+        ];
+        for (button, expected) in script {
+            let [press, release] = tap_cues(&mut engine, button);
+            assert_eq!(press, expected, "{button:?} on {:?}", engine.screen());
+            assert_eq!(release, None, "releasing {button:?} must stay silent");
+        }
+        assert_eq!(engine.screen(), Screen::Oracle);
+
+        let mut arrival = Vec::new();
+        for _ in 0..75 {
+            engine.update();
+            arrival.extend(last_cue(&engine));
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        // The first falling shard lands on the hero before the vision arrives.
+        assert_eq!(arrival, [Cue::DataCollect(1), Cue::QuestionReveal]);
+
+        // Choices are shuffled, so walk the cursor to wherever the answer is.
+        let answer = answer_slot(&engine);
+        let mut script = vec![
+            (Button::Down, Some(Cue::Cursor(1))),
+            (Button::Up, Some(Cue::Cursor(0))),
+        ];
+        script.extend((1..=answer).map(|slot| (Button::Down, Some(Cue::Cursor(slot)))));
+        script.extend([
+            (Button::Right, Some(Cue::Unavailable)),
+            (Button::A, Some(Cue::Correct)),
+            // The answer review ignores input, and so does the speaker.
+            (Button::Down, None),
+            (Button::B, None),
+        ]);
+        for (button, expected) in script {
+            let [press, release] = tap_cues(&mut engine, button);
+            assert_eq!(press, expected, "{button:?} in the quiz");
+            assert_eq!(release, None);
+        }
+    }
+
+    #[test]
+    fn engine_audio_is_silent_while_off_or_booting() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        for _ in 0..60 {
+            engine.update();
+        }
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Start,
+                pressed: true,
+            },
+        );
+        for _ in 0..180 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Boot);
+        let silent = engine.take_audio();
+        assert!(silent.notes.is_empty(), "{:?}", silent.notes);
+        assert!(silent.tick > 240, "the engine tick advances while silent");
+
+        issue(&mut engine, EngineCommand::BootComplete);
+        for _ in 0..60 {
+            engine.update();
+        }
+        let chronicle = engine.take_audio();
+        assert!(chronicle.notes.iter().any(|note| !note.is_cut()));
+        assert!(chronicle
+            .notes
+            .iter()
+            .all(|note| note.tick > silent.tick && note.tick <= chronicle.tick));
+
+        // Power loss may only cut voices, never start one.
+        issue(&mut engine, EngineCommand::Power(false));
+        for _ in 0..120 {
+            engine.update();
+        }
+        assert!(engine.take_audio().notes.iter().all(|note| note.is_cut()));
+    }
+
+    #[test]
+    fn datafall_loop_is_cut_on_the_tick_b_leaves_the_oracle() {
+        let mut engine = waiting_oracle_engine();
+        let _ = engine.take_audio();
+        for _ in 0..157 {
+            engine.update();
+        }
+        let before = engine.take_audio();
+        assert!(before.notes.iter().any(|note| !note.is_cut()));
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::B,
+                pressed: true,
+            },
+        );
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        assert_eq!(last_cue(&engine), Some(audio::Cue::Leave));
+        let exit = engine.take_audio();
+        let tails = before
+            .notes
+            .iter()
+            .filter(|note| !note.is_cut() && note.tick + u64::from(note.duration_ticks) > exit.tick)
+            .collect::<Vec<_>>();
+        assert!(
+            !tails.is_empty(),
+            "the exit should interrupt the Datafall loop"
+        );
+        for tail in tails {
+            assert!(
+                exit.notes
+                    .iter()
+                    .any(|note| note.voice == tail.voice && note.tick == exit.tick),
+                "{:?} carried the Datafall loop into the menu",
+                tail.voice
+            );
+        }
+    }
+
+    #[test]
+    fn oracle_retry_and_ready_states_are_audible_once() {
+        let mut engine = waiting_oracle_engine();
+        deliver(&mut engine, "/tmp/engine-test", Vec::new());
+        assert_eq!(last_cue(&engine), Some(audio::Cue::Retry));
+        engine.update();
+        assert_eq!(last_cue(&engine), None);
+
+        deliver(&mut engine, "/tmp/engine-test", quiz_cartridge().questions);
+        assert_eq!(last_cue(&engine), Some(audio::Cue::Ready));
+    }
+
+    #[test]
+    fn audio_snapshot_mirrors_the_observable_run_state() {
+        let mut state = GameState {
+            powered: true,
+            screen: Screen::Oracle,
+            screen_ticks: 12,
+            questions_loading: true,
+            oracle_data: 6,
+            oracle_bug_hits: 1,
+            ..GameState::default()
+        };
+        state.held.insert(Button::Left);
+        state.held.insert(Button::A);
+        state.quiz = Some(QuizRun {
+            question: 7,
+            completed_batches: 1,
+            selected: 2,
+            hearts: 1,
+            score: 900,
+            level: 4,
+            streak: 3,
+            leveled_up: false,
+            feedback: Some((false, 10)),
+            lens_woke: Some((Concept::Tradeoff, 2)),
+            ..QuizRun::new()
+        });
+        let snapshot = audio_snapshot(&state);
+        assert_eq!(snapshot.scene, AudioScene::Oracle);
+        assert_eq!(snapshot.held, pad::LEFT | pad::A);
+        assert_eq!((snapshot.data_stage, snapshot.breach_stage), (2, 1));
+        assert_eq!(snapshot.questions, QuestionStatus::Writing);
+        assert_eq!(snapshot.tier, Tier::OracleBound);
+        assert_eq!(
+            snapshot.run,
+            Some(RunAudio {
+                question: 7,
+                selected: 2,
+                phase: AnswerPhase::Wrong,
+                hearts: 1,
+                multiplier: 2,
+                insight: 2,
+                level: 4,
+                completed_batches: 1,
+                redeemed: false,
+                lens_woke: Some(2),
+                leave_armed: false,
+            })
+        );
+
+        state.powered = false;
+        state.screen = Screen::Off;
+        state.quiz = None;
+        let off = audio_snapshot(&state);
+        assert_eq!(
+            (off.powered, off.scene, off.tier),
+            (false, AudioScene::Off, Tier::Initiate)
+        );
+    }
+
+    #[test]
+    fn oracle_opening_soundtrack_grows_from_archival_ticks_to_the_full_cadence() {
+        let mut engine = GameEngine::new();
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(oracle_template_cartridge())),
+        );
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        assert_eq!(engine.screen(), Screen::Copyright);
+        let _ = engine.take_audio();
+
+        // Copyright, then the five story scenes, then a breath of title.
+        let mut sections = Vec::new();
+        for (expected, ticks) in [
+            (Screen::Copyright, 180),
+            (Screen::OpeningFanfare, 96),
+            (Screen::OpeningFanfare, 66),
+            (Screen::OpeningFanfare, 66),
+            (Screen::OpeningFanfare, 66),
+            (Screen::OpeningFanfare, 66),
+        ] {
+            assert_eq!(engine.screen(), expected);
+            for _ in 0..ticks {
+                engine.update();
+            }
+            sections.push(engine.take_audio().notes);
+        }
+        assert_eq!(engine.screen(), Screen::Title);
+        for _ in 0..120 {
+            engine.update();
+        }
+        sections.push(engine.take_audio().notes);
+
+        let voices = |notes: &[audio::Note]| {
+            notes
+                .iter()
+                .filter(|note| !note.is_cut())
+                .map(|note| note.voice)
+                .collect::<HashSet<_>>()
+                .len()
+        };
+        let peak = |notes: &[audio::Note]| notes.iter().map(|note| note.volume).max().unwrap_or(0);
+        assert_eq!(voices(&sections[0]), 1, "the chronicle keeps near silence");
+        assert!(peak(&sections[0]) <= 4);
+        let story = sections[1..6]
+            .iter()
+            .map(|notes| voices(notes))
+            .collect::<Vec<_>>();
+        assert_eq!(story[0], 1, "the source ember is a single pulse");
+        assert!(story.windows(2).all(|pair| pair[0] <= pair[1]), "{story:?}");
+        assert_eq!(story[4], 4, "the Oracle crescendo is the full arrangement");
+        assert!(sections[1..5]
+            .iter()
+            .all(|notes| peak(notes) < peak(&sections[5])));
+        assert!(
+            sections[6]
+                .iter()
+                .all(|note| note.volume <= audio::AMBIENCE_MAX_VOLUME),
+            "the title settles into its restrained loop"
+        );
+
+        if let Ok(directory) = std::env::var("CQA_AUDIO_DUMP_DIR") {
+            let notes = sections.concat();
+            std::fs::create_dir_all(&directory).expect("dump directory should be writable");
+            std::fs::write(
+                std::path::Path::new(&directory).join("oracle-opening.json"),
+                serde_json::to_string(&notes).expect("notes should serialize"),
+            )
+            .expect("dump should be writable");
+        }
+    }
+
+    #[test]
+    fn scripted_play_produces_identical_note_streams() {
+        let play = || {
+            let mut engine = playing_quiz_engine();
+            issue(
+                &mut engine,
+                EngineCommand::Input {
+                    button: Button::A,
+                    pressed: true,
+                },
+            );
+            for _ in 0..60 {
+                engine.update();
+            }
+            engine.take_audio()
+        };
+        let first = play();
+        assert!(first.notes.iter().filter(|note| !note.is_cut()).count() > 10);
+        assert_eq!(first, play());
+    }
+
     #[test]
     fn boot_waits_for_device_firmware() {
         let mut engine = GameEngine::new();
@@ -6182,9 +12755,1960 @@ mod tests {
         assert_eq!(engine.screen(), Screen::QuizMenu);
     }
 
+    const WORST_LESSON_QUESTION: &str =
+        "WHICH GUARANTEE KEEPS THE ENGINE AND THE DEVICE SHELL FROM EVER DISAGREEING ABOUT THE ACTIVE SCENE?";
+    const WORST_LESSON_RATIONALE: &str =
+        "THE SHELL FORWARDS INPUT EDGES AND DRAWS FRAMES, SO ONLY THE ENGINE CAN MOVE THE SCENE MACHINE.";
+    /// A full-width wrong pick and a three-row misconception: the sealed
+    /// page's worst case.
+    const WORST_LESSON_PICK: &str = "THE SHELL PICKS EACH NEXT SCENE";
+    const WORST_LESSON_MISCONCEPTION: &str =
+        "THE SHELL ONLY FORWARDS EDGES AND DRAWS FRAMES, SO IT NEVER HOLDS THE SCENE MACHINE STATE.";
+
+    fn journal_lessons() -> Vec<Lesson> {
+        vec![
+            Lesson {
+                question: "WHO OWNS THE GAME LOOP?".into(),
+                answer: "THE HEADLESS BEVY ENGINE".into(),
+                rationale: "THE SHELL ONLY DRAWS FRAMES AND FORWARDS BUTTON EDGES.".into(),
+                concept: Some(Concept::Responsibility),
+                outstanding: false,
+                misconception: Some((
+                    "THE WEB SHELL THAT DRAWS FRAMES".into(),
+                    "THE SHELL ONLY PAINTS WHAT THE ENGINE HANDS IT.".into(),
+                )),
+                peeked: false,
+                spaced_check: false,
+            },
+            Lesson {
+                question: WORST_LESSON_QUESTION.into(),
+                answer: "ONLY THE ENGINE CHANGES SCENES".into(),
+                rationale: WORST_LESSON_RATIONALE.into(),
+                concept: Some(Concept::Invariant),
+                outstanding: true,
+                misconception: Some((WORST_LESSON_PICK.into(), WORST_LESSON_MISCONCEPTION.into())),
+                peeked: false,
+                spaced_check: false,
+            },
+            Lesson {
+                question: "WHAT DID THIS OLDER SAVE ASK?".into(),
+                answer: "A QUESTION WITHOUT A LENS".into(),
+                rationale: String::new(),
+                concept: None,
+                outstanding: false,
+                misconception: None,
+                peeked: false,
+                spaced_check: false,
+            },
+        ]
+    }
+
+    fn journal_mastery() -> Mastery {
+        Mastery::from([
+            (
+                Concept::Purpose,
+                LensRecord {
+                    first_try: 1,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Responsibility,
+                LensRecord {
+                    first_try: 2,
+                    redeemed: 1,
+                    missed: 1,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Invariant,
+                LensRecord {
+                    first_try: 4,
+                    redeemed: 1,
+                    missed: 3,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Tradeoff,
+                LensRecord {
+                    missed: 4,
+                    ..LensRecord::default()
+                },
+            ),
+        ])
+    }
+
+    fn journal_cartridge() -> CartridgeSpec {
+        let mut cartridge = quiz_cartridge();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        cartridge
+    }
+
+    fn quiz_menu_engine(cartridge: CartridgeSpec) -> GameEngine {
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        engine
+    }
+
+    fn game_state(engine: &GameEngine) -> &GameState {
+        engine.app.world().resource::<GameState>()
+    }
+
+    #[test]
+    fn quiz_menu_opens_the_codex_when_the_scene_graph_routes_to_it() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        assert_eq!(
+            quiz_menu_second_option(game_state(&engine)),
+            "OPEN THE CODEX"
+        );
+
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(game_state(&engine).codex_page, 0);
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        assert_eq!(
+            game_state(&engine).menu_selected,
+            1,
+            "returning from the Codex keeps its menu option focused"
+        );
+
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(
+            game_state(&engine).codex_page,
+            0,
+            "every visit opens on the mastery overview"
+        );
+
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(
+            engine.screen(),
+            Screen::Title,
+            "B on the menu still returns to the title"
+        );
+    }
+
+    #[test]
+    fn dogfood_manifest_routes_its_menu_into_the_templated_codex() {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        let mut engine = quiz_menu_engine(cartridge);
+        maybe_write_preview("oracle-menu-journal", engine.frame());
+        press(&mut engine, Button::Down);
+        maybe_write_preview("oracle-menu-codex-focus", engine.frame());
+
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        let state = game_state(&engine);
+        assert!(state.uses_visual_template(VisualTemplate::Codex));
+        let mut expected = Framebuffer::default();
+        render_oracle_codex(&mut expected, state);
+        assert_eq!(engine.frame(), expected.pixels.as_slice());
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::Right);
+        let state = game_state(&engine);
+        assert_eq!(state.codex_lesson().map(|(index, _)| index), Some(1));
+        let mut expected = Framebuffer::default();
+        render_oracle_codex(&mut expected, state);
+        assert_eq!(engine.frame(), expected.pixels.as_slice());
+    }
+
+    #[test]
+    fn quiz_menu_without_a_codex_route_keeps_return_to_title() {
+        let route = |signal, target: &str| SceneTransition {
+            signal,
+            target: target.into(),
+            after_ticks: None,
+        };
+        let machine = SceneMachineDefinition::compile(
+            "title",
+            vec![
+                SceneSpec {
+                    id: "title".into(),
+                    handler: SceneHandler::Title,
+                    transitions: vec![route(SceneSignal::Continue, "quiz-menu")],
+                },
+                SceneSpec {
+                    id: "quiz-menu".into(),
+                    handler: SceneHandler::QuizMenu,
+                    transitions: vec![
+                        route(SceneSignal::NewRun, "character-creation"),
+                        route(SceneSignal::Back, "title"),
+                    ],
+                },
+                SceneSpec {
+                    id: "character-creation".into(),
+                    handler: SceneHandler::CharacterCreation,
+                    transitions: vec![route(SceneSignal::Back, "quiz-menu")],
+                },
+            ],
+        )
+        .unwrap();
+        let mut cartridge = journal_cartridge();
+        cartridge.machine = Box::new(machine);
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+
+        let state = game_state(&engine);
+        assert_eq!(quiz_menu_second_option(state), "RETURN TO TITLE");
+        assert_eq!(
+            state.journal_summary(),
+            None,
+            "a menu without the Codex keeps its original subtitle"
+        );
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Title);
+    }
+
+    #[test]
+    fn codex_pages_wrap_through_the_journal_without_changing_it() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(game_state(&engine).codex_page_count(), 4);
+        let _ = engine.take_effects();
+
+        for (button, expected_page) in [
+            (Button::Right, 1),
+            (Button::Right, 2),
+            (Button::Down, 3),
+            (Button::R, 0),
+            (Button::Left, 3),
+            (Button::Up, 2),
+            (Button::L, 1),
+            (Button::A, 1),
+            (Button::Start, 1),
+            (Button::Select, 1),
+        ] {
+            press(&mut engine, button);
+            assert_eq!(engine.screen(), Screen::Codex, "{button:?}");
+            assert_eq!(game_state(&engine).codex_page, expected_page, "{button:?}");
+        }
+
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        for _ in 0..30 {
+            engine.update();
+        }
+        issue(
+            &mut engine,
+            EngineCommand::Input {
+                button: Button::Right,
+                pressed: true,
+            },
+        );
+        assert_eq!(
+            game_state(&engine).codex_page,
+            2,
+            "a held direction turns exactly one page"
+        );
+
+        assert!(
+            engine.take_effects().is_empty(),
+            "reading the Codex requests and records nothing"
+        );
+        let cartridge = game_state(&engine).cartridge.as_ref().unwrap();
+        assert_eq!(cartridge.lessons, journal_lessons());
+        assert_eq!(cartridge.mastery, journal_mastery());
+
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn a_relearned_lesson_awaiting_its_spaced_check_is_sealed_and_its_reveal_is_recorded() {
+        let mut cartridge = journal_cartridge();
+        cartridge.lessons[0].spaced_check = true;
+        let question = cartridge.lessons[0].question.clone();
+        let mut engine = quiz_menu_engine(cartridge);
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        let _ = engine.take_effects();
+        let answer_green = |engine: &GameEngine| {
+            color_pixels_in_region(
+                engine.frame(),
+                GREEN,
+                CODEX_ANSWER_BOX.x as usize..(CODEX_ANSWER_BOX.x + CODEX_ANSWER_BOX.width) as usize,
+                CODEX_ANSWER_BOX.y as usize
+                    ..(CODEX_ANSWER_BOX.y + CODEX_ANSWER_BOX.height) as usize,
+            )
+        };
+        press(&mut engine, Button::Right);
+        let lesson = game_state(&engine).codex_lesson().unwrap().1.clone();
+        assert!(!lesson.outstanding);
+        assert_eq!(codex_lesson_status(&lesson).0, "CHECK PENDING");
+        assert_eq!(
+            answer_green(&engine),
+            0,
+            "a due spaced check is never open-book"
+        );
+
+        press(&mut engine, Button::A);
+        assert!(answer_green(&engine) > 0);
+        let effects = engine.take_effects();
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EngineEffect::MarkPeeked { question: peeked, .. }] if *peeked == question
+            ),
+            "{effects:?}"
+        );
+        let lesson = &game_state(&engine).lessons()[0];
+        assert!(lesson.peeked);
+        assert_eq!(codex_lesson_status(lesson).0, "CHECK PEEKED");
+    }
+
+    #[test]
+    fn a_reveals_a_pending_answer_once_and_every_page_turn_seals_it_again() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        let deck = game_state(&engine)
+            .cartridge
+            .as_ref()
+            .unwrap()
+            .questions
+            .iter()
+            .map(|question| (question.question.clone(), question.review))
+            .collect::<Vec<_>>();
+        let _ = engine.take_effects();
+        let answer_green = |engine: &GameEngine| {
+            color_pixels_in_region(
+                engine.frame(),
+                GREEN,
+                CODEX_ANSWER_BOX.x as usize..(CODEX_ANSWER_BOX.x + CODEX_ANSWER_BOX.width) as usize,
+                CODEX_ANSWER_BOX.y as usize
+                    ..(CODEX_ANSWER_BOX.y + CODEX_ANSWER_BOX.height) as usize,
+            )
+        };
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::Right);
+        assert_eq!(game_state(&engine).codex_lesson().unwrap().0, 1);
+        assert_eq!(answer_green(&engine), 0, "a pending page opens sealed");
+
+        press(&mut engine, Button::A);
+        assert!(game_state(&engine).codex_revealed);
+        assert!(answer_green(&engine) > 0, "A reveals the answer");
+        let effects = engine.take_effects();
+        assert_eq!(effects.len(), 1, "{effects:?}");
+        assert!(matches!(
+            &effects[0],
+            EngineEffect::MarkPeeked { question, .. } if question == WORST_LESSON_QUESTION
+        ));
+        assert!(game_state(&engine).lessons()[1].peeked);
+
+        press(&mut engine, Button::Start);
+        assert!(
+            engine.take_effects().is_empty(),
+            "a second reveal records nothing"
+        );
+
+        press(&mut engine, Button::Right);
+        press(&mut engine, Button::Left);
+        assert_eq!(game_state(&engine).codex_lesson().unwrap().0, 1);
+        assert_eq!(
+            answer_green(&engine),
+            0,
+            "turning back seals the answer again"
+        );
+        press(&mut engine, Button::A);
+        assert!(answer_green(&engine) > 0);
+        assert!(
+            engine.take_effects().is_empty(),
+            "a lesson is marked peeked once"
+        );
+
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::Start);
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert!(
+            !game_state(&engine).codex_revealed,
+            "every visit seals again"
+        );
+
+        let cartridge = game_state(&engine).cartridge.as_ref().unwrap();
+        let after = cartridge
+            .questions
+            .iter()
+            .map(|question| (question.question.clone(), question.review))
+            .collect::<Vec<_>>();
+        assert_eq!(after, deck, "the Codex never changes the question deck");
+        assert_eq!(cartridge.mastery, journal_mastery());
+    }
+
+    #[test]
+    fn a_redemption_after_a_codex_peek_counts_as_relearning() {
+        // A miss from an earlier launch returns as a spaced check, which
+        // would be a redemption; the player peeked at its answer first.
+        let mut missed = concept_question(0);
+        missed.review = Review::Spaced;
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = vec![missed.clone(), concept_question(1)];
+        record_lesson(&mut cartridge.lessons, &missed, false, 1);
+        cartridge.lessons[0].peeked = true;
+        let mut engine = GameEngine::new();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        finish_opening(&mut engine);
+        for button in [Button::Start, Button::A, Button::Start] {
+            press(&mut engine, button);
+        }
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        assert_eq!(current_question(&engine).question, missed.question);
+        assert_eq!(current_question(&engine).review, Review::Spaced);
+        let before = engine_state(&engine).lens_record(Concept::Responsibility);
+        {
+            let lessons = engine_state(&engine).lessons();
+            assert!(lessons[0].outstanding && lessons[0].misconception.is_some());
+        }
+
+        let _ = engine.take_effects();
+        commit(&mut engine, true);
+        let state = engine_state(&engine);
+        let cartridge = state.cartridge.as_ref().unwrap();
+        let after = cartridge.mastery[&Concept::Responsibility];
+        assert_eq!(after.redeemed, before.redeemed, "no redemption evidence");
+        assert_eq!(after.relearned, before.relearned + 1);
+        assert_eq!(after.volume_stage(), before.volume_stage());
+        assert_eq!(
+            (after.recent, after.recent_len),
+            (before.recent, before.recent_len),
+            "a success after a peek is not graded"
+        );
+        let lesson = cartridge
+            .lessons
+            .iter()
+            .find(|lesson| lesson.question == missed.question)
+            .unwrap();
+        assert!(!lesson.outstanding && !lesson.peeked);
+        assert!(engine.take_effects().iter().any(|effect| matches!(
+            effect,
+            EngineEffect::RecordAnsweredQuestion { evidence, .. }
+                if evidence.correct && evidence.peeked && evidence.picked.is_none()
+        )));
+    }
+
+    #[test]
+    fn empty_codex_says_no_lessons_yet_and_cannot_page() {
+        let mut engine = quiz_menu_engine(quiz_cartridge());
+        press(&mut engine, Button::Down);
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        for button in [Button::Right, Button::Left, Button::R, Button::Down] {
+            press(&mut engine, button);
+            assert_eq!(game_state(&engine).codex_page, 0);
+        }
+        assert!(
+            color_pixels_in_region(engine.frame(), GOLD, 0..WIDTH, 116..123) > 0,
+            "the legacy Codex names its empty journal"
+        );
+        maybe_write_preview("codex-legacy-empty", engine.frame());
+
+        let state = GameState {
+            cartridge: Some(oracle_template_cartridge()),
+            ..Default::default()
+        };
+        let mut empty = Framebuffer::default();
+        render_oracle_codex(&mut empty, &state);
+        maybe_write_preview("oracle-codex-empty", &empty.pixels);
+        let mut expected = Framebuffer::default();
+        expected.blit_rgb(ORACLE_CHRONICLE);
+        draw_codex_panel(&mut expected, CODEX_TOTALS_BOX);
+        expected.centered_text_box(CODEX_TOTALS_BOX, "NO LESSONS YET", AMBER, 1);
+        draw_codex_panel(&mut expected, CODEX_PROMPT_BOX);
+        expected.centered_text_box(CODEX_PROMPT_BOX, "ANSWER A TRIAL  B:BACK", MIST, 1);
+        for bounds in [CODEX_TOTALS_BOX, CODEX_PROMPT_BOX] {
+            let x = bounds.x as usize..(bounds.x + bounds.width) as usize;
+            let y = bounds.y as usize..(bounds.y + bounds.height) as usize;
+            assert_eq!(
+                frame_region(&empty.pixels, x.clone(), y.clone()),
+                frame_region(&expected.pixels, x, y),
+                "the empty journal shows an honest state and how to fill it"
+            );
+        }
+    }
+
+    #[test]
+    fn quiz_menu_summarizes_the_journal_when_the_codex_is_routable() {
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        assert_eq!(
+            game_state(&engine).journal_summary().as_deref(),
+            Some("LESSONS 03  REVIEW 01")
+        );
+
+        let mut state = engine.app.world_mut().resource_mut::<GameState>();
+        for lesson in &mut state.cartridge.as_mut().unwrap().lessons {
+            lesson.outstanding = false;
+        }
+        assert_eq!(
+            state.journal_summary().as_deref(),
+            Some("LESSONS 03  ALL CLEAR")
+        );
+        state.cartridge.as_mut().unwrap().lessons.clear();
+        assert_eq!(state.journal_summary(), None);
+    }
+
+    #[test]
+    fn codex_mastery_runes_wake_at_the_exact_evidence_thresholds_on_the_rendered_frame() {
+        let invariant_row = Concept::ALL
+            .iter()
+            .position(|concept| *concept == Concept::Invariant)
+            .unwrap() as i32;
+        for (name, renderer, runes_x, row_y) in [
+            (
+                "oracle",
+                render_oracle_codex_mastery as fn(&mut Framebuffer, &GameState),
+                CODEX_LENS_RUNES_X,
+                CODEX_LENS_ROW_Y + invariant_row * CODEX_LENS_ROW_PITCH,
+            ),
+            ("legacy", render_codex_mastery, 128, 32 + invariant_row * 14),
+        ] {
+            let mut meters = Vec::new();
+            for evidence in 0..=6u32 {
+                let mut cartridge = quiz_cartridge();
+                // Evidence mixes first-try successes and redemptions; misses
+                // never light a rune.
+                cartridge.mastery.insert(
+                    Concept::Invariant,
+                    LensRecord {
+                        first_try: evidence - evidence / 2,
+                        redeemed: evidence / 2,
+                        missed: 9,
+                        ..LensRecord::default()
+                    },
+                );
+                let state = GameState {
+                    cartridge: Some(cartridge),
+                    ..Default::default()
+                };
+                let mut frame = Framebuffer::default();
+                renderer(&mut frame, &state);
+                let x = runes_x as usize..(runes_x + 19) as usize;
+                let y = row_y as usize..(row_y + 7) as usize;
+                let lit = color_pixels_in_region(&frame.pixels, PARCH, x.clone(), y.clone()) / 5;
+                assert_eq!(
+                    lit,
+                    [0, 1, 1, 2, 2, 3, 3][evidence as usize],
+                    "{name}: {evidence} evidence must light the declared rune count"
+                );
+                let stage_color = [None, Some(CYAN), Some(AMBER), Some(MAGENTA)][lit];
+                if let Some(color) = stage_color {
+                    assert!(
+                        color_pixels_in_region(&frame.pixels, color, x.clone(), y.clone()) > 0,
+                        "{name}: stage {lit} uses its own rune color"
+                    );
+                }
+                meters.push(frame_region(&frame.pixels, x, y));
+            }
+            for (below, at) in [(0, 1), (2, 3), (4, 5)] {
+                assert_ne!(
+                    meters[below], meters[at],
+                    "{name}: crossing {MASTERY_THRESHOLDS:?} changes the meter"
+                );
+            }
+            for (at, above) in [(1, 2), (3, 4), (5, 6)] {
+                assert_eq!(
+                    meters[at], meters[above],
+                    "{name}: the meter holds between thresholds"
+                );
+            }
+        }
+    }
+
+    /// Classifies the three 5x7 runes of a meter drawn at (`x`, `y`).
+    fn meter_styles(frame: &[u8], x: i32, y: i32) -> [RuneStyle; 3] {
+        std::array::from_fn(|index| {
+            let rune_x = (x + index as i32 * 7) as usize;
+            let xs = rune_x..rune_x + 5;
+            let ys = y as usize..y as usize + 7;
+            if color_pixels_in_region(frame, PARCH, xs.clone(), ys.clone()) > 0 {
+                RuneStyle::Lit
+            } else if color_pixels_in_region(frame, AMBER, xs.clone(), ys.clone()) > 0 {
+                RuneStyle::Cracked
+            } else {
+                assert!(
+                    color_pixels_in_region(frame, ASH, xs, ys) > 0,
+                    "rune {index}"
+                );
+                RuneStyle::Unlit
+            }
+        })
+    }
+
+    /// A lens record with nine first-try successes whose newest five graded
+    /// outcomes hold `right` successes.
+    fn gated_record(right: u32) -> LensRecord {
+        LensRecord {
+            first_try: 9,
+            recent: ((1u32 << right) - 1) as u8,
+            recent_len: learning::RECENT_CAPACITY,
+            ..LensRecord::default()
+        }
+    }
+
+    #[test]
+    fn codex_mastery_runes_crack_at_the_exact_gate_breakpoints_on_the_rendered_frame() {
+        use RuneStyle::{Cracked, Lit, Unlit};
+        let invariant_row = Concept::ALL
+            .iter()
+            .position(|concept| *concept == Concept::Invariant)
+            .unwrap() as i32;
+        let lesson = |outstanding| Lesson {
+            question: "WHAT MUST STAY TRUE WHEN A SCENE CHANGES?".into(),
+            answer: "ONLY THE ENGINE CHANGES SCENES".into(),
+            rationale: String::new(),
+            concept: Some(Concept::Invariant),
+            outstanding,
+            misconception: None,
+            peeked: false,
+            spaced_check: false,
+        };
+        for (name, renderer, runes_x, row_y, totals) in [
+            (
+                "oracle",
+                render_oracle_codex_mastery as fn(&mut Framebuffer, &GameState),
+                CODEX_LENS_RUNES_X,
+                CODEX_LENS_ROW_Y + invariant_row * CODEX_LENS_ROW_PITCH,
+                CODEX_TOTALS_BOX,
+            ),
+            (
+                "legacy",
+                render_codex_mastery,
+                128,
+                32 + invariant_row * 14,
+                UiBox {
+                    x: 0,
+                    y: 116,
+                    width: WIDTH as i32,
+                    height: 7,
+                },
+            ),
+        ] {
+            let render = |record: LensRecord, outstanding: bool| {
+                let mut cartridge = oracle_template_cartridge();
+                if name == "legacy" {
+                    cartridge.codequest = None;
+                }
+                cartridge.mastery.insert(Concept::Invariant, record);
+                cartridge.lessons = vec![lesson(outstanding)];
+                let state = GameState {
+                    cartridge: Some(cartridge),
+                    ..Default::default()
+                };
+                let mut frame = Framebuffer::default();
+                renderer(&mut frame, &state);
+                (frame.pixels, state.mastery_crack_legend())
+            };
+            for (record, outstanding, expected) in [
+                (gated_record(5), false, [Lit, Lit, Lit]),
+                (gated_record(4), false, [Lit, Lit, Lit]),
+                (gated_record(3), false, [Lit, Lit, Cracked]),
+                (gated_record(2), false, [Lit, Cracked, Cracked]),
+                (gated_record(0), false, [Lit, Cracked, Cracked]),
+                (gated_record(5), true, [Lit, Lit, Cracked]),
+                (gated_record(3), true, [Lit, Lit, Cracked]),
+                (
+                    LensRecord {
+                        first_try: 3,
+                        ..gated_record(0)
+                    },
+                    false,
+                    [Lit, Cracked, Unlit],
+                ),
+            ] {
+                let (frame, crack_legend) = render(record, outstanding);
+                let cracked = crack_legend.is_some();
+                assert_eq!(
+                    meter_styles(&frame, runes_x, row_y),
+                    expected,
+                    "{name}: {record:?} with an open miss: {outstanding}"
+                );
+                let legend = color_pixels_in_region(
+                    &frame,
+                    AMBER,
+                    totals.x as usize..(totals.x + totals.width) as usize,
+                    totals.y as usize..(totals.y + totals.height) as usize,
+                ) > 0;
+                assert_eq!(cracked, expected.contains(&Cracked));
+                assert_eq!(
+                    legend,
+                    cracked || outstanding,
+                    "{name}: the totals row turns amber for a cracked rune or a review"
+                );
+                if cracked {
+                    assert_eq!(
+                        codex_totals_show_legend(totals, crack_legend),
+                        crack_legend,
+                        "{name}"
+                    );
+                    // Only a crack with a pending review behind it promises
+                    // one; an accuracy-only crack says so instead.
+                    assert_eq!(
+                        crack_legend,
+                        Some(if outstanding {
+                            CODEX_CRACKED_LEGEND
+                        } else {
+                            CODEX_SLIPPED_LEGEND
+                        }),
+                        "{name}: {record:?} with an open miss: {outstanding}"
+                    );
+                }
+            }
+
+            // A cracked rune reads differently from both a lit and an unlit one.
+            let rune = |frame: &[u8], index: i32| {
+                let x = (runes_x + index * 7) as usize;
+                frame_region(frame, x..x + 5, row_y as usize..row_y as usize + 7)
+            };
+            let (cracked_frame, _) = render(gated_record(3), false);
+            let (lit_frame, _) = render(gated_record(4), false);
+            let (unlit_frame, _) = render(LensRecord::default(), false);
+            assert_ne!(rune(&cracked_frame, 2), rune(&lit_frame, 2), "{name}");
+            assert_ne!(rune(&cracked_frame, 2), rune(&unlit_frame, 2), "{name}");
+            if name == "oracle" {
+                maybe_write_preview("oracle-codex-mastery-cracked", &cracked_frame);
+            }
+        }
+    }
+
+    #[test]
+    fn the_lesson_footer_meter_shows_a_cracked_rune_for_an_open_miss() {
+        let footer_x = |state: &GameState| {
+            current_lesson(state, trial_lesson_copy_box()).unwrap()[0].x
+                + text_width(Concept::Responsibility.label(), 1)
+                + 4
+        };
+        let mut state = lesson_state(lesson_question(), false, true);
+        let footer_y = trial_lesson_footer_y();
+        {
+            let cartridge = state.cartridge.as_mut().unwrap();
+            cartridge.mastery.insert(
+                Concept::Responsibility,
+                LensRecord {
+                    first_try: 5,
+                    ..LensRecord::default()
+                },
+            );
+            let answer = lesson_question().answer;
+            record_lesson(&mut cartridge.lessons, &lesson_question(), true, answer);
+        }
+        let mut frame = Framebuffer::default();
+        render_oracle_trial(&mut frame, &state);
+        let x = footer_x(&state);
+        assert_eq!(
+            meter_styles(&frame.pixels, x, footer_y),
+            [RuneStyle::Lit; 3]
+        );
+
+        record_lesson(
+            &mut state.cartridge.as_mut().unwrap().lessons,
+            &lesson_question(),
+            false,
+            (lesson_question().answer + 1) % 4,
+        );
+        let mut frame = Framebuffer::default();
+        render_oracle_trial(&mut frame, &state);
+        maybe_write_preview("oracle-lesson-cracked-rune", &frame.pixels);
+        assert_eq!(
+            meter_styles(&frame.pixels, x, footer_y),
+            [RuneStyle::Lit, RuneStyle::Lit, RuneStyle::Cracked],
+            "the miss just journaled cracks rune III on the footer"
+        );
+    }
+
+    #[test]
+    fn codex_lesson_pages_show_the_answer_and_mark_outstanding_reviews() {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.lessons = journal_lessons();
+        cartridge.mastery = journal_mastery();
+        let mut state = GameState {
+            cartridge: Some(cartridge),
+            ..Default::default()
+        };
+        let status = (44..127, 20..27);
+        let answer = (
+            CODEX_ANSWER_BOX.x as usize..(CODEX_ANSWER_BOX.x + CODEX_ANSWER_BOX.width) as usize,
+            CODEX_ANSWER_BOX.y as usize..(CODEX_ANSWER_BOX.y + CODEX_ANSWER_BOX.height) as usize,
+        );
+        let rationale = (23..226, 116..139);
+        let whole_rationale = (
+            CODEX_RATIONALE_BOX.x as usize
+                ..(CODEX_RATIONALE_BOX.x + CODEX_RATIONALE_BOX.width) as usize,
+            CODEX_RATIONALE_BOX.y as usize
+                ..(CODEX_RATIONALE_BOX.y + CODEX_RATIONALE_BOX.height) as usize,
+        );
+        let once_chose_row = (
+            CODEX_TEXT_X as usize..226,
+            (CODEX_RATIONALE_Y + 3 * LINE_HEIGHT) as usize
+                ..(CODEX_RATIONALE_Y + 3 * LINE_HEIGHT + 7) as usize,
+        );
+        let render_page = |state: &GameState, page, legacy: bool, revealed: bool| {
+            let mut state_frame = Framebuffer::default();
+            let mut paged = GameState {
+                cartridge: state.cartridge.clone(),
+                codex_page: page,
+                codex_revealed: revealed,
+                ..Default::default()
+            };
+            paged.hero_style = state.hero_style;
+            if legacy {
+                render_codex(&mut state_frame, &paged);
+            } else {
+                render_oracle_codex(&mut state_frame, &paged);
+            }
+            state_frame.pixels
+        };
+        let render =
+            |state: &GameState, page, legacy: bool| render_page(state, page, legacy, false);
+        let count =
+            |frame: &[u8], color, region: &(std::ops::Range<usize>, std::ops::Range<usize>)| {
+                color_pixels_in_region(frame, color, region.0.clone(), region.1.clone())
+            };
+
+        let learned = render(&state, 1, false);
+        maybe_write_preview("oracle-codex-lesson-learned", &learned);
+        assert!(color_pixels_in_region(&learned, CYAN, status.0.clone(), status.1.clone()) > 0);
+        assert_eq!(
+            color_pixels_in_region(&learned, AMBER, status.0.clone(), status.1.clone()),
+            0
+        );
+        assert!(color_pixels_in_region(&learned, GREEN, answer.0.clone(), answer.1.clone()) > 0);
+        assert_eq!(
+            render_page(&state, 1, false, true),
+            learned,
+            "a learned lesson has nothing to reveal"
+        );
+        assert!(
+            count(&learned, MIST, &once_chose_row) > 0,
+            "a learned lesson recalls the misconception it replaced"
+        );
+
+        // A pending review is a self-test: the answer stays sealed and the
+        // player's own misconception is shown instead.
+        let sealed = render(&state, 2, false);
+        maybe_write_preview("oracle-codex-lesson-sealed", &sealed);
+        assert!(
+            color_pixels_in_region(&sealed, AMBER, status.0.clone(), status.1.clone()) > 0,
+            "an outstanding lesson reads REVIEW PENDING in amber"
+        );
+        assert_eq!(
+            count(&sealed, GREEN, &answer),
+            0,
+            "a pending answer is never shown before A"
+        );
+        assert_eq!(count(&sealed, GREEN, &whole_rationale), 0);
+        assert!(
+            count(&sealed, MIST, &answer) > 0,
+            "the answer panel says how to reveal"
+        );
+        assert!(
+            count(&sealed, RED, &whole_rationale) > 0,
+            "the pick is shown"
+        );
+        assert!(
+            count(&sealed, MIST, &whole_rationale) > 0,
+            "and its misconception"
+        );
+        assert_eq!(
+            count(&sealed, PARCH, &whole_rationale),
+            0,
+            "the answer's rationale stays sealed too"
+        );
+
+        let revealed = render_page(&state, 2, false, true);
+        maybe_write_preview("oracle-codex-lesson-revealed", &revealed);
+        assert!(count(&revealed, GREEN, &answer) > 0);
+        assert!(count(&revealed, PARCH, &rationale) > 0);
+        assert_eq!(
+            count(&revealed, RED, &whole_rationale),
+            0,
+            "revealing shows the answer layout"
+        );
+        assert_eq!(count(&revealed, MIST, &once_chose_row), 0);
+
+        let mut peeked = GameState {
+            cartridge: state.cartridge.clone(),
+            ..Default::default()
+        };
+        peeked.cartridge.as_mut().unwrap().lessons[1].peeked = true;
+        let peeked_page = render_page(&peeked, 2, false, true);
+        assert!(
+            color_pixels_in_region(&peeked_page, AMBER, status.0.clone(), status.1.clone()) > 0
+        );
+        assert_ne!(
+            frame_region(&peeked_page, status.0.clone(), status.1.clone()),
+            frame_region(&revealed, status.0.clone(), status.1.clone()),
+            "a peeked review reads PENDING PEEKED"
+        );
+
+        // A miss recorded before picks were saved still seals its answer.
+        let mut unrecorded = GameState {
+            cartridge: state.cartridge.clone(),
+            ..Default::default()
+        };
+        unrecorded.cartridge.as_mut().unwrap().lessons[1].misconception = None;
+        let think = render(&unrecorded, 2, false);
+        maybe_write_preview("oracle-codex-lesson-sealed-no-pick", &think);
+        assert_eq!(count(&think, GREEN, &answer), 0);
+        assert_eq!(count(&think, RED, &whole_rationale), 0);
+        let mut expected_think = Framebuffer::default();
+        expected_think.text(CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_THINK_PROMPT, MIST, 1);
+        let think_row = (
+            CODEX_TEXT_X as usize..226,
+            CODEX_CHOSE_Y as usize..(CODEX_CHOSE_Y + 7) as usize,
+        );
+        assert_eq!(
+            count(&think, MIST, &think_row),
+            count(&expected_think.pixels, MIST, &think_row),
+            "without a pick the page asks the player to think first"
+        );
+
+        let legacy_lesson = render(&state, 3, false);
+        maybe_write_preview("oracle-codex-lesson-no-rationale", &legacy_lesson);
+        assert!(
+            color_pixels_in_region(
+                &legacy_lesson,
+                MIST,
+                rationale.0.clone(),
+                rationale.1.clone()
+            ) > 0
+        );
+        assert_eq!(
+            color_pixels_in_region(&legacy_lesson, PARCH, rationale.0.clone(), rationale.1),
+            0,
+            "a lesson without a rationale says so instead of inventing one"
+        );
+
+        state.cartridge.as_mut().unwrap().codequest = None;
+        let plain = render_page(&state, 2, true, true);
+        maybe_write_preview("codex-legacy-lesson", &plain);
+        assert!(color_pixels_in_region(&plain, AMBER, 5..90, 21..28) > 0);
+        assert!(color_pixels_in_region(&plain, GREEN, 21..212, 76..83) > 0);
+        let plain_sealed = render(&state, 2, true);
+        maybe_write_preview("codex-legacy-lesson-sealed", &plain_sealed);
+        assert_eq!(
+            color_pixels_in_region(&plain_sealed, GREEN, 0..WIDTH, 0..HEIGHT),
+            0,
+            "the legacy Codex seals a pending answer too"
+        );
+        assert!(color_pixels_in_region(&plain_sealed, RED, 6..234, 91..141) > 0);
+        assert!(color_pixels_in_region(&render(&state, 1, true), MIST, 11..215, 131..138) > 0);
+        let mut plain_state = GameState {
+            cartridge: state.cartridge.clone(),
+            ..Default::default()
+        };
+        plain_state.codex_page = 0;
+        let mut plain_mastery = Framebuffer::default();
+        render_codex(&mut plain_mastery, &plain_state);
+        maybe_write_preview("codex-legacy-mastery", &plain_mastery.pixels);
+        assert_ne!(plain, plain_mastery.pixels);
+    }
+
+    fn brightest_plate_color(plate: &[u8; NATIVE_RGB_BYTES], bounds: LayoutBounds) -> Color {
+        let mut brightest = Color::rgb(0, 0, 0);
+        for y in bounds.y..bounds.y + bounds.height {
+            for x in bounds.x..bounds.x + bounds.width {
+                let offset = (y as usize * WIDTH + x as usize) * 3;
+                let color = Color::rgb(plate[offset], plate[offset + 1], plate[offset + 2]);
+                if relative_luminance(color) > relative_luminance(brightest) {
+                    brightest = color;
+                }
+            }
+        }
+        brightest
+    }
+
+    fn inset(bounds: UiBox) -> LayoutBounds {
+        LayoutBounds {
+            x: bounds.x + 1,
+            y: bounds.y + 1,
+            width: bounds.width - 2,
+            height: bounds.height - 2,
+        }
+    }
+
+    #[test]
+    fn codex_ui_stays_contained_disjoint_and_readable() {
+        let screen = LayoutBounds {
+            x: 0,
+            y: 0,
+            width: WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        // Measured usable interior of the chronicle plate's archive frame.
+        let archive = LayoutBounds {
+            x: 62,
+            y: 37,
+            width: 116,
+            height: 77,
+        };
+        let totals = inset(CODEX_TOTALS_BOX);
+        let prompt = inset(CODEX_PROMPT_BOX);
+        let header = inset(CODEX_LESSON_HEADER_BOX);
+        let question = inset(CODEX_QUESTION_BOX);
+        let answer = inset(CODEX_ANSWER_BOX);
+        let rationale = inset(CODEX_RATIONALE_BOX);
+        let portrait = LayoutBounds {
+            x: 8,
+            y: 5,
+            width: HERO_PORTRAIT_SIZE as i32,
+            height: HERO_PORTRAIT_SIZE as i32,
+        };
+
+        let heading = centered_text_box_bounds(CODEX_HEADING_BOX, "ORACLE CODEX", 1);
+        let widest_lens = Concept::ALL
+            .iter()
+            .map(|concept| concept.label())
+            .max_by_key(|label| label.len())
+            .unwrap();
+        let mut archive_children = vec![("mastery heading", heading, PARCH)];
+        for row in 0..Concept::ALL.len() as i32 {
+            let y = CODEX_LENS_ROW_Y + row * CODEX_LENS_ROW_PITCH;
+            archive_children.push((
+                "lens label",
+                text_bounds(CODEX_LENS_LABEL_X, y, widest_lens, 1),
+                PARCH,
+            ));
+            archive_children.push((
+                "lens runes",
+                LayoutBounds {
+                    x: CODEX_LENS_RUNES_X,
+                    y,
+                    width: 19,
+                    height: 7,
+                },
+                CYAN,
+            ));
+            archive_children.push((
+                "lens pending count",
+                text_bounds(CODEX_LENS_PENDING_X, y, "!99", 1),
+                AMBER,
+            ));
+        }
+        let worst_totals = "LEARNED 99  REVIEW 99";
+        let lesson_counter = text_bounds(44, 7, &codex_lesson_counter(998, 999), 1);
+        let lesson_lens = text_bounds(214 - 6 - text_width(widest_lens, 1), 7, widest_lens, 1);
+        let lesson_runes = LayoutBounds {
+            x: 214,
+            y: 7,
+            width: 19,
+            height: 7,
+        };
+        let general_lens = text_bounds(214 + 19 - text_width("GENERAL", 1), 7, "GENERAL", 1);
+        let lesson_status = text_bounds(44, 20, "REVIEW PENDING", 1);
+        let lesson_controls = text_bounds(147, 20, "L/R:PAGE B:BACK", 1);
+        let question_block = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_QUESTION_Y,
+            width: text_width(&"Q".repeat(QUIZ_QUESTION_COLUMNS), 1),
+            height: QUIZ_QUESTION_ROWS as i32 * LINE_HEIGHT - 1,
+        };
+        let answer_copy = text_bounds(
+            CODEX_ANSWER_TEXT_X,
+            CODEX_ANSWER_Y,
+            &"A".repeat(QUIZ_CHOICE_CHARS),
+            1,
+        );
+        let answer_rune = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_ANSWER_Y,
+            width: 5,
+            height: 7,
+        };
+        let rationale_heading = text_bounds(CODEX_TEXT_X, CODEX_WHY_Y, "WHY IT HOLDS", 1);
+        let rationale_block = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_RATIONALE_Y,
+            width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+            height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+        };
+        let missing_rationale = text_bounds(
+            CODEX_TEXT_X,
+            CODEX_RATIONALE_Y,
+            "NO RATIONALE WAS RECORDED",
+            1,
+        );
+        let once_chose = LayoutBounds {
+            y: CODEX_RATIONALE_Y + RATIONALE_ROWS as i32 * LINE_HEIGHT,
+            height: 7,
+            ..rationale_block
+        };
+        let reveal_prompt = text_bounds(CODEX_TEXT_X, CODEX_ANSWER_Y, CODEX_REVEAL_PROMPT, 1);
+        let chose_heading = text_bounds(CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_CHOSE_HEADING, 1);
+        let think_prompt = text_bounds(CODEX_TEXT_X, CODEX_CHOSE_Y, CODEX_THINK_PROMPT, 1);
+        let pick_line = text_bounds(
+            CODEX_TEXT_X,
+            CODEX_CHOSE_Y + CODEX_CHOSE_GAP,
+            &codex_pick_line(WORST_LESSON_PICK),
+            1,
+        );
+        let misconception_block = LayoutBounds {
+            x: CODEX_TEXT_X,
+            y: CODEX_CHOSE_Y + 2 * CODEX_CHOSE_GAP,
+            width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+            height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+        };
+        let menu_option =
+            centered_text_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1], "OPEN THE CODEX", 1);
+        let menu_subtitle =
+            centered_text_box_bounds(GATEWAY_MENU_SUBTITLE_BOX, "LESSONS 99  REVIEW 99", 1);
+
+        let mut contained = archive_children
+            .iter()
+            .map(|(name, child, _)| (*name, archive, *child))
+            .collect::<Vec<_>>();
+        contained.extend([
+            (
+                "totals",
+                totals,
+                centered_text_box_bounds(CODEX_TOTALS_BOX, worst_totals, 1),
+            ),
+            (
+                "empty journal",
+                totals,
+                centered_text_box_bounds(CODEX_TOTALS_BOX, "NO LESSONS YET", 1),
+            ),
+            (
+                "cracked legend",
+                totals,
+                centered_text_box_bounds(CODEX_TOTALS_BOX, CODEX_CRACKED_LEGEND, 1),
+            ),
+            (
+                "accuracy legend",
+                totals,
+                centered_text_box_bounds(CODEX_TOTALS_BOX, CODEX_SLIPPED_LEGEND, 1),
+            ),
+            (
+                "reading controls",
+                prompt,
+                centered_text_box_bounds(CODEX_PROMPT_BOX, "L/R:READ LESSONS  B:BACK", 1),
+            ),
+            (
+                "empty guidance",
+                prompt,
+                centered_text_box_bounds(CODEX_PROMPT_BOX, "ANSWER A TRIAL  B:BACK", 1),
+            ),
+            ("lesson counter", header, lesson_counter),
+            ("lesson lens", header, lesson_lens),
+            ("lesson lens runes", header, lesson_runes),
+            ("lesson without lens", header, general_lens),
+            ("lesson status", header, lesson_status),
+            ("lesson controls", header, lesson_controls),
+            ("lesson question", question, question_block),
+            ("lesson answer", answer, answer_copy),
+            ("lesson answer rune", answer, answer_rune),
+            ("rationale heading", rationale, rationale_heading),
+            ("rationale", rationale, rationale_block),
+            ("missing rationale", rationale, missing_rationale),
+            ("once chose", rationale, once_chose),
+            ("reveal prompt", answer, reveal_prompt),
+            ("you chose heading", rationale, chose_heading),
+            ("think prompt", rationale, think_prompt),
+            ("worst pick", rationale, pick_line),
+            ("worst misconception", rationale, misconception_block),
+            (
+                "menu codex option",
+                ui_box_bounds(GATEWAY_MENU_OPTION_TEXT_BOXES[1]),
+                menu_option,
+            ),
+            (
+                "menu journal summary",
+                ui_box_bounds(GATEWAY_MENU_SUBTITLE_BOX),
+                menu_subtitle,
+            ),
+        ]);
+        for (name, container, child) in contained {
+            assert!(
+                bounds_contains(container, child),
+                "{name} {child:?} exceeds its container {container:?}"
+            );
+            assert!(
+                bounds_contains(screen, child),
+                "{name} {child:?} exceeds the native frame"
+            );
+        }
+        assert!(horizontal_centers_align(
+            ui_box_bounds(CODEX_HEADING_BOX),
+            heading
+        ));
+
+        for (index, (left_name, left, _)) in archive_children.iter().enumerate() {
+            for (right_name, right, _) in &archive_children[index + 1..] {
+                assert!(
+                    bounds_are_disjoint(*left, *right),
+                    "{left_name} {left:?} overlaps {right_name} {right:?}"
+                );
+            }
+        }
+        for (name, left, right) in [
+            (
+                "archive and totals",
+                archive,
+                ui_box_bounds(CODEX_TOTALS_BOX),
+            ),
+            (
+                "totals and prompt",
+                ui_box_bounds(CODEX_TOTALS_BOX),
+                ui_box_bounds(CODEX_PROMPT_BOX),
+            ),
+            (
+                "portrait and header",
+                portrait,
+                ui_box_bounds(CODEX_LESSON_HEADER_BOX),
+            ),
+            ("counter and lens", lesson_counter, lesson_lens),
+            ("counter and lensless label", lesson_counter, general_lens),
+            ("lens and runes", lesson_lens, lesson_runes),
+            ("counter and status", lesson_counter, lesson_status),
+            ("status and controls", lesson_status, lesson_controls),
+            (
+                "header and question",
+                ui_box_bounds(CODEX_LESSON_HEADER_BOX),
+                ui_box_bounds(CODEX_QUESTION_BOX),
+            ),
+            (
+                "question and answer",
+                ui_box_bounds(CODEX_QUESTION_BOX),
+                answer,
+            ),
+            ("answer rune and answer", answer_rune, answer_copy),
+            (
+                "answer and rationale",
+                ui_box_bounds(CODEX_ANSWER_BOX),
+                ui_box_bounds(CODEX_RATIONALE_BOX),
+            ),
+            (
+                "rationale heading and copy",
+                rationale_heading,
+                rationale_block,
+            ),
+            ("rationale and once chose", rationale_block, once_chose),
+            ("you chose heading and pick", chose_heading, pick_line),
+            ("think prompt and pick", think_prompt, pick_line),
+            ("pick and misconception", pick_line, misconception_block),
+        ] {
+            assert!(
+                bounds_are_disjoint(left, right),
+                "{name} overlap: {left:?} and {right:?}"
+            );
+        }
+
+        // Copy drawn straight onto a plate must clear every ornament: test it
+        // against the brightest plate pixel inside its own glyph cells.
+        let mut plate_copy = archive_children
+            .iter()
+            .map(|(name, bounds, color)| (*name, ORACLE_CHRONICLE, *bounds, *color))
+            .collect::<Vec<_>>();
+        plate_copy.push(("unlit lens", ORACLE_CHRONICLE, archive_children[1].1, MIST));
+        for (name, color) in [("amber rune", AMBER), ("magenta rune", MAGENTA)] {
+            plate_copy.push((name, ORACLE_CHRONICLE, archive_children[2].1, color));
+        }
+        for (name, plate, bounds, color) in plate_copy {
+            let fill = brightest_plate_color(plate, bounds);
+            let ratio = contrast_ratio(color, fill);
+            assert!(
+                ratio >= 4.5,
+                "{name} contrast {ratio:.2}:1 against plate fill {:?} is below 4.5:1",
+                (fill.0, fill.1, fill.2)
+            );
+        }
+        for (name, foreground, background) in [
+            ("legacy counter", SKY, INK),
+            ("legacy lens", PARCH, INK),
+            ("legacy status", AMBER, NAVY),
+            ("legacy learned", CYAN, NAVY),
+            ("legacy unlit lens", MIST, NAVY),
+            ("legacy pending", AMBER, NAVY),
+            ("lesson answer panel", GREEN, VOID),
+            ("lesson question panel", PARCH, VOID),
+            ("rationale heading panel", CYAN_DIM, VOID),
+            ("lesson status panel", AMBER, VOID),
+            ("cracked legend panel", AMBER, VOID),
+            ("lesson controls panel", MIST, VOID),
+            ("sealed pick panel", RED, VOID),
+            ("sealed misconception panel", MIST, VOID),
+            ("legacy once chose", MIST, INK),
+            ("legacy answer", GREEN, INK),
+            ("legacy answer marker", GOLD, INK),
+            ("legacy empty journal", GOLD, NAVY),
+            ("legacy question", PARCH, INK),
+            ("legacy rationale heading", SKY, INK),
+        ] {
+            let ratio = contrast_ratio(foreground, background);
+            assert!(ratio >= 4.5, "{name} contrast {ratio:.2}:1 is below 4.5:1");
+        }
+    }
+
+    #[test]
+    fn codex_legacy_layout_keeps_worst_case_copy_inside_its_panels() {
+        let question_box = LayoutBounds {
+            x: 6,
+            y: 32,
+            width: 228,
+            height: 36,
+        };
+        let rationale_box = LayoutBounds {
+            x: 6,
+            y: 91,
+            width: 228,
+            height: 50,
+        };
+        let mastery_box = LayoutBounds {
+            x: 31,
+            y: 25,
+            width: 178,
+            height: 80,
+        };
+        for (name, container, child) in [
+            (
+                "question",
+                question_box,
+                LayoutBounds {
+                    x: 11,
+                    y: 35,
+                    width: text_width(&"Q".repeat(QUIZ_QUESTION_COLUMNS), 1),
+                    height: QUIZ_QUESTION_ROWS as i32 * LINE_HEIGHT - 1,
+                },
+            ),
+            (
+                "rationale heading",
+                rationale_box,
+                text_bounds(11, 95, "WHY IT HOLDS", 1),
+            ),
+            (
+                "rationale",
+                rationale_box,
+                LayoutBounds {
+                    x: 11,
+                    y: 107,
+                    width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+                    height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+                },
+            ),
+            (
+                "once chose",
+                rationale_box,
+                text_bounds(11, 107 + 3 * LINE_HEIGHT, &"O".repeat(RATIONALE_COLUMNS), 1),
+            ),
+            (
+                "reveal prompt",
+                LayoutBounds {
+                    x: 6,
+                    y: 73,
+                    width: 228,
+                    height: 13,
+                },
+                text_bounds(9, 76, CODEX_REVEAL_PROMPT, 1),
+            ),
+            (
+                "you chose heading",
+                rationale_box,
+                text_bounds(11, 95, CODEX_CHOSE_HEADING, 1),
+            ),
+            (
+                "worst pick",
+                rationale_box,
+                text_bounds(11, 105, &codex_pick_line(WORST_LESSON_PICK), 1),
+            ),
+            (
+                "worst misconception",
+                rationale_box,
+                LayoutBounds {
+                    x: 11,
+                    y: 115,
+                    width: text_width(&"R".repeat(RATIONALE_COLUMNS), 1),
+                    height: RATIONALE_ROWS as i32 * LINE_HEIGHT - 1,
+                },
+            ),
+            (
+                "first lens",
+                mastery_box,
+                text_bounds(42, 32, "INVARIANTS", 1),
+            ),
+            (
+                "last pending count",
+                mastery_box,
+                text_bounds(156, 32 + 4 * 14, "!99", 1),
+            ),
+        ] {
+            assert!(
+                bounds_contains(container, child),
+                "{name} {child:?} exceeds {container:?}"
+            );
+        }
+        assert!(bounds_are_disjoint(
+            text_bounds(5, 4, &codex_lesson_counter(998, 999), 1),
+            text_bounds(214 - 6 - text_width("INVARIANTS", 1), 4, "INVARIANTS", 1),
+        ));
+        assert!(bounds_are_disjoint(
+            centered_text_bounds(116, "LEARNED 99  REVIEW 99", 1),
+            text_bounds(5, 151, "L/R:PAGE", 1),
+        ));
+    }
+
+    #[test]
+    fn codex_fixture_copy_is_worst_case_for_the_lesson_panels() {
+        assert_eq!(
+            wrap_text(WORST_LESSON_QUESTION, QUIZ_QUESTION_COLUMNS).len(),
+            QUIZ_QUESTION_ROWS
+        );
+        let rationale = wrap_text(WORST_LESSON_RATIONALE, RATIONALE_COLUMNS);
+        assert_eq!(rationale.len(), RATIONALE_ROWS);
+        assert_eq!(rationale[0].chars().count(), RATIONALE_COLUMNS);
+        assert!(crate::learning::rationale_fits(WORST_LESSON_RATIONALE));
+        assert_eq!(WORST_LESSON_PICK.chars().count(), QUIZ_CHOICE_CHARS);
+        let once = codex_once_chose_line(WORST_LESSON_PICK);
+        assert!(once.chars().count() <= RATIONALE_COLUMNS, "{once}");
+        assert!(once.ends_with("..."), "a cut pick is marked as cut: {once}");
+        assert_eq!(codex_once_chose_line("THE SHELL"), "ONCE CHOSE: THE SHELL");
+        assert_eq!(
+            wrap_text(WORST_LESSON_MISCONCEPTION, RATIONALE_COLUMNS).len(),
+            RATIONALE_ROWS
+        );
+        assert!(crate::learning::rationale_fits(WORST_LESSON_MISCONCEPTION));
+        for lesson in journal_lessons() {
+            assert!(
+                lesson.answer.chars().count() <= QUIZ_CHOICE_CHARS,
+                "lesson answers are committed quiz choices and share their limit"
+            );
+            if let Some((pick, _)) = &lesson.misconception {
+                assert!(pick.chars().count() <= QUIZ_CHOICE_CHARS);
+            }
+        }
+    }
+
     #[test]
     fn wrapping_never_splits_into_oversized_lines() {
         let lines = wrap_text("alpha beta supercalifragilistic", 8);
         assert!(lines.iter().all(|line| line.chars().count() <= 8));
+    }
+
+    #[test]
+    fn the_codex_turns_pages_audibly_and_keeps_reading_quiet() {
+        use audio::Cue;
+        let mut engine = quiz_menu_engine(journal_cartridge());
+        let _ = tap_cues(&mut engine, Button::Down);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::Confirm));
+        assert_eq!(engine.screen(), Screen::Codex);
+        assert_eq!(
+            tap_cues(&mut engine, Button::Right)[0],
+            Some(Cue::PageTurn(1))
+        );
+        assert_eq!(
+            tap_cues(&mut engine, Button::Left)[0],
+            Some(Cue::PageTurn(0))
+        );
+        assert_eq!(
+            tap_cues(&mut engine, Button::A)[0],
+            Some(Cue::Unavailable),
+            "A is inactive on the mastery page"
+        );
+        let _ = tap_cues(&mut engine, Button::Left);
+        let _ = tap_cues(&mut engine, Button::Left);
+        assert!(game_state(&engine).codex_lesson().unwrap().1.outstanding);
+        assert_eq!(
+            tap_cues(&mut engine, Button::A)[0],
+            Some(Cue::QuestionReveal),
+            "revealing a sealed answer has its own cue"
+        );
+        assert_eq!(
+            tap_cues(&mut engine, Button::A)[0],
+            Some(Cue::Unavailable),
+            "a revealed page has nothing more for A to do"
+        );
+        for _ in 0..120 {
+            engine.update();
+            assert_eq!(last_cue(&engine), None, "no ambience under reading");
+        }
+        assert_eq!(tap_cues(&mut engine, Button::B)[0], Some(Cue::Cancel));
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+    }
+
+    #[test]
+    fn leaving_warns_once_and_redemption_has_its_own_cadence() {
+        use audio::Cue;
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        assert_eq!(tap_cues(&mut engine, Button::B)[0], Some(Cue::LeaveWarning));
+        assert_eq!(engine.screen(), Screen::Quiz, "one B only arms the leave");
+        for _ in 0..QUIZ_LEAVE_CONFIRM_TICKS {
+            engine.update();
+        }
+
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        for _ in 0..RETRY_GAP {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(current_question(&engine).review, Review::InSession);
+        focus_choice(&mut engine, true);
+        assert_eq!(tap_cues(&mut engine, Button::A)[0], Some(Cue::Redeemed));
+    }
+
+    #[test]
+    fn reduced_motion_freezes_decorative_motion_but_keeps_scene_timing() {
+        fn sampled(engine: &mut GameEngine, samples: usize, spacing: usize) -> Vec<Vec<u8>> {
+            (0..samples)
+                .map(|_| {
+                    for _ in 0..spacing {
+                        engine.update();
+                    }
+                    engine.frame().to_vec()
+                })
+                .collect()
+        }
+        let animates = |frames: &[Vec<u8>]| frames.windows(2).any(|pair| pair[0] != pair[1]);
+
+        for reduced in [false, true] {
+            let mut engine = GameEngine::new();
+            issue(&mut engine, EngineCommand::ReducedMotion(reduced));
+            issue(
+                &mut engine,
+                EngineCommand::Cartridge(Some(oracle_template_cartridge())),
+            );
+            issue(&mut engine, EngineCommand::Power(true));
+            finish_opening(&mut engine);
+            let title = sampled(&mut engine, 4, 17);
+            press(&mut engine, Button::Start);
+            press(&mut engine, Button::A);
+            assert_eq!(engine.screen(), Screen::CharacterCreation);
+            let atelier = sampled(&mut engine, 4, 23);
+
+            assert_eq!(
+                animates(&title),
+                !reduced,
+                "title prompt (reduced={reduced})"
+            );
+            assert_eq!(animates(&atelier), !reduced, "hero bob (reduced={reduced})");
+        }
+
+        let scene_timeline = |reduced: bool| {
+            let mut engine = GameEngine::new();
+            issue(&mut engine, EngineCommand::ReducedMotion(reduced));
+            issue(
+                &mut engine,
+                EngineCommand::Cartridge(Some(oracle_template_cartridge())),
+            );
+            issue(&mut engine, EngineCommand::Power(true));
+            issue(&mut engine, EngineCommand::BootComplete);
+            (0..720)
+                .map(|_| {
+                    engine.update();
+                    engine.screen()
+                })
+                .collect::<Vec<_>>()
+        };
+        let timeline = scene_timeline(true);
+        assert_eq!(
+            timeline,
+            scene_timeline(false),
+            "motion never changes timing"
+        );
+        assert_eq!(timeline.last(), Some(&Screen::Title));
+    }
+
+    /// The whole learning loop across the quiz and the Codex: a miss is
+    /// journaled as a pending review, returns after the retry gap, is redeemed,
+    /// and the Codex rereads the same journal and mastery the quiz wrote.
+    #[test]
+    fn a_missed_concept_is_journaled_retried_redeemed_and_reread_in_the_codex() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let missed = current_question(&engine);
+        commit(&mut engine, false);
+        {
+            let cartridge = engine_state(&engine).cartridge.as_ref().unwrap();
+            let lesson = cartridge
+                .lessons
+                .iter()
+                .find(|lesson| lesson.question == missed.question)
+                .expect("committing a miss journals the lesson");
+            assert!(lesson.outstanding, "a miss is pending review");
+            assert_eq!(lesson.answer, missed.choices[missed.answer]);
+            assert_eq!(lesson.rationale, missed.rationales[missed.answer]);
+            assert_eq!(cartridge.mastery[&Concept::Responsibility].missed, 1);
+        }
+        finish_lesson(&mut engine);
+
+        for _ in 0..RETRY_GAP {
+            assert_eq!(current_question(&engine).review, Review::Fresh);
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        let retry = current_question(&engine);
+        assert!(
+            retry.review.is_review(),
+            "the miss returns after the retry gap"
+        );
+        assert_eq!(retry.question, missed.question);
+        commit(&mut engine, true);
+        {
+            let state = engine_state(&engine);
+            assert!(state.quiz.as_ref().unwrap().redeemed);
+            let cartridge = state.cartridge.as_ref().unwrap();
+            let lesson = cartridge
+                .lessons
+                .iter()
+                .find(|lesson| lesson.question == missed.question)
+                .unwrap();
+            assert!(!lesson.outstanding, "redemption clears the pending review");
+            let record = cartridge.mastery[&Concept::Responsibility];
+            assert_eq!(
+                (record.missed, record.redeemed, record.relearned),
+                (1, 0, 1),
+                "a same-launch redemption is relearning, not evidence"
+            );
+        }
+        finish_lesson(&mut engine);
+
+        press(&mut engine, Button::B);
+        press(&mut engine, Button::B);
+        assert_eq!(engine.screen(), Screen::QuizMenu);
+        let journal = engine_state(&engine)
+            .cartridge
+            .as_ref()
+            .unwrap()
+            .lessons
+            .clone();
+        if engine_state(&engine).menu_selected == 0 {
+            press(&mut engine, Button::Down);
+        }
+        press(&mut engine, Button::A);
+        assert_eq!(engine.screen(), Screen::Codex);
+        for _ in 0..journal.len() {
+            press(&mut engine, Button::Right);
+            let (_, lesson) = engine_state(&engine)
+                .codex_lesson()
+                .expect("every journal page shows a lesson");
+            assert!(journal.contains(lesson));
+        }
+        assert_eq!(
+            engine_state(&engine).cartridge.as_ref().unwrap().lessons,
+            journal,
+            "reading the Codex never changes the journal"
+        );
+    }
+
+    // Tests below were added by a mutation-testing sweep over the quiz flow;
+    // each one pins a rule that an earlier suite let a small edit break.
+
+    #[test]
+    fn a_miss_on_a_batch_opening_question_waits_the_full_gap_in_its_own_batch() {
+        let mut questions: Vec<_> = (0..12).map(concept_question).collect();
+        let mut batch_ends = vec![6, 12];
+        let mut deferred = Vec::new();
+        // Index 6 opens the second batch; the first batch's end (6) is behind
+        // it, so the review lands RETRY_GAP questions later in the second.
+        assert_eq!(
+            schedule_retry(&mut questions, &mut batch_ends, &mut deferred, 6),
+            Some(RetrySlot::At(7 + RETRY_GAP))
+        );
+        assert!(deferred.is_empty());
+        assert_eq!(batch_ends, vec![6, 13]);
+        assert_eq!(questions[7 + RETRY_GAP].review, Review::InSession);
+        assert_eq!(questions[7 + RETRY_GAP].question, questions[6].question);
+    }
+
+    #[test]
+    fn missing_a_review_again_is_not_a_redemption() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        for _ in 0..RETRY_GAP {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert!(current_question(&engine).review.is_review());
+
+        commit(&mut engine, false);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert!(!run.redeemed, "a missed review redeems nothing");
+        assert_eq!(run.ledger.redeemed, 0);
+        assert_eq!(quiz_feedback_banner(run), "WARD FRACTURES");
+    }
+
+    #[test]
+    fn a_short_batch_merged_forward_keeps_the_higher_level() {
+        let mut state = GameState::default();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..9).map(concept_question).collect();
+        state.cartridge = Some(cartridge);
+        state.batch_ends = vec![3, 9];
+        state.batch_levels = vec![1, 2];
+        state.quiz = Some(QuizRun {
+            question: 2,
+            feedback: Some((true, 0)),
+            ..QuizRun::new()
+        });
+
+        continue_after_lesson(&mut state);
+
+        let run = state.quiz.as_ref().unwrap();
+        assert_eq!((run.question, run.level, run.completed_batches), (3, 1, 0));
+        assert_eq!(state.batch_ends, vec![9]);
+        assert_eq!(state.batch_levels, vec![2]);
+    }
+
+    #[test]
+    fn continuing_from_a_level_up_keeps_the_run() {
+        let mut engine = batch_quiz_engine(2 * QUESTION_BATCH_SIZE);
+        assert_eq!(
+            engine_state(&engine).batch_ends,
+            vec![QUESTION_BATCH_SIZE, 2 * QUESTION_BATCH_SIZE]
+        );
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        while engine.screen() == Screen::Quiz {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let before = engine_state(&engine).quiz.clone().unwrap();
+        assert_eq!((before.level, before.completed_batches), (2, 1));
+
+        for _ in 0..200 {
+            if engine.screen() != Screen::LevelUp {
+                break;
+            }
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(
+            (run.question, run.level, run.completed_batches, run.hearts),
+            (before.question, 2, 1, 2),
+            "the level-up continues the same run"
+        );
+        assert_eq!(run.score, before.score);
+        assert_eq!(run.ledger, before.ledger);
+    }
+
+    #[test]
+    fn a_broken_ward_routed_back_to_the_oracle_starts_a_fresh_run() {
+        use SceneHandler as H;
+        use SceneSignal as S;
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(concept_question).collect();
+        cartridge.machine = Box::new(
+            SceneMachineDefinition::compile(
+                "menu",
+                vec![
+                    scene_spec(
+                        "menu",
+                        H::QuizMenu,
+                        &[(S::NewRun, "oracle", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "oracle",
+                        H::Oracle,
+                        &[(S::QuestionsReady, "quiz", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "quiz",
+                        H::ConceptQuiz,
+                        &[
+                            (S::NeedsQuestion, "oracle", None),
+                            (S::HeartsEmpty, "oracle", None),
+                            (S::Back, "menu", None),
+                        ],
+                    ),
+                ],
+            )
+            .unwrap(),
+        );
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        press(&mut engine, Button::A);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+
+        for _ in 0..3 {
+            commit(&mut engine, false);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::Oracle);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(
+            (run.hearts, run.question, run.ledger.first_try),
+            (3, 0, 0),
+            "a dead run never carries into the Oracle"
+        );
+    }
+
+    #[test]
+    fn retiring_a_run_keeps_each_remaining_batch_at_its_own_level() {
+        let mut state = GameState::default();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..18).map(concept_question).collect();
+        let missed = concept_question(2);
+        record_lesson(&mut cartridge.lessons, &missed, false, 1);
+        state.cartridge = Some(cartridge);
+        state.batch_ends = vec![6, 12, 18];
+        state.batch_levels = vec![1, 2, 3];
+        state.consumed_questions = QUESTION_BATCH_SIZE;
+
+        retire_consumed_questions(&mut state);
+
+        let questions = &state.cartridge.as_ref().unwrap().questions;
+        assert_eq!(questions.len(), 13);
+        assert_eq!(questions[0].review, Review::InSession);
+        assert_eq!(questions[0].question, missed.question);
+        assert_eq!(state.batch_ends, vec![7, 13]);
+        assert_eq!(
+            state.batch_levels,
+            vec![2, 3],
+            "the requeued review shifts the old boundaries with it"
+        );
+    }
+
+    #[test]
+    fn rebatching_reads_a_boundary_question_from_the_batch_it_opens() {
+        let fresh = (0..12).map(concept_question).collect::<Vec<_>>();
+        // Question 5 opens the old level-2 batch, so the new first batch
+        // (ending on it) takes level 2.
+        assert_eq!(
+            rebatch(&[5, 12], &[1, 2], &fresh),
+            (vec![6, 12], vec![2, 2])
+        );
+    }
+
+    #[test]
+    fn reinserting_a_cartridge_drops_replies_to_its_earlier_requests() {
+        let mut engine = waiting_oracle_engine();
+        let stale = engine_state(&engine).question_request_seq;
+        assert!(engine_state(&engine).questions_loading);
+
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                result: Ok((0..QUESTION_BATCH_SIZE).map(concept_question).collect()),
+                seq: stale,
+            },
+        );
+        let state = engine_state(&engine);
+        assert_eq!(state.question_count(), 1, "the stale reply never lands");
+        assert!(state.question_failure.is_none());
+    }
+
+    #[test]
+    fn a_run_that_is_not_live_does_not_set_the_next_batch_level() {
+        let mut state = GameState {
+            cartridge: Some(quiz_cartridge()),
+            quiz: Some(QuizRun {
+                level: 3,
+                completed_batches: 2,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert!(!state.run_is_live());
+        assert_eq!(
+            state.next_batch_level(),
+            1,
+            "the next run starts at Initiate, whatever the last one reached"
+        );
+        state.screen = Screen::Quiz;
+        assert_eq!(state.next_batch_level(), 3);
+    }
+
+    #[test]
+    fn a_delivery_held_through_the_quiz_lands_on_the_level_up() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let _ = engine.take_effects();
+        engine.update();
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (QUESTION_BATCH_SIZE..2 * QUESTION_BATCH_SIZE)
+                .map(concept_question)
+                .collect(),
+        );
+        assert!(engine_state(&engine).pending_questions.is_some());
+        for _ in 0..QUESTION_BATCH_SIZE {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        engine.update();
+        let state = engine_state(&engine);
+        assert!(state.pending_questions.is_none());
+        assert_eq!(state.question_count(), 2 * QUESTION_BATCH_SIZE);
+
+        for _ in 0..200 {
+            if engine.screen() != Screen::LevelUp {
+                break;
+            }
+            engine.update();
+        }
+        assert_eq!(
+            engine.screen(),
+            Screen::Quiz,
+            "questions already delivered skip the Oracle wait"
+        );
+    }
+
+    #[test]
+    fn inserting_a_cartridge_drops_a_held_delivery_and_requests_its_own() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        engine.update();
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (QUESTION_BATCH_SIZE..2 * QUESTION_BATCH_SIZE)
+                .map(concept_question)
+                .collect(),
+        );
+        assert!(engine_state(&engine).pending_questions.is_some());
+        let _ = engine.take_effects();
+
+        let mut other = quiz_cartridge();
+        other.id = "/tmp/other-test".into();
+        other.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(other)));
+        assert!(engine_state(&engine).pending_questions.is_none());
+        assert!(
+            engine.take_effects().iter().any(|effect| matches!(
+                effect,
+                EngineEffect::RequestQuestions { cartridge_id, .. } if cartridge_id == "/tmp/other-test"
+            )),
+            "the new cartridge asks for its first batch at once"
+        );
     }
 }

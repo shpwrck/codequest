@@ -1,0 +1,12 @@
+# Source contracts (Node and Rust tests) parse files with line-sensitive
+# patterns, so every platform checks out text with LF endings.
+* text=auto eol=lf
+
+# Raw framebuffer plates and sprites are embedded byte-for-byte with
+# include_bytes!; never let content sniffing treat them as text.
+*.rgb binary
+*.rgba binary
+*.png binary
+*.ico binary
+*.icns binary
+*.woff2 binary

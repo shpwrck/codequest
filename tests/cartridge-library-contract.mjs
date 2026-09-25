@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  CARTRIDGE_DRAG_THRESHOLD,
   MAX_CARTRIDGES,
   cartridgeDragIntent,
   normalizeCartridges,
@@ -97,6 +98,17 @@ assert.equal(
 assert.equal(cartridgeDragIntent(-50), "load", "Dragging up should load");
 assert.equal(cartridgeDragIntent(50), "recycle", "Dragging down should recycle");
 assert.equal(cartridgeDragIntent(-20), null, "Small movement should remain a click");
+assert.equal(
+  cartridgeDragIntent(-CARTRIDGE_DRAG_THRESHOLD),
+  "load",
+  "A drag of exactly the threshold already loads",
+);
+assert.equal(
+  cartridgeDragIntent(CARTRIDGE_DRAG_THRESHOLD),
+  "recycle",
+  "A drag of exactly the threshold already recycles",
+);
+assert.equal(cartridgeDragIntent(1 - CARTRIDGE_DRAG_THRESHOLD), null, "Just short of the threshold is a click");
 assert.equal(
   cartridgeDragIntent(-50, { canLoad: false }),
   null,

@@ -222,10 +222,74 @@ behaviors; the manifest can reorder or reuse them but cannot define arbitrary
 code or create a new renderer. Typed art templates select only renderers shipped
 with CODE QUEST; mechanics and template-less art remain validated design
 metadata. Schema v1 remains compatible metadata and uses the built-in flow.
+Sound follows the trusted handler rather than the manifest: classify an
+implemented cue as Implemented with its audio test as evidence, and its
+`art.kind = "audio"` entry as Configured/metadata.
 
 When the desired game type is unsupported, finish the design brief but do not
 put an invalid type in `CODEQUEST.toml`. Explain the runtime gap and propose the
 smallest schema/engine increment needed before authoring that manifest change.
+
+### 8. Build on the runtime learning mechanisms
+
+In the CODE QUEST engine repository, quiz cartridges already provide these
+mechanisms. Reuse them before proposing new ones, and cite them as evidence in
+the pedagogy map and runtime traceability:
+
+- Concept lenses: every generated question names one of five lenses
+  (`learning::Concept`: purpose, responsibility, interaction, invariant,
+  tradeoff) and carries a rationale for every choice (payload v2 in
+  `questions.rs`). A question without a known lens, with a missing or overlong
+  rationale, or with other mechanical failures (length, non-ASCII text) gets
+  one bounded repair call through the same provider when the batch falls
+  short, and is dropped only if that repair fails. Location-citing, trivia,
+  and malformed questions are dropped immediately.
+- Lesson card: after commitment the `concept-quiz` handler replaces the
+  choices with the committed pick's rationale (the misconception) and then the
+  answer's rationale, holds input for 45 ticks, and waits for A or Start.
+- Shuffled choices: `learning::presentation_order` gives each question a stable
+  order and moves every choice on each retry, so answer position is never a
+  cue.
+- Spaced retry: a survivable miss inserts a review copy after exactly three
+  other questions (`RETRY_GAP`), carrying into the next batch when the current
+  one ends sooner. A correct same-launch retry is relearning
+  (`learning::Review::InSession`); only a correct answer when the miss returns
+  in a later launch (`Review::Spaced`) is a redemption.
+- Lens mastery: evidence (first-try successes plus redemptions) wakes three
+  runes per lens at 1, 3, and 5 (`learning::MASTERY_THRESHOLDS`); rune II also
+  needs 60% and rune III 80% of the newest five graded outcomes correct, and
+  rune III no pending review (`LensRecord::stage_with`). Gated runes draw
+  cracked. The save retires first-try and spaced successes, keeps misses and
+  relearned questions queued across launches, and stores mastery per cartridge.
+- Oracle Codex: the `codex` handler, reached through the quiz menu's
+  `open-codex` signal and drawn by the `oracle-codex` template, shows lens
+  mastery with pending-review counts and rereads every lesson. Pending lessons
+  are self-tests: the player's wrong pick and its misconception show, the
+  answer stays sealed until A, and a redemption after a reveal counts as
+  relearning rather than evidence.
+- Difficulty as concept depth: `Concept::focus_for_level` sets each level's
+  focus lenses, level 4+ requests PREDICT transfer questions, and each request
+  names the player's weakest lens and earlier stems. These are prompt-level
+  requirements; acceptance does not enforce the focus share or the PREDICT
+  count.
+- Reduced motion: the engine follows the system's reduced-motion preference by
+  freezing decorative motion while keeping scene timing, input, and data.
+- Screen transcript: `engine/transcript.rs` derives plain-language sentences
+  from the same state the renderers use and publishes them through
+  `engine_transcript` into a visually hidden, polite `aria-live` region
+  (`src/index.html`). It is republished only when its words change: a new
+  screen is read whole, then only in-screen changes such as focus moves, and
+  decorative motion is never announced. A new scene or handler needs
+  transcript sentences, which is proposed engine work that the manifest cannot
+  configure.
+- Oracle line: while generation waits, the Oracle's second header line names
+  a failed request's category with a retry countdown, or recalls journal
+  lessons (outstanding misses first) as retrieval practice that records no
+  evidence.
+
+When a design needs different thresholds, gaps, or feedback, name the constant
+or handler that would change and classify it as proposed engine work; the
+manifest cannot configure these values.
 
 ## Produce the artifacts
 
@@ -241,10 +305,15 @@ production status, and implementation gaps; the manifest is the stable graph
 the engine can validate. Preserve unrelated existing design decisions and show
 material changes clearly.
 
-When the runtime contract has no dedicated sound schema, retain sound needs as
-referenced production entries (for example `art.kind = "audio"`) instead of
-inventing fields. State plainly that metadata does not play audio. Do not use a
-visual `template` name to imply sound playback.
+The runtime contract has no sound schema and no audio `template` value, so
+retain sound needs as referenced production entries (for example
+`art.kind = "audio"`) instead of inventing fields. In the CODE QUEST engine,
+sound is engine-owned: the audio director in `src-tauri/src/audio.rs` diffs a
+per-tick state snapshot and derives cues and scene loops for each trusted
+handler, so an audio entry is the requirement the director implements, not a
+switch that plays anything. State which ledger cues the director already
+implements and which need engine work. Do not use a visual `template` name to
+imply sound playback.
 
 ## Validate before handoff
 
@@ -270,6 +339,28 @@ CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \
   oracle_templates_produce_nine_distinct_native_scene_frames --lib
 ```
 
+That test writes every reachable Oracle scene, including the Codex mastery,
+sealed-lesson, and lesson layouts, despite its historical name. Lesson-card states come from
+`lesson_cards_render_the_misconception_and_the_answer`. The menu-to-Codex route
+and the remaining Codex states come from
+`dogfood_manifest_routes_its_menu_into_the_templated_codex`,
+`empty_codex_says_no_lessons_yet_and_cannot_page`, and
+`codex_lesson_pages_show_the_answer_and_mark_outstanding_reviews`. The quiz
+header's batch progress, `RETRY` label, and `BACK IN` note come from
+`the_header_counts_the_batch_and_labels_the_returning_retry`; the lens-rune
+wake banner from `waking_a_lens_rune_banners_blinks_and_sounds_above_insight`
+and the legacy footer under it from
+`the_legacy_lesson_footer_carries_a_woken_rune_iii_banner_readably`; cracked
+mastery runes from
+`codex_mastery_runes_crack_at_the_exact_gate_breakpoints_on_the_rendered_frame`
+and `the_lesson_footer_meter_shows_a_cracked_rune_for_an_open_miss`;
+the Oracle recall and failure line from
+`the_oracle_line_stays_contained_disjoint_and_readable` and
+`recalled_lessons_are_written_in_but_stay_static_under_reduced_motion`; and the
+Ascension and Aftermath learning debriefs from
+`the_result_prompt_stays_lit_on_every_frame`. Run them with the same variable
+when those surfaces change.
+
 When the repository includes `scripts/compile-oracle-assets.sh`, run it before
 the preview test so inspectable PNG sources and embedded runtime buffers cannot
 drift.
@@ -285,7 +376,9 @@ Then perform a traceability pass:
   easiest successful strategy cannot bypass the intended knowledge through
   guessing, superficial pattern matching, or unrelated dexterity.
 - Failure feedback identifies the consequence of the player's misconception
-  and enables an informed retry.
+  and enables an informed retry. In a question-based design, every choice
+  carries a rationale and a miss returns for a spaced retry, or the brief
+  explains why not.
 - Progression increases conceptual independence or complexity, not only speed,
   punishment, health, score, or visual intensity.
 - Every start/transition target resolves and every scene is reachable.

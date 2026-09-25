@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import { reducedMotionCss } from "./contract-css.mjs";
+
 const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const adapter = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
@@ -266,7 +268,11 @@ assert.match(rearLatch, /top:\s*-13px/, "The removable cover lever must straddle
 assert.doesNotMatch(rearLatch, /bottom:/, "The cover lever must not drift back to the bottom edge");
 assert.match(css, /@keyframes powerIndicatorRejected/, "Rejected power-on attempts need an LED flash sequence");
 assert.doesNotMatch(css, /#power-switch\.power-rejected/, "The physical power toggle must never flash red");
-assert.match(css, /prefers-reduced-motion:[\s\S]*?\.power-led\.rejected/s, "The rejection LED needs a reduced-motion state");
+assert.match(
+  reducedMotionCss(css),
+  /\.power-led\.rejected\s*\{[^}]*animation:\s*none/,
+  "The rejection LED needs a reduced-motion state",
+);
 for (const animationName of ["providerChecking", "powerIndicatorRejected"]) {
   const animation = css.match(new RegExp(`@keyframes ${animationName}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] || "";
   assert.doesNotMatch(
@@ -285,8 +291,9 @@ assert.match(adapter, /const PROVIDER_STORAGE_KEY = "cqa-ai-provider"/, "Provide
 assert.match(adapter, /invoke\("engine_set_ai_provider"/, "Battery changes must reach the backend");
 assert.match(adapter, /invoke\("verify_ai_provider"/, "Power-on must prove the selected provider works");
 const verifyInstalledProvider = adapter.match(
-  /async function verifyInstalledProvider\(\) \{[\s\S]*?\n  \}(?=\n\n  async function rejectPowerOn)/,
+  /async function verifyInstalledProvider\(generation\) \{[\s\S]*?\n  \}(?=\n\n  function powerFailureReason)/,
 )?.[0] || "";
+assert.ok(verifyInstalledProvider, "Missing the generation-scoped provider readiness check");
 assert.doesNotMatch(
   verifyInstalledProvider,
   /verifiedProvider === installedProvider[\s\S]*?return/,
@@ -294,14 +301,14 @@ assert.doesNotMatch(
 );
 assert.match(
   adapter,
-  /await verifyInstalledProvider\(\)[\s\S]*?invoke\("engine_power", \{ powered: true \}\)/,
+  /await verifyInstalledProvider\(generation\)[\s\S]*?invoke\("engine_power", \{ powered: true \}\)/,
   "The engine must not power on until provider verification succeeds",
 );
 assert.match(adapter, /function rejectPowerOn\(/, "Missing the failed power-on recovery path");
 const setPower = adapter.match(
   /async function setPower\(on\) \{[\s\S]*?\n  \}(?=\n\n  function renderCartridge)/,
 )?.[0] || "";
-const powerOnVerification = setPower.indexOf("await verifyInstalledProvider()");
+const powerOnVerification = setPower.indexOf("await verifyInstalledProvider(generation)");
 assert.ok(powerOnVerification > 0, "Power-on must verify the installed provider");
 for (const immediatePowerEffect of [
   "powered = true",

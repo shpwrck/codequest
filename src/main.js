@@ -1,13 +1,30 @@
 /* CODE QUEST ADVANCE device adapter.
  * The browser owns only the shell. Bevy owns game state, timing, process
- * execution, and the fixed 240x160 RGBA framebuffer exposed by Rust. */
+ * execution, the fixed 240x160 RGBA framebuffer, and every sound the speaker
+ * plays; the shell only forwards input and presents what Rust emits. */
 import {
   CARTRIDGE_DRAG_THRESHOLD,
   MAX_CARTRIDGES,
   cartridgeDragIntent,
+  isRefusedCartridgeError,
   normalizeCartridges,
+  rackFocusIndex,
   upsertCartridge,
 } from "./cartridge-library.js";
+import {
+  GUIDE_MESSAGE_MAX_LENGTH,
+  createWheelDetents,
+  deviceMessageText,
+  leavesKeyToFocusedControl,
+  trappedFocusTarget,
+} from "./device-shell.js";
+import {
+  VOLUME_LABELS,
+  VOLUME_LEVELS,
+  createSpeaker,
+  nextVolume,
+  stepVolume,
+} from "./speaker.js";
 
 "use strict";
 
@@ -21,6 +38,8 @@ import {
   const BOOT_SKIP_DELAY_MS = 650;
   const TURN_DURATION_MS = 520;
   const POWER_REJECTION_MS = 760;
+  const MESSAGE_DURATION_MS = 4000;
+  const TRANSCRIPT_POLL_MS = 150;
   const PROVIDER_STORAGE_KEY = "cqa-ai-provider";
   const PROVIDERS = Object.freeze({
     codex: { label: "CODEX" },
@@ -57,6 +76,14 @@ import {
   const rearPowerSwitch = $("rear-power-switch");
   const powerSwitches = [powerSwitch, rearPowerSwitch];
   const powerLed = document.querySelector(".power-led");
+  const cartTray = $("cart-tray");
+  const trayError = $("tray-error");
+  const batteryTrayError = $("battery-tray-error");
+  const deviceMessage = $("device-message");
+  const screenTranscript = $("engine-transcript");
+  const volumeWheels = [$("volume-wheel"), $("rear-volume-wheel")];
+  const volumeMeter = $("volume-meter");
+  const speaker = createSpeaker();
   const context = canvas.getContext("2d", { alpha: false });
   context.imageSmoothingEnabled = false;
   const image = context.createImageData(WIDTH, HEIGHT);
@@ -68,13 +95,21 @@ import {
   let trayOpen = false;
   let batteryTrayOpen = false;
   let picking = false;
+  let inserting = false;
+  let ejecting = false;
+  let trayReturnFocus = null;
   let framePending = false;
+  let audioPending = false;
+  let transcriptPending = false;
+  let transcriptPolledAt = -Infinity;
+  let transcriptSeq = 0;
   let bootTimer = null;
   let bootStartedAt = 0;
   let bootFinishing = false;
   let bootGeneration = 0;
   let bootHeld = false;
-  let trayMessageTimer = null;
+  let messageTimer = null;
+  let messageSurface = null;
   let shellBackVisible = false;
   let shellTurning = false;
   let batteryDoorOpen = false;
@@ -84,6 +119,7 @@ import {
   let powerTransitioning = false;
   let powerGeneration = 0;
   let lastPowerFailure = "";
+  let providerCheck = null;
   const held = Object.create(null);
   const swallowedByBoot = Object.create(null);
 
@@ -103,7 +139,60 @@ import {
     }
   }
 
+  /* The speaker drains engine notes on its own in-flight guard, so a slow
+   * audio poll never delays the next framebuffer read, or the reverse. */
+  async function pollAudio() {
+    if (audioPending) return;
+    audioPending = true;
+    try {
+      speaker.play(await invoke("engine_audio"));
+    } catch (error) {
+      console.error("CQA: failed to read Bevy audio", error);
+    } finally {
+      audioPending = false;
+    }
+  }
+
+  /* The engine describes each screen for screen readers. The shell polls at a
+   * modest cadence behind its own in-flight guard and replaces the live
+   * region only when the engine publishes a new sequence number, so an
+   * unchanged screen is never announced twice. */
+  async function pollTranscript() {
+    const now = performance.now();
+    if (transcriptPending || now - transcriptPolledAt < TRANSCRIPT_POLL_MS) return;
+    transcriptPending = true;
+    transcriptPolledAt = now;
+    try {
+      const update = await invoke("engine_transcript", { since: transcriptSeq });
+      if (update && Number.isInteger(update.seq) && update.seq !== transcriptSeq) {
+        transcriptSeq = update.seq;
+        screenTranscript.textContent = update.text;
+      }
+    } catch (error) {
+      console.error("CQA: failed to read Bevy transcript", error);
+    } finally {
+      transcriptPending = false;
+    }
+  }
+
+  function renderVolume(level) {
+    const label = VOLUME_LABELS[level];
+    for (const wheel of volumeWheels) {
+      wheel.dataset.level = level;
+      wheel.setAttribute("aria-valuenow", String(VOLUME_LEVELS.indexOf(level)));
+      wheel.setAttribute("aria-valuetext", label);
+      wheel.setAttribute("aria-label", `Volume wheel, ${label}`);
+    }
+    volumeMeter.dataset.level = level;
+  }
+
+  function setVolume(level) {
+    renderVolume(speaker.setVolume(level));
+  }
+
   async function drawFrame() {
+    void pollAudio();
+    void pollTranscript();
     if (!framePending) {
       framePending = true;
       try {
@@ -148,7 +237,7 @@ import {
       if (powered && generation === bootGeneration) hideDeviceBoot();
     } catch (error) {
       if (generation === bootGeneration) bootFinishing = false;
-      showTrayError(error);
+      showDeviceError(error);
     }
   }
 
@@ -230,7 +319,7 @@ import {
   function setBatteryDoorOpen(open, { force = false } = {}) {
     const nextOpen = Boolean(open);
     if (nextOpen && powered && !force) {
-      setBatteryStatus("TURN POWER OFF TO CHANGE BATTERIES", "failed");
+      showDeviceError("TURN POWER OFF TO CHANGE BATTERIES");
       batteryCompartment.classList.add("locked");
       return false;
     }
@@ -259,12 +348,12 @@ import {
 
   async function setInstalledProvider(provider) {
     if (powered || powerTransitioning || batteryChanging) {
-      setBatteryStatus("TURN POWER OFF TO CHANGE BATTERIES", "failed");
+      showDeviceError("TURN POWER OFF TO CHANGE BATTERIES");
       return false;
     }
     const nextProvider = normalizeProvider(provider);
     if (nextProvider && installedProvider) {
-      setBatteryStatus("EJECT INSTALLED BATTERIES FIRST", "failed");
+      showDeviceError("EJECT INSTALLED BATTERIES FIRST");
       return false;
     }
     const previousProvider = installedProvider;
@@ -282,40 +371,66 @@ import {
       installedProvider = previousProvider;
       verifiedProvider = previousVerified;
       renderProviderBatteries();
-      setBatteryStatus("BATTERY CONTACT FAILED", "failed");
-      showTrayError(error);
+      showDeviceError(`BATTERY CONTACT FAILED · ${deviceMessageText(error)}`);
       return false;
     } finally {
       batteryChanging = false;
     }
   }
 
-  async function verifyInstalledProvider() {
+  function checkProvider(provider) {
+    // A readiness probe is a real CLI call that cannot be cancelled, so a
+    // power-on that follows an abandoned one joins its in-flight probe.
+    if (providerCheck?.provider === provider) return providerCheck.result;
+    const check = { provider, result: invoke("verify_ai_provider", { provider }) };
+    const settle = () => {
+      if (providerCheck === check) providerCheck = null;
+    };
+    providerCheck = check;
+    check.result.then(settle, settle);
+    return check.result;
+  }
+
+  async function verifyInstalledProvider(generation) {
     if (!installedProvider) throw new Error("INSTALL AI BATTERIES");
+    const provider = installedProvider;
+    const current = () => generation === powerGeneration;
     batteryCompartment.classList.add("checking");
     setBatteryStatus(`${providerLabel()} · CHECKING`, "checking");
     try {
-      const result = await invoke("verify_ai_provider", { provider: installedProvider });
-      if (!result?.ready || normalizeProvider(result.provider) !== installedProvider) {
-        throw new Error(`${providerLabel()} READINESS CHECK FAILED`);
+      const result = await checkProvider(provider);
+      if (!result?.ready || normalizeProvider(result.provider) !== provider) {
+        throw new Error(`${providerLabel(provider)} READINESS CHECK FAILED`);
       }
-      verifiedProvider = installedProvider;
+      if (!current()) return;
+      verifiedProvider = provider;
       lastPowerFailure = "";
       setBatteryStatus(`${providerLabel()} · READY`, "ready");
     } catch (error) {
-      verifiedProvider = null;
-      setBatteryStatus(`${providerLabel()} · NOT READY`, "failed");
+      if (current()) {
+        verifiedProvider = null;
+        setBatteryStatus(`${providerLabel()} · NOT READY`, "failed");
+      }
       throw error;
     } finally {
-      batteryCompartment.classList.remove("checking");
+      if (current()) batteryCompartment.classList.remove("checking");
     }
+  }
+
+  function powerFailureReason(error) {
+    if (!installedProvider) return "NO BATTERIES";
+    return deviceMessageText(error, {
+      fallback: `${providerLabel()} NOT READY`,
+      maxLength: GUIDE_MESSAGE_MAX_LENGTH,
+    });
   }
 
   async function rejectPowerOn(message) {
     powered = false;
     hideDeviceBoot();
-    lastPowerFailure = installedProvider ? `${providerLabel()} NOT READY` : "NO BATTERIES";
+    lastPowerFailure = powerFailureReason(message);
     renderProviderBatteries();
+    showDeviceError(lastPowerFailure);
     setPhysicalPowerSwitch({ on: false, label: `Power switch, off: ${lastPowerFailure}` });
     batteryCompartment.classList.remove("locked");
     powerLed.classList.remove("off", "checking");
@@ -326,6 +441,29 @@ import {
     powerLed.classList.add("off");
     updateControlGuides();
     if (message) console.warn("CQA: power rejected", message);
+  }
+
+  function renderBatteryGuides(failure) {
+    viewGuide.querySelector(".guide-action").textContent = failure || "CHECK BATTERIES";
+    viewGuide.querySelector(".guide-detail").textContent = failure
+      ? "TURN UNIT OVER TO CHECK BATTERIES"
+      : "TURN UNIT OVER";
+    viewGuide.setAttribute(
+      "aria-label",
+      failure
+        ? `${failure}. Turn the device over to check the batteries`
+        : "Turn the device over to check the batteries",
+    );
+    batteryGuide.querySelector(".guide-action").textContent = failure || "OPEN BATTERY TAB";
+    batteryGuide.querySelector(".guide-detail").textContent = failure
+      ? "FIX IT AND POWER ON · OR OPEN TAB TO SWAP"
+      : "TO LOAD 2×AA";
+    batteryGuide.setAttribute(
+      "aria-label",
+      failure
+        ? `${failure}. Fix it and power on again, or open the battery cover to swap batteries`
+        : "Open the battery cover to load batteries",
+    );
   }
 
   function updateControlGuides() {
@@ -354,19 +492,20 @@ import {
       !powerTransitioning &&
       !needsBatteryCheck &&
       Boolean(cartridge) !== powered;
+    const batteryFailure = installedProvider ? lastPowerFailure : "";
     const needsBatteryTab =
       ready &&
       shellBackVisible &&
       !batteryTrayOpen &&
       !powered &&
-      !installedProvider &&
+      (!installedProvider || Boolean(batteryFailure)) &&
       !batteryDoorOpen;
     const needsBatteryBay =
       ready &&
       shellBackVisible &&
       !batteryTrayOpen &&
       !powered &&
-      !installedProvider &&
+      (!installedProvider || Boolean(batteryFailure)) &&
       batteryDoorOpen;
     cartGuide.classList.toggle("hidden", !needsCart);
     powerGuide.classList.toggle("hidden", !needsPower);
@@ -376,6 +515,7 @@ import {
     $("power-switch").classList.toggle("guided", needsPower);
     batteryDoor.classList.toggle("guided", needsBatteryTab);
     batteryBay.classList.toggle("guided", needsBatteryBay);
+    renderBatteryGuides(batteryFailure);
     const switchingOff = powered && !cartridge;
     powerGuide.classList.toggle("switching-off", switchingOff);
     powerGuide.querySelector(".guide-action").textContent = switchingOff
@@ -429,7 +569,13 @@ import {
 
   async function setPower(on) {
     const target = Boolean(on);
-    if (powered === target || (target && powerTransitioning)) return;
+    // initialize() restores the batteries and the saved cartridge and then
+    // switches the engine off, so power input waits until it has finished.
+    if (!ready || powered === target || (target && powerTransitioning)) return;
+    if (target && cartridgeBusy()) {
+      showDeviceError("WAIT FOR THE CARTRIDGE");
+      return;
+    }
     const generation = ++powerGeneration;
     powerTransitioning = true;
 
@@ -447,7 +593,8 @@ import {
       updateControlGuides();
       try {
         await waitForPaint();
-        await verifyInstalledProvider();
+        if (generation !== powerGeneration || !powered) return;
+        await verifyInstalledProvider(generation);
         if (generation !== powerGeneration || !powered) return;
         await invoke("engine_power", { powered: true });
         if (generation !== powerGeneration || !powered) {
@@ -472,9 +619,9 @@ import {
     setPhysicalPowerSwitch({ on: false, label: "Power switch, off" });
     powerLed.classList.remove("checking", "rejected");
     powerLed.classList.add("off");
-    batteryCompartment.classList.remove("locked");
+    batteryCompartment.classList.remove("locked", "checking");
     hideDeviceBoot();
-    updateControlGuides();
+    renderProviderBatteries();
     try {
       await invoke("engine_power", { powered: false });
     } catch (error) {
@@ -483,7 +630,7 @@ import {
         setPhysicalPowerSwitch({ on: true, label: "Power on; shutdown failed" });
         powerLed.classList.remove("off");
         batteryCompartment.classList.add("locked");
-        showTrayError(error);
+        showDeviceError(`SHUTDOWN FAILED · ${deviceMessageText(error)}`);
       }
     } finally {
       if (generation === powerGeneration) {
@@ -536,6 +683,9 @@ import {
 
   function forgetCartridge(path) {
     cartridges = cartridges.filter((entry) => entry.path !== path);
+    // A saved slot that failed to load at startup is kept for a retry; once
+    // its rack entry goes, the next launch must not bring it back.
+    if (localStorage.getItem("cqa-cart-id") === path) localStorage.removeItem("cqa-cart-id");
     persistCartridges();
   }
 
@@ -547,51 +697,80 @@ import {
         return null;
       }
     }));
-    let changed = false;
+    const changedPaths = [];
     for (const update of updates) {
       if (!update) continue;
       const index = cartridges.findIndex(({ path }) => path === update.path);
       if (index < 0 || cartridges[index].branch === update.branch) continue;
       cartridges[index] = { ...cartridges[index], branch: update.branch };
-      changed = true;
+      changedPaths.push(update.path);
     }
-    if (!changed) return;
+    if (!changedPaths.length) return;
     persistCartridges();
-    if (trayOpen) buildTray();
+    if (!trayOpen) return;
+    for (const value of cartridges) {
+      if (changedPaths.includes(value.path)) relabelTrayCard(value);
+    }
   }
 
-  function showTrayMessage(message, tone = "error") {
-    const error = $("tray-error");
-    if (trayMessageTimer !== null) window.clearTimeout(trayMessageTimer);
-    error.textContent = String(message);
-    error.classList.toggle("notice", tone === "notice");
-    error.classList.remove("hidden");
-    trayMessageTimer = window.setTimeout(() => {
-      error.classList.add("hidden");
-      trayMessageTimer = null;
-    }, 4000);
+  function activeMessageSurface() {
+    if (trayOpen) return trayError;
+    if (batteryTrayOpen) return batteryTrayError;
+    return deviceMessage;
   }
 
-  function showTrayError(message) {
-    showTrayMessage(message);
+  function hideDeviceMessage() {
+    if (messageTimer !== null) window.clearTimeout(messageTimer);
+    messageTimer = null;
+    if (messageSurface) messageSurface.textContent = "";
+    messageSurface = null;
+  }
+
+  function showDeviceMessage(message, tone = "error", { persist = false } = {}) {
+    hideDeviceMessage();
+    messageSurface = activeMessageSurface();
+    messageSurface.classList.toggle("notice", tone === "notice");
+    messageSurface.textContent = deviceMessageText(message);
+    if (!persist) messageTimer = window.setTimeout(hideDeviceMessage, MESSAGE_DURATION_MS);
+  }
+
+  function showDeviceError(message, options) {
+    showDeviceMessage(message, "error", options);
+  }
+
+  /* Loading or ejecting a cartridge is an async engine call that can walk git
+   * history for seconds. Power and the slot never change under each other:
+   * power-on waits for the cartridge, and the slot refuses while power is on
+   * or switching, so the engine and the shell always agree on the game. */
+  function cartridgeBusy() {
+    return picking || inserting || ejecting;
   }
 
   async function insertCartridge(value) {
-    if (!value || cartridge) return;
-    const alreadyCached = cartridges.some((entry) => entry.path === value.path);
-    if (!alreadyCached && cartridges.length >= MAX_CARTRIDGES) {
-      showTrayError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
+    if (!value || cartridge || inserting) return;
+    if (powered || powerTransitioning) {
+      showDeviceError("TURN POWER OFF TO LOAD A GAME");
       return;
     }
-    const configured = await invoke("engine_set_cartridge", { path: value.path });
-    cartridge = configured;
-    localStorage.setItem("cqa-cart-id", configured.path);
-    if (!cacheCartridge(configured)) {
-      await invoke("engine_set_cartridge", { path: null });
-      cartridge = null;
-      localStorage.removeItem("cqa-cart-id");
-      showTrayError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
+    const alreadyCached = cartridges.some((entry) => entry.path === value.path);
+    if (!alreadyCached && cartridges.length >= MAX_CARTRIDGES) {
+      showDeviceError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
       return;
+    }
+    inserting = true;
+    try {
+      const configured = await invoke("engine_set_cartridge", { path: value.path });
+      cartridge = configured;
+      localStorage.setItem("cqa-cart-id", configured.path);
+      if (!cacheCartridge(configured)) {
+        await invoke("engine_set_cartridge", { path: null });
+        cartridge = null;
+        localStorage.removeItem("cqa-cart-id");
+        showDeviceError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
+        return;
+      }
+    } finally {
+      inserting = false;
     }
     renderCartridge();
     closeTray();
@@ -602,30 +781,39 @@ import {
     try {
       await insertCartridge({ path });
     } catch (error) {
-      forgetCartridge(path);
-      buildTray();
-      showTrayError(error);
+      // Only a folder that is no longer a repository leaves the rack on its
+      // own; fixable faults (bad CODEQUEST.toml, missing drive) stay racked.
+      if (isRefusedCartridgeError(error)) {
+        forgetCartridge(path);
+        if (trayOpen) buildTray();
+      }
+      showDeviceError(error);
     }
   }
 
   async function addFromDisk() {
     if (picking || cartridge) return;
     if (cartridges.length >= MAX_CARTRIDGES) {
-      showTrayError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
+      showDeviceError("CARTRIDGE RACK FULL · RECYCLE ONE FIRST");
       return;
     }
     picking = true;
     try {
       await insertCartridge(await invoke("pick_cartridge"));
     } catch (error) {
-      showTrayError(error);
+      showDeviceError(error);
     } finally {
       picking = false;
     }
   }
 
   function ejectCartridge() {
-    if (!cartridge) return;
+    if (!cartridge || ejecting) return;
+    if (powered || powerTransitioning) {
+      showDeviceError("TURN POWER OFF TO EJECT");
+      return;
+    }
+    ejecting = true;
     const slot = $("cart-back");
     slot.classList.add("ejecting");
     window.setTimeout(async () => {
@@ -637,7 +825,9 @@ import {
         if (trayOpen) buildTray();
       } catch (error) {
         slot.classList.remove("ejecting");
-        showTrayError(error);
+        showDeviceError(error);
+      } finally {
+        ejecting = false;
       }
     }, 240);
   }
@@ -651,15 +841,16 @@ import {
   function recycleCartridge(value, card) {
     if (card.classList.contains("recycling")) return;
     if (cartridge?.path === value.path) {
-      showTrayError("EJECT THIS CARTRIDGE BEFORE RECYCLING IT");
+      showDeviceError("EJECT THIS CARTRIDGE BEFORE RECYCLING IT");
       return;
     }
+    const focusIndex = [...card.parentElement.children].indexOf(card);
     card.classList.add("recycling");
     card.disabled = true;
     window.setTimeout(() => {
       forgetCartridge(value.path);
-      if (trayOpen) buildTray();
-      showTrayMessage(`RECYCLED ${value.title} · REPOSITORY UNTOUCHED`, "notice");
+      if (trayOpen) buildTray({ focusIndex });
+      showDeviceMessage(`RECYCLED ${value.title} · REPOSITORY UNTOUCHED`, "notice");
     }, 180);
   }
 
@@ -714,13 +905,14 @@ import {
       clearDrag();
       if (intent === "load") insertByPath(value.path);
       else if (intent === "recycle") recycleCartridge(value, card);
-      else if (deniedLoad) showTrayError("EJECT THE CURRENT CARTRIDGE BEFORE LOADING ANOTHER");
-      else if (deniedRecycle) showTrayError("EJECT THIS CARTRIDGE BEFORE RECYCLING IT");
+      else if (deniedLoad) showDeviceError("EJECT THE CURRENT CARTRIDGE BEFORE LOADING ANOTHER");
+      else if (deniedRecycle) showDeviceError("EJECT THIS CARTRIDGE BEFORE RECYCLING IT");
       else if (!moved && !cartridge) insertByPath(value.path);
     });
 
     card.addEventListener("pointercancel", clearDrag);
     card.addEventListener("keydown", (event) => {
+      if (event.repeat) return;
       if ((event.key === "Enter" || event.key === " ") && !cartridge) {
         event.preventDefault();
         insertByPath(value.path);
@@ -731,23 +923,35 @@ import {
     });
   }
 
-  function buildTray() {
+  function cartridgeCardLabel(value, current) {
+    const accessibilityAction = current
+      ? "Currently in the device. Use the Eject Cartridge control before recycling."
+      : cartridge
+        ? "Drag down or press Delete to recycle. Eject the current cartridge before loading."
+        : "Drag up or press Enter to load. Drag down or press Delete to recycle.";
+    return `${value.title}, branch ${value.branch}. ${accessibilityAction}`;
+  }
+
+  function relabelTrayCard(value) {
+    const card = [...$("tray-carts").children].find((element) => element.dataset.path === value.path);
+    if (!card) return;
+    card.querySelector(".cc-sub").textContent = value.branch;
+    card.setAttribute("aria-label", cartridgeCardLabel(value, cartridge?.path === value.path));
+  }
+
+  function buildTray({ focusIndex = null } = {}) {
     const list = $("tray-carts");
+    const focused = list.contains(document.activeElement) ? document.activeElement : null;
+    const focusPath = focused?.dataset.path ?? null;
+    const restoreIndex = focused ? [...list.children].indexOf(focused) : focusIndex;
     list.innerHTML = "";
     for (const value of cartridges) {
       const card = document.createElement("button");
       const current = cartridge?.path === value.path;
       card.type = "button";
       card.className = `cart-card${current ? " current" : ""}`;
-      const accessibilityAction = current
-        ? "Currently in the device. Use the Eject Cartridge control before recycling."
-        : cartridge
-          ? "Drag down or press Delete to recycle. Eject the current cartridge before loading."
-          : "Drag up or press Enter to load. Drag down or press Delete to recycle.";
-      card.setAttribute(
-        "aria-label",
-        `${value.title}, branch ${value.branch}. ${accessibilityAction}`,
-      );
+      card.dataset.path = value.path;
+      card.setAttribute("aria-label", cartridgeCardLabel(value, current));
       const gesture = current ? "EJECT FIRST" : "↑ LOAD · ↓ RECYCLE";
       card.innerHTML = `<span class="cc-strip">CODEQUEST ADVANCE</span><span class="cc-label" style="--cc:${escapeHtml(value.color || "#6a6fd1")}"><span class="cc-title">${escapeHtml(value.title)}</span><span class="cc-sub">${escapeHtml(value.branch)}</span><span class="cc-gesture">${gesture}</span></span>`;
       bindCartridgeDrag(card, value, current);
@@ -777,26 +981,54 @@ import {
       });
       list.appendChild(eject);
     }
-    document.querySelector(".tray-head").textContent = `CARTRIDGE RACK · ${cartridges.length}/${MAX_CARTRIDGES}`;
-    $("tray-error").classList.add("hidden");
+    $("cart-tray-head").textContent = `CARTRIDGE RACK · ${cartridges.length}/${MAX_CARTRIDGES}`;
     document.querySelector(".tray-hint").textContent = cartridge
       ? "EJECT CURRENT · DRAG OTHER CARTS DOWN TO RECYCLE"
       : "DRAG ↑ TO LOAD · DRAG ↓ TO RECYCLE · ESC TO CLOSE";
+    const cards = [...list.children];
+    const restore = rackFocusIndex(cards.map((card) => card.dataset.path), focusPath, restoreIndex);
+    if (restore >= 0) cards[restore].focus();
+  }
+
+  function syncTrayModality() {
+    const modal = trayOpen || batteryTrayOpen;
+    scaleEl.inert = modal;
+    viewToggle.inert = modal;
+    viewGuide.inert = modal;
+  }
+
+  function trapTabFocus(event, container) {
+    const focusables = [...container.querySelectorAll("button:not(:disabled)")];
+    const target = trappedFocusTarget(focusables, document.activeElement, event.shiftKey);
+    if (target || !focusables.length) event.preventDefault();
+    target?.focus();
   }
 
   function openTray() {
-    if (powered) return;
+    if (!ready || powered || powerTransitioning) return;
     if (batteryTrayOpen) closeBatteryTray({ restoreFocus: false });
+    const active = document.activeElement;
+    trayReturnFocus = active instanceof HTMLElement && active !== document.body ? active : null;
     buildTray();
-    $("cart-tray").classList.remove("hidden");
+    cartTray.classList.remove("hidden");
+    cartTray.setAttribute("aria-hidden", "false");
     trayOpen = true;
+    syncTrayModality();
+    $("tray-carts").querySelector("button:not(:disabled)")?.focus();
     refreshCartridgeBranches().catch(() => {});
     updateControlGuides();
   }
 
   function closeTray() {
-    $("cart-tray").classList.add("hidden");
+    const focusWasInTray =
+      cartTray.contains(document.activeElement) || document.activeElement === document.body;
+    cartTray.classList.add("hidden");
+    cartTray.setAttribute("aria-hidden", "true");
     trayOpen = false;
+    if (messageSurface === trayError) hideDeviceMessage();
+    syncTrayModality();
+    if (focusWasInTray) trayReturnFocus?.focus();
+    trayReturnFocus = null;
     updateControlGuides();
   }
 
@@ -809,22 +1041,29 @@ import {
       choice.disabled = hasProvider;
     });
     batteryEject.disabled = !hasProvider;
-    document.querySelector(".battery-tray-hint").textContent = hasProvider
-      ? "EJECT CURRENT PACK BEFORE LOADING ANOTHER"
-      : "SELECT A PACK · ESC TO CLOSE";
+    document.querySelector(".battery-tray-hint").textContent = !hasProvider
+      ? "SELECT A PACK · ESC TO CLOSE"
+      : lastPowerFailure
+        ? `${lastPowerFailure} · EJECT TO SWAP`
+        : "EJECT CURRENT PACK BEFORE LOADING ANOTHER";
+  }
+
+  function focusBatteryTray() {
+    const firstAction = installedProvider
+      ? batteryEject
+      : batteryOptions.querySelector("[data-provider]");
+    firstAction?.focus();
   }
 
   function openBatteryTray() {
-    if (powered || batteryChanging || !batteryDoorOpen) return;
+    if (!ready || powered || batteryChanging || !batteryDoorOpen) return;
     if (trayOpen) closeTray();
     renderBatteryTray();
     batteryTray.classList.remove("hidden");
     batteryTray.setAttribute("aria-hidden", "false");
     batteryTrayOpen = true;
-    const firstAction = installedProvider
-      ? batteryEject
-      : batteryOptions.querySelector("[data-provider]");
-    firstAction?.focus();
+    syncTrayModality();
+    focusBatteryTray();
     updateControlGuides();
   }
 
@@ -832,6 +1071,8 @@ import {
     batteryTray.classList.add("hidden");
     batteryTray.setAttribute("aria-hidden", "true");
     batteryTrayOpen = false;
+    if (messageSurface === batteryTrayError) hideDeviceMessage();
+    syncTrayModality();
     if (restoreFocus && shellBackVisible && batteryDoorOpen) {
       (installedProvider ? batteryPack : batteryChooser).focus();
     }
@@ -862,6 +1103,12 @@ import {
     });
   }
 
+  function isShellControl(target) {
+    return target instanceof Element
+      && target !== document.body
+      && target.matches("button, [role=button], [role=switch]");
+  }
+
   const keyMap = {
     ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
     KeyD: "a", KeyS: "b", Enter: "start", NumpadEnter: "start",
@@ -874,16 +1121,7 @@ import {
         event.preventDefault();
         closeBatteryTray();
       } else if (event.key === "Tab") {
-        const choices = [...batteryOptions.querySelectorAll("button:not(:disabled)")];
-        const firstChoice = choices[0];
-        const lastChoice = choices.at(-1);
-        if (event.shiftKey && document.activeElement === firstChoice) {
-          event.preventDefault();
-          lastChoice.focus();
-        } else if (!event.shiftKey && document.activeElement === lastChoice) {
-          event.preventDefault();
-          firstChoice.focus();
-        }
+        trapTabFocus(event, batteryOptions);
       }
       return;
     }
@@ -900,10 +1138,19 @@ import {
       if (!event.repeat) trayOpen ? closeTray() : openTray();
       return;
     }
+    if (event.code === "KeyV") {
+      if (!event.repeat) setVolume(nextVolume(speaker.volume));
+      return;
+    }
     if (trayOpen && (event.key === "Escape" || event.code === "KeyS")) {
       closeTray();
       return;
     }
+    if (trayOpen && event.key === "Tab") {
+      trapTabFocus(event, cartTray);
+      return;
+    }
+    if (leavesKeyToFocusedControl(event.code, isShellControl(event.target))) return;
     const button = keyMap[event.code];
     if (!button) return;
     event.preventDefault();
@@ -947,6 +1194,9 @@ import {
     element.addEventListener("pointercancel", release);
   });
 
+  // Keep mouse focus off the floating toggle so Enter stays START afterwards;
+  // keyboard focus still activates it (see leavesKeyToFocusedControl).
+  viewToggle.addEventListener("pointerdown", (event) => event.preventDefault());
   viewToggle.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -985,6 +1235,7 @@ import {
       if (installedProvider) return;
       setInstalledProvider(choice.dataset.provider).then((changed) => {
         if (changed) closeBatteryTray();
+        else if (batteryTrayOpen) focusBatteryTray();
       });
     });
   });
@@ -994,6 +1245,7 @@ import {
     if (!installedProvider) return;
     setInstalledProvider(null).then((changed) => {
       if (changed) batteryOptions.querySelector("[data-provider]")?.focus();
+      else if (batteryTrayOpen) focusBatteryTray();
     });
   });
 
@@ -1002,6 +1254,40 @@ import {
     event.stopPropagation();
     setBatteryDoorOpen(true);
   });
+
+  /* Browsers only start audio from a user gesture. The first key press, the
+   * power switch, or any other press on the device wakes the speaker. */
+  for (const gesture of ["keydown", "pointerdown"]) {
+    window.addEventListener(gesture, () => speaker.unlock(), { capture: true });
+  }
+
+  for (const wheel of volumeWheels) {
+    const roll = createWheelDetents();
+    wheel.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setVolume(nextVolume(speaker.volume));
+    });
+    wheel.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const detents = roll(event.deltaY, event.deltaMode, performance.now());
+      if (!detents) return;
+      let level = speaker.volume;
+      for (let turned = 0; turned < Math.abs(detents); turned += 1) level = stepVolume(level, detents);
+      setVolume(level);
+    }, { passive: false });
+    wheel.addEventListener("keydown", (event) => {
+      const direction = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[event.key];
+      if (direction) setVolume(stepVolume(speaker.volume, direction));
+      else if (event.key === "Home") setVolume(VOLUME_LEVELS[0]);
+      else if (event.key === "End") setVolume(VOLUME_LEVELS.at(-1));
+      else if (event.key === "Enter" || event.key === " ") setVolume(nextVolume(speaker.volume));
+      else return;
+      // A focused wheel owns its keys; they must not also reach the D-pad.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
 
   for (const switchControl of powerSwitches) {
     switchControl.addEventListener("pointerdown", (event) => {
@@ -1012,10 +1298,12 @@ import {
     switchControl.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
+      if (event.repeat) return;
       setPower(!powered);
     });
   }
   $("cart-back").addEventListener("pointerdown", (event) => {
+    event.preventDefault();
     event.stopPropagation();
     trayOpen ? closeTray() : openTray();
   });
@@ -1035,9 +1323,22 @@ import {
   });
   window.addEventListener("resize", fit);
 
+  // The engine freezes decorative framebuffer motion when the host asks for
+  // reduced motion; the shell only reports the preference.
+  function syncReducedMotion() {
+    const reduced = Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+    invoke("engine_set_reduced_motion", { reduced }).catch((error) => {
+      console.error("CQA: failed to forward reduced-motion preference", error);
+    });
+  }
+
   async function initialize() {
     fit();
+    renderVolume(speaker.volume);
     setShellBackVisible(false);
+    syncReducedMotion();
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")
+      .addEventListener?.("change", syncReducedMotion);
     rearSerial.textContent = await invoke("app_revision");
     installedProvider = normalizeProvider(localStorage.getItem(PROVIDER_STORAGE_KEY));
     if (!installedProvider) localStorage.removeItem(PROVIDER_STORAGE_KEY);
@@ -1047,10 +1348,10 @@ import {
     try {
       await invoke("engine_set_ai_provider", { provider: installedProvider });
     } catch (error) {
+      // Keep the saved choice so the next launch retries the same batteries.
       installedProvider = null;
-      localStorage.removeItem(PROVIDER_STORAGE_KEY);
       renderProviderBatteries();
-      showTrayError(error);
+      showDeviceError(`BATTERY CONTACT FAILED · ${deviceMessageText(error)}`);
     }
     const savedPath = localStorage.getItem("cqa-cart-id");
     try {
@@ -1070,10 +1371,13 @@ import {
           cartridges.pop();
         }
         cacheCartridge(cartridge);
-      } catch (_) {
+      } catch (error) {
         cartridge = null;
-        localStorage.removeItem("cqa-cart-id");
-        forgetCartridge(savedPath);
+        // Only a refused folder is forgotten. A fault that may clear (git
+        // unavailable or timed out, a bad CODEQUEST.toml, a missing drive)
+        // keeps its rack entry and the saved slot, so the next launch retries.
+        if (isRefusedCartridgeError(error)) forgetCartridge(savedPath);
+        showDeviceError(`CARTRIDGE NOT LOADED · ${deviceMessageText(error)}`);
       }
     }
     renderCartridge();
@@ -1083,7 +1387,9 @@ import {
     window.requestAnimationFrame(drawFrame);
   }
 
-  initialize().catch((error) => showTrayError(error));
+  initialize().catch((error) => {
+    showDeviceError(`DEVICE FAULT · ${deviceMessageText(error)}`, { persist: true });
+  });
 
   function createBrowserDemo() {
     const frame = new Uint8Array(FRAME_BYTES);
@@ -1092,12 +1398,14 @@ import {
     }
     return async (command, args) => {
       if (command === "engine_frame") return frame.buffer;
+      if (command === "engine_audio") return { tick: 0, notes: [] };
+      if (command === "engine_transcript") return null;
       if (command === "app_revision") return "0000000";
-      if (["engine_power", "engine_finish_boot", "engine_input", "engine_set_ai_provider"].includes(command)) return null;
+      if (["engine_power", "engine_finish_boot", "engine_input", "engine_set_ai_provider", "engine_set_reduced_motion"].includes(command)) return null;
       if (command === "verify_ai_provider") return { provider: args?.provider, ready: true };
       if (command === "engine_set_cartridge" && args?.path == null) return null;
       if (command === "engine_set_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");
-      if (command === "pick_cartridge") return null;
+      if (command === "pick_cartridge") throw new Error("RUN IN TAURI TO LOAD CARTRIDGES");
       if (command === "cartridge_branch") return "BRANCH UNKNOWN";
       throw new Error(`UNKNOWN COMMAND ${command}`);
     };

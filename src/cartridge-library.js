@@ -51,6 +51,25 @@ export function upsertCartridge(values, value, limit = MAX_CARTRIDGES) {
   return { items, accepted: true };
 }
 
+/** The backend's verdict when git ran and reported that a folder is not a
+ * work tree. It is the only load error that removes a rack entry: git that
+ * cannot start or times out is a fault that may clear, and the backend
+ * reports it in its own words. */
+export const CARTRIDGE_REFUSED_MESSAGE = "NOT A GIT REPOSITORY - CARTRIDGE REFUSED";
+
+export function isRefusedCartridgeError(error) {
+  const message = String(error instanceof Error ? error.message : error?.message ?? error ?? "");
+  return message.includes(CARTRIDGE_REFUSED_MESSAGE);
+}
+
+export function rackFocusIndex(paths, focusPath = null, fallbackIndex = null) {
+  if (!Array.isArray(paths) || !paths.length) return -1;
+  const same = focusPath == null ? -1 : paths.indexOf(focusPath);
+  if (same >= 0) return same;
+  if (!Number.isInteger(fallbackIndex) || fallbackIndex < 0) return -1;
+  return Math.min(fallbackIndex, paths.length - 1);
+}
+
 export function cartridgeDragIntent(
   deltaY,
   {
