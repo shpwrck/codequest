@@ -12424,4 +12424,297 @@ mod tests {
             "reading the Codex never changes the journal"
         );
     }
+
+    // Tests below were added by a mutation-testing sweep over the quiz flow;
+    // each one pins a rule that an earlier suite let a small edit break.
+
+    #[test]
+    fn a_miss_on_a_batch_opening_question_waits_the_full_gap_in_its_own_batch() {
+        let mut questions: Vec<_> = (0..12).map(concept_question).collect();
+        let mut batch_ends = vec![6, 12];
+        // Index 6 opens the second batch; the first batch's end (6) is behind
+        // it, so the review lands RETRY_GAP questions later in the second.
+        assert_eq!(
+            schedule_retry(&mut questions, &mut batch_ends, 6),
+            Some(7 + RETRY_GAP)
+        );
+        assert_eq!(batch_ends, vec![6, 13]);
+        assert!(questions[7 + RETRY_GAP].review);
+        assert_eq!(questions[7 + RETRY_GAP].question, questions[6].question);
+    }
+
+    #[test]
+    fn missing_a_review_again_is_not_a_redemption() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        for _ in 0..RETRY_GAP {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert!(current_question(&engine).review);
+
+        commit(&mut engine, false);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert!(!run.redeemed, "a missed review redeems nothing");
+        assert_eq!(run.ledger.redeemed, 0);
+        assert_eq!(quiz_feedback_banner(run), "WARD FRACTURES");
+    }
+
+    #[test]
+    fn a_short_batch_merged_forward_keeps_the_higher_level() {
+        let mut state = GameState::default();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..9).map(concept_question).collect();
+        state.cartridge = Some(cartridge);
+        state.batch_ends = vec![3, 9];
+        state.batch_levels = vec![1, 2];
+        state.quiz = Some(QuizRun {
+            question: 2,
+            feedback: Some((true, 0)),
+            ..QuizRun::new()
+        });
+
+        continue_after_lesson(&mut state);
+
+        let run = state.quiz.as_ref().unwrap();
+        assert_eq!((run.question, run.level, run.completed_batches), (3, 1, 0));
+        assert_eq!(state.batch_ends, vec![9]);
+        assert_eq!(state.batch_levels, vec![2]);
+    }
+
+    #[test]
+    fn continuing_from_a_level_up_keeps_the_run() {
+        let mut engine = batch_quiz_engine(2 * QUESTION_BATCH_SIZE);
+        assert_eq!(
+            engine_state(&engine).batch_ends,
+            vec![QUESTION_BATCH_SIZE, 2 * QUESTION_BATCH_SIZE]
+        );
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        while engine.screen() == Screen::Quiz {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let before = engine_state(&engine).quiz.clone().unwrap();
+        assert_eq!((before.level, before.completed_batches), (2, 1));
+
+        for _ in 0..200 {
+            if engine.screen() != Screen::LevelUp {
+                break;
+            }
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(
+            (run.question, run.level, run.completed_batches, run.hearts),
+            (before.question, 2, 1, 2),
+            "the level-up continues the same run"
+        );
+        assert_eq!(run.score, before.score);
+        assert_eq!(run.ledger, before.ledger);
+    }
+
+    #[test]
+    fn a_broken_ward_routed_back_to_the_oracle_starts_a_fresh_run() {
+        use SceneHandler as H;
+        use SceneSignal as S;
+        let mut engine = GameEngine::new();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..QUESTION_BATCH_SIZE).map(concept_question).collect();
+        cartridge.machine = Box::new(
+            SceneMachineDefinition::compile(
+                "menu",
+                vec![
+                    scene_spec(
+                        "menu",
+                        H::QuizMenu,
+                        &[(S::NewRun, "oracle", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "oracle",
+                        H::Oracle,
+                        &[(S::QuestionsReady, "quiz", None), (S::Back, "menu", None)],
+                    ),
+                    scene_spec(
+                        "quiz",
+                        H::ConceptQuiz,
+                        &[
+                            (S::NeedsQuestion, "oracle", None),
+                            (S::HeartsEmpty, "oracle", None),
+                            (S::Back, "menu", None),
+                        ],
+                    ),
+                ],
+            )
+            .unwrap(),
+        );
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        issue(&mut engine, EngineCommand::Power(true));
+        issue(&mut engine, EngineCommand::BootComplete);
+        press(&mut engine, Button::A);
+        for _ in 0..75 {
+            engine.update();
+        }
+        assert_eq!(engine.screen(), Screen::Quiz);
+
+        for _ in 0..3 {
+            commit(&mut engine, false);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::Oracle);
+        let run = engine_state(&engine).quiz.as_ref().unwrap();
+        assert_eq!(
+            (run.hearts, run.question, run.ledger.first_try),
+            (3, 0, 0),
+            "a dead run never carries into the Oracle"
+        );
+    }
+
+    #[test]
+    fn retiring_a_run_keeps_each_remaining_batch_at_its_own_level() {
+        let mut state = GameState::default();
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions = (0..18).map(concept_question).collect();
+        let missed = concept_question(2);
+        record_lesson(&mut cartridge.lessons, &missed, false);
+        state.cartridge = Some(cartridge);
+        state.batch_ends = vec![6, 12, 18];
+        state.batch_levels = vec![1, 2, 3];
+        state.consumed_questions = QUESTION_BATCH_SIZE;
+
+        retire_consumed_questions(&mut state);
+
+        let questions = &state.cartridge.as_ref().unwrap().questions;
+        assert_eq!(questions.len(), 13);
+        assert!(questions[0].review);
+        assert_eq!(questions[0].question, missed.question);
+        assert_eq!(state.batch_ends, vec![7, 13]);
+        assert_eq!(
+            state.batch_levels,
+            vec![2, 3],
+            "the requeued review shifts the old boundaries with it"
+        );
+    }
+
+    #[test]
+    fn rebatching_reads_a_boundary_question_from_the_batch_it_opens() {
+        let fresh = (0..12).map(concept_question).collect::<Vec<_>>();
+        // Question 5 opens the old level-2 batch, so the new first batch
+        // (ending on it) takes level 2.
+        assert_eq!(
+            rebatch(&[5, 12], &[1, 2], &fresh),
+            (vec![6, 12], vec![2, 2])
+        );
+    }
+
+    #[test]
+    fn reinserting_a_cartridge_drops_replies_to_its_earlier_requests() {
+        let mut engine = waiting_oracle_engine();
+        let stale = engine_state(&engine).question_request_seq;
+        assert!(engine_state(&engine).questions_loading);
+
+        issue(
+            &mut engine,
+            EngineCommand::Cartridge(Some(quiz_cartridge())),
+        );
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                result: Ok((0..QUESTION_BATCH_SIZE).map(concept_question).collect()),
+                seq: stale,
+            },
+        );
+        let state = engine_state(&engine);
+        assert_eq!(state.question_count(), 1, "the stale reply never lands");
+        assert!(state.question_failure.is_none());
+    }
+
+    #[test]
+    fn a_run_that_is_not_live_does_not_set_the_next_batch_level() {
+        let mut state = GameState {
+            cartridge: Some(quiz_cartridge()),
+            quiz: Some(QuizRun {
+                level: 3,
+                completed_batches: 2,
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        };
+        assert!(!state.run_is_live());
+        assert_eq!(
+            state.next_batch_level(),
+            1,
+            "the next run starts at Initiate, whatever the last one reached"
+        );
+        state.screen = Screen::Quiz;
+        assert_eq!(state.next_batch_level(), 3);
+    }
+
+    #[test]
+    fn a_delivery_held_through_the_quiz_lands_on_the_level_up() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        let _ = engine.take_effects();
+        engine.update();
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (QUESTION_BATCH_SIZE..2 * QUESTION_BATCH_SIZE)
+                .map(concept_question)
+                .collect(),
+        );
+        assert!(engine_state(&engine).pending_questions.is_some());
+        for _ in 0..QUESTION_BATCH_SIZE {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        engine.update();
+        let state = engine_state(&engine);
+        assert!(state.pending_questions.is_none());
+        assert_eq!(state.question_count(), 2 * QUESTION_BATCH_SIZE);
+
+        for _ in 0..200 {
+            if engine.screen() != Screen::LevelUp {
+                break;
+            }
+            engine.update();
+        }
+        assert_eq!(
+            engine.screen(),
+            Screen::Quiz,
+            "questions already delivered skip the Oracle wait"
+        );
+    }
+
+    #[test]
+    fn inserting_a_cartridge_drops_a_held_delivery_and_requests_its_own() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        engine.update();
+        deliver(
+            &mut engine,
+            "/tmp/engine-test",
+            (QUESTION_BATCH_SIZE..2 * QUESTION_BATCH_SIZE)
+                .map(concept_question)
+                .collect(),
+        );
+        assert!(engine_state(&engine).pending_questions.is_some());
+        let _ = engine.take_effects();
+
+        let mut other = quiz_cartridge();
+        other.id = "/tmp/other-test".into();
+        other.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(other)));
+        assert!(engine_state(&engine).pending_questions.is_none());
+        assert!(
+            engine.take_effects().iter().any(|effect| matches!(
+                effect,
+                EngineEffect::RequestQuestions { cartridge_id, .. } if cartridge_id == "/tmp/other-test"
+            )),
+            "the new cartridge asks for its first batch at once"
+        );
+    }
 }
