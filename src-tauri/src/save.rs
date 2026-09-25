@@ -42,12 +42,20 @@ impl Default for SaveDocument {
     }
 }
 
+/// Reads the save at `path`. An empty file (a create that never got its first
+/// write) is a fresh save. Anything else that does not parse is reported as
+/// corrupt rather than read as empty: every writer starts from the document
+/// read here, so reading a damaged save as empty would let the next update
+/// replace all of it with a single key.
 fn read_document(path: &Path) -> Result<SaveDocument, String> {
     let bytes = std::fs::read(path).map_err(|_| "COULD NOT READ CARTRIDGE SAVE".to_string())?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(SaveDocument::default());
+    }
     match serde_json::from_slice::<SaveDocument>(&bytes) {
         Ok(document) if document.schema_version == SCHEMA_VERSION => Ok(document),
         Ok(_) => Err("UNSUPPORTED CARTRIDGE SAVE".to_string()),
-        Err(_) => Ok(SaveDocument::default()),
+        Err(_) => Err("CARTRIDGE SAVE IS CORRUPT".to_string()),
     }
 }
 
@@ -103,8 +111,9 @@ fn persist_document(path: &Path, document: &SaveDocument) -> Result<(), String> 
 /// recorded, or two batches for the same cartridge) cannot lose each other the
 /// way a `get` on an old snapshot followed by `set` can. A missing value starts
 /// from `T::default()`. A present value that no longer deserializes as `T` is
-/// reported and left untouched rather than replaced by a default. The save is
-/// rewritten only when `change` actually altered the value.
+/// reported and left untouched rather than replaced by a default, and so is a
+/// save file that does not parse at all. The save is rewritten only when
+/// `change` actually altered the value.
 pub(crate) fn update<T, R>(
     cartridge_path: &Path,
     key: &str,
@@ -326,6 +335,60 @@ mod tests {
         );
 
         std::fs::remove_file(path_for(&cartridge_path)).unwrap();
+    }
+
+    #[test]
+    fn a_save_that_does_not_parse_is_refused_and_left_untouched() {
+        let cartridge_path = temporary_cartridge_path();
+        let save_path = path_for(&cartridge_path);
+        // A save cut off mid-write or by a sync conflict: its final brace is gone.
+        let truncated =
+            r#"{"schema_version":1,"data":{"quiz.batches":[{"level":1}],"quiz.progress":{"a":1}}"#;
+        std::fs::write(&save_path, truncated).unwrap();
+
+        let bump = |count: &mut u32| *count += 1;
+
+        assert_eq!(
+            update(&cartridge_path, "quiz.journal", bump).unwrap_err(),
+            "CARTRIDGE SAVE IS CORRUPT"
+        );
+        assert_eq!(
+            SaveFile::open_or_create(&cartridge_path).unwrap_err(),
+            "CARTRIDGE SAVE IS CORRUPT"
+        );
+        assert_eq!(std::fs::read_to_string(&save_path).unwrap(), truncated);
+
+        // Valid JSON that is not a save document is refused the same way.
+        std::fs::write(&save_path, "[1, 2, 3]").unwrap();
+        assert_eq!(
+            update(&cartridge_path, "quiz.journal", bump).unwrap_err(),
+            "CARTRIDGE SAVE IS CORRUPT"
+        );
+        assert_eq!(std::fs::read_to_string(&save_path).unwrap(), "[1, 2, 3]");
+
+        std::fs::remove_file(save_path).unwrap();
+    }
+
+    #[test]
+    fn an_empty_save_file_starts_a_fresh_save() {
+        let cartridge_path = temporary_cartridge_path();
+        let save_path = path_for(&cartridge_path);
+        std::fs::write(&save_path, " \n").unwrap();
+
+        assert_eq!(
+            SaveFile::open_or_create(&cartridge_path)
+                .unwrap()
+                .get::<u32>("quiz.progress"),
+            None
+        );
+        update(&cartridge_path, "quiz.progress", |count: &mut u32| {
+            *count = 1
+        })
+        .unwrap();
+
+        let reloaded = SaveFile::open_or_create(&cartridge_path).unwrap();
+        assert_eq!(reloaded.get::<u32>("quiz.progress"), Some(1));
+        std::fs::remove_file(save_path).unwrap();
     }
 
     #[test]

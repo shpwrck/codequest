@@ -55,8 +55,10 @@ pub(crate) fn codex_command() -> Command {
     background_command(program)
 }
 
-/// Starts `command` as the leader of a new process group, so a timeout can
-/// stop everything it launches with [`kill_process_tree`].
+/// On Unix, starts `command` as the leader of a new process group, so a
+/// timeout can stop everything it launches with [`kill_process_tree`], even
+/// after the leader itself has exited. Windows has no equivalent here (no job
+/// object is used), so this does nothing there.
 pub(crate) fn isolate_process_tree(command: &mut Command) {
     #[cfg(unix)]
     {
@@ -70,6 +72,12 @@ pub(crate) fn isolate_process_tree(command: &mut Command) {
 /// Stops `child` and the processes it launched. Wrappers such as npm shims
 /// run the real CLI as a grandchild that inherits the output pipes, so
 /// stopping only the direct child would leave the call running.
+///
+/// On Unix this signals the whole process group, which reaches every
+/// descendant whether or not `child` is still running. On Windows it runs
+/// `taskkill /T`, which finds descendants by walking parent links from a live
+/// process: it stops the tree while `child` runs, but once `child` has exited
+/// its PID is no longer listed, so a helper that outlived it is not reached.
 pub(crate) fn kill_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {

@@ -200,8 +200,43 @@ fn git_stdout(path: &std::path::Path, args: &[&str]) -> Option<String> {
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn is_git_repo(path: &std::path::Path) -> bool {
-    git_stdout(path, &["rev-parse", "--is-inside-work-tree"]).is_some()
+/// The error the shell reads as "this folder is not a repository", which
+/// removes the cartridge from the rack. Only a definite answer from git may
+/// produce it.
+const NOT_A_REPOSITORY: &str = "NOT A GIT REPOSITORY - CARTRIDGE REFUSED";
+
+/// Whether git reports `path` as a repository, within `timeout`. `Ok(false)`
+/// means git ran and said the folder is not one. Every other failure (git
+/// missing, timed out, or failing for another reason such as an unreadable
+/// folder) is an `Err` naming that cause, because it says nothing about the
+/// folder and the shell keeps such cartridges racked.
+fn git_repo_check_within(path: &std::path::Path, timeout: Duration) -> Result<bool, String> {
+    let mut command = git_repo_command(path);
+    // Untranslated messages, so the refusal below is recognized in any locale.
+    command
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .env("LC_ALL", "C");
+    let output = command_output_with_timeout(command, timeout, "GIT", None)?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if String::from_utf8_lossy(&output.stderr)
+        .to_ascii_lowercase()
+        .contains("not a git repository")
+    {
+        return Ok(false);
+    }
+    Err(format!("GIT CALL FAILED - {}", exit_reason(&output)))
+}
+
+/// Succeeds when `path` is a repository; otherwise [`NOT_A_REPOSITORY`] or
+/// the reason git could not tell.
+fn require_git_repo(path: &std::path::Path) -> Result<(), String> {
+    if git_repo_check_within(path, GIT_TIMEOUT)? {
+        Ok(())
+    } else {
+        Err(NOT_A_REPOSITORY.to_string())
+    }
 }
 
 fn repository_branch(path: &std::path::Path) -> String {
@@ -258,9 +293,7 @@ fn repository_provenance(path: &std::path::Path) -> engine::RepositoryProvenance
 
 fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
     let canon = std::fs::canonicalize(path).map_err(|_| "DIRECTORY NOT FOUND".to_string())?;
-    if !is_git_repo(&canon) {
-        return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
-    }
+    require_git_repo(&canon)?;
     let codequest = CodeQuestConfig::load(&canon)?;
     save::SaveFile::open_or_create(&canon)?;
     let p = canon.to_string_lossy().to_string();
@@ -451,9 +484,7 @@ async fn pick_cartridge(
 
 fn repository_branch_at(path: &str) -> Result<String, String> {
     let canon = std::fs::canonicalize(path).map_err(|_| "DIRECTORY NOT FOUND".to_string())?;
-    if !is_git_repo(&canon) {
-        return Err("NOT A GIT REPOSITORY - CARTRIDGE REFUSED".to_string());
-    }
+    require_git_repo(&canon)?;
     Ok(repository_branch(&canon))
 }
 
@@ -568,18 +599,62 @@ fn io_reason(error: &io::Error) -> String {
     sanitized_metadata(&error.kind().to_string(), ERROR_REASON_CHARS).to_ascii_uppercase()
 }
 
-/// Why a finished call failed: the first line the program wrote to stderr,
-/// or its exit code when it wrote none.
-fn exit_reason(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr)
+/// Whether a stderr line is progress chatter rather than a cause: Codex opens
+/// its human-readable stderr with a version banner, `--------` rules, a
+/// `key: value` summary of the session, and a note that it is reading stdin.
+fn is_cli_preamble(line: &str) -> bool {
+    const SUMMARY_KEYS: [&str; 8] = [
+        "workdir",
+        "model",
+        "provider",
+        "approval",
+        "sandbox",
+        "reasoning effort",
+        "reasoning summaries",
+        "session id",
+    ];
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("openai codex v")
+        || lower.starts_with("reading prompt from stdin")
+        || lower.chars().all(|character| character == '-')
+        || lower
+            .split_once(':')
+            .is_some_and(|(key, _)| SUMMARY_KEYS.contains(&key))
+}
+
+/// The line of a failed call's stderr that says why it failed: the last line
+/// that announces an error (`ERROR:`, `error:`, `fatal:`), or else the last
+/// line that is not CLI preamble. Errors come after any preamble and after
+/// any echo of the prompt, so the last such line is the cause. The echoed
+/// prompt carries project documentation and code, so only a prefix followed
+/// by a colon counts as an announcement: a line such as `errors.push(e)` from
+/// the prompt must not pass for the cause.
+fn failure_line(stderr: &str) -> Option<String> {
+    let lines: Vec<String> = stderr
         .lines()
         .map(|line| sanitized_metadata(line, ERROR_REASON_CHARS))
-        .find(|line| !line.is_empty())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let announces_error = |line: &&String| {
+        let lower = line.to_ascii_lowercase();
+        lower.starts_with("error:") || lower.starts_with("fatal:")
+    };
+    lines
+        .iter()
+        .rfind(announces_error)
+        .or_else(|| lines.iter().rfind(|line| !is_cli_preamble(line)))
         .map(|line| line.to_ascii_uppercase())
-        .unwrap_or_else(|| match output.status.code() {
+}
+
+/// Why a finished call failed: the meaningful line of its stderr (see
+/// [`failure_line`]), or its exit code when it wrote none.
+fn exit_reason(output: &Output) -> String {
+    failure_line(&String::from_utf8_lossy(&output.stderr)).unwrap_or_else(|| {
+        match output.status.code() {
             Some(code) => format!("EXIT CODE {code}"),
             None => "STOPPED BY A SIGNAL".to_string(),
-        })
+        }
+    })
 }
 
 /// Reads `pipe` to its end on a detached thread. The result arrives on the
@@ -599,9 +674,13 @@ fn read_to_end_in_background(
 /// Runs `command` and collects its output within `timeout`. `input`, when
 /// given, is written to the program's stdin, which is then closed; otherwise
 /// stdin is empty. The deadline holds even for wrappers whose helpers inherit
-/// the output pipes: on timeout the whole process tree is stopped and the
-/// pipe readers are abandoned rather than joined. Errors name `label` and
-/// carry a short reason, because the device shows them.
+/// the output pipes: on timeout the process tree is stopped and the pipe
+/// readers are abandoned rather than joined. On Windows the tree can only be
+/// reached through a running program, so a helper still holding the pipes
+/// after the program exited is left running there (see
+/// [`external_tools::kill_process_tree`]); the call still returns at its
+/// deadline. Errors name `label` and carry a short reason, because the device
+/// shows them.
 fn command_output_with_timeout(
     mut command: Command,
     timeout: Duration,
@@ -666,8 +745,10 @@ fn command_output_with_timeout(
             stderr,
         }),
         (Err(mpsc::RecvTimeoutError::Timeout), _) | (_, Err(mpsc::RecvTimeoutError::Timeout)) => {
-            // The group outlives its reaped leader while a helper holds
-            // the pipes, so this reaches the helper.
+            // On Unix the process group outlives its reaped leader while a
+            // helper holds the pipes, so this reaches the helper. On Windows
+            // taskkill cannot find the tree of an exited program, so the
+            // helper keeps running and its readers stay abandoned.
             external_tools::kill_process_tree(&mut child);
             Err(timed_out())
         }
@@ -711,7 +792,7 @@ fn ai_questions(
     count: usize,
     active_provider: Option<AiProvider>,
 ) -> Result<Vec<QQuestion>, String> {
-    if !is_git_repo(path) {
+    if !git_repo_check_within(path, GIT_TIMEOUT)? {
         return Err("NOT A GIT REPOSITORY".to_string());
     }
     let provider = active_provider.ok_or_else(|| "AI BATTERIES NOT VERIFIED".to_string())?;
@@ -1282,6 +1363,120 @@ mod question_policy_tests {
     }
 
     #[test]
+    fn a_codex_failure_reports_its_error_past_the_session_banner() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "question_policy_tests::codex_banner_failure_fixture",
+            "--nocapture",
+        ]);
+        let output =
+            command_output_with_timeout(command, Duration::from_secs(30), "CODEX", None).unwrap();
+        let error = provider_reply(AiProvider::Codex, &output).unwrap_err();
+        assert!(
+            error.starts_with("CODEX CALL FAILED - ERROR: UNEXPECTED STATUS 401 UNAUTHORIZED"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn failure_reasons_skip_cli_preamble_and_prefer_announced_errors() {
+        let banner = "OpenAI Codex v0.149.0 (research preview)\n--------\n\
+                      workdir: /tmp/cartridge\nmodel: gpt-5-codex\nprovider: openai\n\
+                      approval: never\nsandbox: read-only\nreasoning effort: medium\n\
+                      reasoning summaries: auto\nsession id: 0199a6f2\n--------\n\
+                      Reading prompt from stdin...\n";
+        assert_eq!(failure_line(banner), None, "preamble alone is no reason");
+        assert_eq!(
+            failure_line(&format!("{banner}stream disconnected before completion\n")),
+            Some("STREAM DISCONNECTED BEFORE COMPLETION".to_string())
+        );
+        assert_eq!(
+            failure_line(
+                "warning: ignoring broken ref\nfatal: cannot change to 'x': Permission denied\n\
+                 hint: check the folder\n"
+            ),
+            Some("FATAL: CANNOT CHANGE TO 'X': PERMISSION DENIED".to_string())
+        );
+        assert_eq!(
+            failure_line("Error: first attempt\nretrying\nError: Invalid API key\n"),
+            Some("ERROR: INVALID API KEY".to_string())
+        );
+        // Code and prose from the echoed prompt only look like errors.
+        assert_eq!(
+            failure_line(&format!(
+                "{banner}user\n    errors.push(reason);\nFatalError handling\n\
+                 stream disconnected before completion\n"
+            )),
+            Some("STREAM DISCONNECTED BEFORE COMPLETION".to_string())
+        );
+    }
+
+    #[test]
+    fn only_git_saying_no_refuses_a_cartridge() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let plain = std::env::temp_dir().join(format!(
+            "codequest-plain-folder-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&plain).unwrap();
+        assert_eq!(
+            build_cartridge(&plain).err().as_deref(),
+            Some(NOT_A_REPOSITORY)
+        );
+        assert_eq!(
+            repository_branch_at(&plain.to_string_lossy()).unwrap_err(),
+            NOT_A_REPOSITORY
+        );
+
+        // Git that cannot answer says nothing about the folder, so none of
+        // these may carry the text the shell reads as a refusal.
+        let repo = temporary_git_repo();
+        let timed_out = git_repo_check_within(&repo, Duration::ZERO).unwrap_err();
+        assert_eq!(timed_out, "GIT CALL TIMED OUT");
+        let failed = git_repo_check_within(&plain.join("missing"), GIT_TIMEOUT).unwrap_err();
+        assert!(failed.starts_with("GIT CALL FAILED - FATAL: "), "{failed}");
+        let unavailable = command_output_with_timeout(
+            Command::new("codequest-no-such-git"),
+            GIT_TIMEOUT,
+            "GIT",
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            unavailable.starts_with("GIT CLI UNAVAILABLE - "),
+            "{unavailable}"
+        );
+        for error in [timed_out, failed, unavailable] {
+            assert!(!error.contains("NOT A GIT REPOSITORY"), "{error}");
+        }
+        assert_eq!(git_repo_check_within(&repo, GIT_TIMEOUT), Ok(true));
+
+        std::fs::remove_dir_all(plain).unwrap();
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn a_corrupt_save_stops_the_load_without_being_rewritten() {
+        let repo = temporary_git_repo();
+        let save_path = save::path_for(&repo);
+        let truncated = r#"{"schema_version":1,"data":{"quiz.progress":{"#;
+        std::fs::write(&save_path, truncated).unwrap();
+
+        assert_eq!(
+            build_cartridge(&repo).err().as_deref(),
+            Some("CARTRIDGE SAVE IS CORRUPT")
+        );
+        assert_eq!(std::fs::read_to_string(&save_path).unwrap(), truncated);
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
     fn prompts_travel_on_stdin_without_a_command_line_limit() {
         // Larger than Linux's 128 KiB per-argument limit and Windows' 32767
         // character command line, with the quotes and newlines that batch
@@ -1458,6 +1653,21 @@ mod question_policy_tests {
 
     #[test]
     #[ignore = "child-process fixture for the failure-reason test"]
+    fn codex_banner_failure_fixture() {
+        // `codex exec` writes its session banner and summary to stderr before
+        // it echoes the prompt and reports the error.
+        eprintln!(
+            "OpenAI Codex v0.149.0 (research preview)\n--------\nworkdir: /tmp/cartridge\n\
+             model: gpt-5-codex\nprovider: openai\napproval: never\nsandbox: read-only\n\
+             reasoning effort: medium\nreasoning summaries: auto\nsession id: 0199a6f2\n\
+             --------\nReading prompt from stdin...\nuser\n{AI_PROBE_PROMPT}\n\
+             ERROR: unexpected status 401 Unauthorized: Missing bearer authentication"
+        );
+        std::process::exit(1);
+    }
+
+    #[test]
+    #[ignore = "child-process fixture for the failure-reason test"]
     fn silent_failure_fixture() {
         std::process::exit(7);
     }
@@ -1538,36 +1748,162 @@ mod question_policy_tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
-    #[cfg(unix)]
+    /// Where `pipe_holding_helper_fixture` records its process id.
+    const HELPER_PID_FILE: &str = "CQA_TEST_HELPER_PID_FILE";
+
     #[test]
-    fn a_timeout_stops_helpers_that_inherit_the_output_pipes() {
-        // Like an npm launcher: the direct child starts the real work as a
-        // grandchild that holds stdout and stderr open.
-        let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30 & sleep 30"]);
-        let started = std::time::Instant::now();
-
-        let error = command_output_with_timeout(command, Duration::from_millis(200), "CODEX", None)
-            .unwrap_err();
-
-        assert_eq!(error, "CODEX CALL TIMED OUT");
-        assert!(started.elapsed() < Duration::from_secs(2));
+    #[ignore = "child-process fixture for the process-tree tests"]
+    fn pipe_holding_helper_fixture() {
+        if let Some(pid_file) = std::env::var_os(HELPER_PID_FILE) {
+            std::fs::write(pid_file, std::process::id().to_string()).unwrap();
+        }
+        std::thread::sleep(Duration::from_secs(30));
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_helper_left_holding_the_pipes_cannot_outlive_the_deadline() {
-        // The direct child exits at once; its background helper keeps the
-        // pipes open well past the deadline.
-        let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30 &"]);
-        let started = std::time::Instant::now();
+    /// A wrapper like an npm launcher: it starts `pipe_holding_helper_fixture`
+    /// in the background, holding stdout and stderr open, and either keeps
+    /// running itself (`leader_waits`) or exits at once.
+    fn wrapper_with_a_helper(pid_file: &std::path::Path, leader_waits: bool) -> Command {
+        let exe = std::env::current_exe().unwrap();
+        let helper = "--ignored --exact question_policy_tests::pipe_holding_helper_fixture";
+        #[cfg(unix)]
+        let mut command = {
+            let background = format!("\"$0\" {helper} &");
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(if leader_waits {
+                    format!("{background} sleep 30")
+                } else {
+                    background
+                })
+                .arg(&exe);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let background = format!("start \"\" /b \"{}\" {helper}", exe.display());
+            let mut command = Command::new("cmd");
+            command.arg("/c").raw_arg(if leader_waits {
+                format!("{background} & ping -n 30 127.0.0.1 >nul")
+            } else {
+                background
+            });
+            command
+        };
+        command.env(HELPER_PID_FILE, pid_file);
+        command
+    }
 
-        let error = command_output_with_timeout(command, Duration::from_millis(300), "CODEX", None)
-            .unwrap_err();
+    /// The helper's process id, once it has recorded it.
+    fn recorded_helper_pid(pid_file: &std::path::Path) -> u32 {
+        let started = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the helper never started"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn process_is_running(pid: u32) -> bool {
+        #[cfg(unix)]
+        {
+            Command::new("sh")
+                .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
+                .status()
+                .is_ok_and(|status| status.success())
+        }
+        #[cfg(windows)]
+        {
+            Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+                .output()
+                .is_ok_and(|output| {
+                    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+                })
+        }
+    }
+
+    /// Whether `pid` exits within a few seconds; a killed process can take a
+    /// moment to be reaped.
+    fn process_stops(pid: u32) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(5) {
+            if !process_is_running(pid) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    fn helper_pid_file(case: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "codequest-helper-{case}-{}-{unique}.pid",
+            std::process::id()
+        ))
+    }
+
+    /// Long enough for the helper to start and record its id first.
+    const HELPER_DEADLINE: Duration = Duration::from_secs(3);
+
+    #[test]
+    fn a_timeout_stops_helpers_that_inherit_the_output_pipes() {
+        let pid_file = helper_pid_file("leader-waits");
+        let command = wrapper_with_a_helper(&pid_file, true);
+        let started = Instant::now();
+
+        let error =
+            command_output_with_timeout(command, HELPER_DEADLINE, "CODEX", None).unwrap_err();
 
         assert_eq!(error, "CODEX CALL TIMED OUT");
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < HELPER_DEADLINE + Duration::from_secs(2));
+        let helper = recorded_helper_pid(&pid_file);
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(
+            process_stops(helper),
+            "the helper of a running wrapper is stopped with it"
+        );
+    }
+
+    #[test]
+    fn a_helper_left_holding_the_pipes_cannot_outlive_the_deadline() {
+        let pid_file = helper_pid_file("leader-exits");
+        let command = wrapper_with_a_helper(&pid_file, false);
+        let started = Instant::now();
+
+        let error =
+            command_output_with_timeout(command, HELPER_DEADLINE, "CODEX", None).unwrap_err();
+
+        assert_eq!(error, "CODEX CALL TIMED OUT");
+        assert!(started.elapsed() < HELPER_DEADLINE + Duration::from_secs(2));
+        let helper = recorded_helper_pid(&pid_file);
+        let _ = std::fs::remove_file(&pid_file);
+        #[cfg(unix)]
+        assert!(
+            process_stops(helper),
+            "the process group reaches a helper whose wrapper already exited"
+        );
+        // Windows: taskkill /T cannot find the tree of an exited wrapper, so
+        // only the deadline is guaranteed (see kill_process_tree). Stop the
+        // helper here so the test leaves nothing running.
+        #[cfg(windows)]
+        let _ = Command::new("taskkill")
+            .args(["/PID", &helper.to_string(), "/F"])
+            .output();
     }
 
     #[test]
@@ -1671,7 +2007,7 @@ mod question_policy_tests {
             .unwrap();
         if workspace.join(".git").exists() {
             let canon = std::fs::canonicalize(workspace).unwrap();
-            assert!(is_git_repo(&canon));
+            assert_eq!(git_repo_check_within(&canon, GIT_TIMEOUT), Ok(true));
         }
     }
 
