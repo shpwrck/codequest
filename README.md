@@ -22,10 +22,47 @@ cartridge. It defines a manifest-driven Oracle quiz with this complete loop:
 3. Create a hero by choosing a name, path, and aura.
 4. Play **Oracle Datafall** while the next valid question is loading: move left
    or right, collect data shards, and avoid corruption glyphs.
-5. Answer conceptual questions about the project's purpose, architecture,
-   responsibilities, interactions, invariants, and tradeoffs.
-6. Complete an accepted question batch to level up and increase the next
-   batch's difficulty. Lose all three wards to end the run.
+5. Answer conceptual questions about the project's purpose, responsibilities,
+   interactions, invariants, and tradeoffs, then read the lesson card that
+   explains the answer.
+6. Survive a six-question batch to level up and deepen the next batch's
+   concepts. Lose all three wards to end the run.
+7. Open the **Oracle Codex** from the menu to see per-lens mastery and reread
+   every lesson you have earned.
+
+## How the game teaches
+
+CODE QUEST is built to leave you with a durable model of the project, not a
+score. Every question assesses one of five concept lenses: **purpose**,
+**roles** (responsibilities), **flows** (interactions), **invariants**, and
+**tradeoffs**.
+
+- **Every choice explains itself.** Generated questions carry a short
+  rationale for each choice. After you commit, a lesson card replaces the
+  choices: a miss shows *why your pick was wrong* (the misconception it
+  represents) and then why the answer holds; a success reinforces the
+  reasoning. The card waits for you to press A.
+- **Position never gives the answer away.** Language models put the correct
+  answer first most of the time (11 of 12 in a live run against this
+  repository), and the cursor starts on the first choice. Choices are shown in
+  a stable per-question shuffle, and every retry moves every choice.
+- **Misses come back.** A missed question returns three questions later, and a
+  batch cannot close until its misses are retried. Answering it correctly is a
+  *redemption*, recorded separately from a first-try success. Missed questions
+  also survive across launches until you redeem them; correct answers retire
+  their questions for good.
+- **Difficulty deepens the concepts, not the pressure.** Initiate batches
+  (level 1) focus on purpose and roles, Adept batches (2–3) on flows and
+  tradeoffs, and Oracle-bound batches (4+) on invariants, including **PREDICT**
+  questions that describe an undocumented change or failure and ask what the
+  design implies. There are no timers.
+- **Mastery is visible.** Each lens has three mastery runes that wake at 1, 3,
+  and 5 pieces of evidence (first-try successes plus redemptions). The Codex
+  shows them with pending reviews, and pages through the lesson journal:
+  question, answer, and rationale.
+- **Generation adapts to you.** Each request names your weakest lens and the
+  questions you have already been asked, so new batches target your gaps
+  without repeating themselves.
 
 The current progression model is visible as well as numeric:
 
@@ -50,6 +87,10 @@ voice with each Oracle bond tier. The audio context starts on your first key
 press or device press, and the right-edge volume wheel (or V) steps through
 MUTE, LOW, MID, and HIGH; the setting is remembered. Every answer, threshold,
 and status stays visible on screen when muted.
+
+When your system asks for reduced motion, the engine freezes decorative motion
+inside the framebuffer (blinking prompts stay lit, heroes stop bobbing,
+starfields stop scrolling) without changing any scene timing, input, or data.
 
 ## Install
 
@@ -133,11 +174,12 @@ leaves the rack on its own.
 
 Loading a repository creates a versioned, namespaced save beside it, never
 inside it: `/games/demo` uses `/games/demo.sav`. Quiz saves retain validated AI
-question batches and answered-question history. Legacy Claude batch saves load
-without conversion. Committing an answer records it
-immediately, and later runs and launches filter every recorded question so the
-cartridge continues with unseen material. Ejecting or recycling a cartridge
-does not delete its save.
+question batches, retired (correctly answered) questions, questions awaiting
+review, and per-lens mastery. Legacy saves, including Claude-era batches and
+questions without rationales, load without conversion. Committing an answer
+records it immediately on a background writer: a correct answer retires the
+question for later runs and launches, while a miss keeps it queued for review
+until you redeem it. Ejecting or recycling a cartridge does not delete its save.
 
 Loading alone does not modify the selected repository. Quest mode can run the
 repository's own lint, build, or test scripts, so those commands have whatever
@@ -155,13 +197,21 @@ Cartridge selection follows this order:
 
 ### Quiz
 
-Quiz cartridges request six questions from the verified battery provider.
-Generated questions must have four distinct
-choices, exactly one correct answer, no repository trivia, no more than four
-31-character lines for the prompt, and no more than 31 characters per choice.
-Valid questions survive a mixed batch, so an accepted batch can contain fewer
-than six. Accepted batches are cached in the sibling save and prefetched while
-the player continues.
+Quiz cartridges request six questions from the verified battery provider. The
+request carries an anonymized project brief: the README, design documents, the
+manifest summary, and doc comments plus top-level signatures from up to 30
+components spread across the tree, labelled `COMPONENT n` with every path and
+file name withheld so questions stay conceptual.
+
+Each generated question names its lens and gives four distinct choices, exactly
+one correct answer, and a rationale for every choice. A question is accepted
+only if it fits the display (four 31-character lines, 31 characters per choice,
+three 34-character rationale lines), uses a known lens, and asks no repository
+trivia: no file locations, counts, dates, versions, commits, branches, or
+authors. Ordinary nouns such as "file" or "path" are fine in a conceptual
+question. Valid questions survive a mixed batch; a short delivery is topped up
+until the batch holds six. Accepted batches are cached in the sibling save and
+prefetched while the player continues.
 
 Set `CQA_CODEX_MODEL` or `CQA_CLAUDE_MODEL` to choose the model used by the
 corresponding CLI. Set `CQA_NO_AI=1` to disable generation for diagnostics;
@@ -208,12 +258,12 @@ the running CODE QUEST ADVANCE build.
 
 | Keyboard | Handheld input | Current use |
 |---|---|---|
-| Arrow keys | D-pad | Navigate; move during Datafall |
-| D | A | Confirm, answer, or start a quest |
-| S | B | Back, leave the Oracle, or abort a quest |
+| Arrow keys | D-pad | Navigate; move during Datafall; page the Codex |
+| D | A | Confirm, answer, continue past a lesson, or start a quest |
+| S | B | Back, leave the Oracle or Codex, leave a run (press twice), or abort a quest |
 | Enter | START | Start or confirm |
 | Shift | SELECT | Reserved |
-| A / F | L / R | Page the quest list |
+| A / F | L / R | Page the quest list or the Codex |
 | P | Power switch | Turn the device on or off |
 | C | Cartridge slot | Open or close the rack while powered off |
 | F1 | FRONT/BACK switch | Turn the device over |
@@ -231,13 +281,18 @@ Gameplay and device presentation have a hard boundary:
 
 | Path | Responsibility |
 |---|---|
-| `src/` | JavaScript/CSS physical shell, cartridge rack, native-dialog bridge, boot overlay, input forwarding, window fitting, and framebuffer canvas |
-| `src-tauri/src/engine.rs` | Headless Bevy game state, fixed-step timing, input edges, Oracle/quiz/quest behavior, command effects, and CPU rendering |
+| `src/` | JavaScript/CSS physical shell, cartridge rack, native-dialog bridge, boot overlay, input forwarding, window fitting, framebuffer canvas, device status strip, and the WebAudio speaker (`speaker.js`) that plays engine notes |
+| `src-tauri/src/engine.rs` | Headless Bevy game state, fixed-step timing, input edges, Oracle/quiz/Codex/quest behavior, lesson cards and spaced retry, command effects, and CPU rendering |
+| `src-tauri/src/audio.rs` | Engine-owned four-voice chip sound: per-tick state snapshots, the cue/loop director, and tick-stamped notes |
+| `src-tauri/src/learning.rs` | The learning model: concept lenses, answer evidence, mastery thresholds, the lesson journal, and choice-presentation order |
 | `src-tauri/src/scene_machine.rs` | Executable finite-state machine and built-in quiz/quest templates |
 | `src-tauri/src/codequest.rs` | `CODEQUEST.toml` parser, validation, and runtime compilation |
-| `src-tauri/src/lib.rs` | Tauri boundary, verified provider state, Git cartridge inspection, provenance, quest construction, AI prompting, and question persistence |
+| `src-tauri/src/lib.rs` | Tauri boundary, verified provider state, Git cartridge inspection, quest construction, and provider calls |
+| `src-tauri/src/questions.rs` | Question payloads, acceptance policy, prompt construction, response parsing, and learner persistence |
+| `src-tauri/src/repo_context.rs` | The anonymized, budgeted project brief sent with each generation request |
+| `src-tauri/src/provenance.rs` | Author credits and explicit copyright notices for the chronicle card |
 | `src-tauri/src/external_tools.rs` | Cross-platform Git, Codex, Claude, and shell discovery |
-| `src-tauri/src/save.rs` | Versioned namespaced saves with atomic file replacement |
+| `src-tauri/src/save.rs` | Versioned namespaced saves with atomic file replacement and serialized read-modify-write updates |
 | `src-tauri/assets/oracle/` | Authored 240×160 Oracle plates, hero sprites, portraits, and Datafall sprites embedded into the engine |
 
 Bevy always produces one 240×160 RGBA framebuffer: 153,600 bytes at 8 bits per
