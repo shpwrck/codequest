@@ -328,6 +328,27 @@ npm run tauri -- build --no-bundle
 python3 .agents/skills/codequest-game-designer/scripts/validate_codequest.py CODEQUEST.toml
 ```
 
+CI also runs the Rust lint and tests on Windows and macOS runners, the only
+hosts that compile the platform-specific tool discovery, process-tree
+shutdown, and shell-path code.
+
+Question quality can be measured against any repository with the real
+provider. The ignored `question_eval` test runs the app's exact generation
+path (anonymized brief, bounded prompt, provider CLI on stdin, acceptance
+policy) and prints every candidate as ACCEPT or REJECT with the limits it
+violated, then answer-position, lens, focus-lens, and PREDICT tallies and the
+acceptance rate. Each level costs one real provider request:
+
+```bash
+./scripts/eval-questions.sh claude 1,4
+CQA_CODEX_MODEL=gpt-5.5 ./scripts/eval-questions.sh codex 1,2,4 ~/src/other-repo
+```
+
+`CQ_EVAL_ROUNDS` repeats each level, `CQ_EVAL_TIMEOUT_SECS` replaces the app's
+120-second limit, and `CQA_CLAUDE`, `CQA_CODEX`, `CQA_CLAUDE_MODEL`, and
+`CQA_CODEX_MODEL` select the CLI and model exactly as in the app. The module
+documentation in `src-tauri/src/question_eval.rs` lists every option.
+
 Oracle render changes can emit every native scene without launching the shell:
 
 ```bash

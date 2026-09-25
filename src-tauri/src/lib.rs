@@ -6,6 +6,8 @@ mod external_tools;
 mod font5x7;
 mod learning;
 mod provenance;
+#[cfg(test)]
+mod question_eval;
 mod questions;
 mod repo_context;
 mod save;
