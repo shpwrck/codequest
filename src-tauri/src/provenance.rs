@@ -27,9 +27,10 @@ pub const NOTICE_FILES: [&str; 11] = [
 ];
 
 /// Collapses whitespace, drops control characters, and bounds the length of
-/// repository-supplied text before it reaches the display.
+/// repository-supplied text before it reaches the display. A cut that lands
+/// just after a space never leaves that space dangling.
 pub fn sanitized_metadata(value: &str, max_chars: usize) -> String {
-    value
+    let bounded = value
         .chars()
         .filter(|character| !character.is_control())
         .collect::<String>()
@@ -38,7 +39,8 @@ pub fn sanitized_metadata(value: &str, max_chars: usize) -> String {
         .join(" ")
         .chars()
         .take(max_chars)
-        .collect()
+        .collect::<String>();
+    bounded.trim_end().to_string()
 }
 
 /// Returns the first explicit copyright notice in a notice or license text.
@@ -177,7 +179,8 @@ pub fn ranked_authors(shortlog: &str, limit: usize) -> Vec<String> {
             .iter_mut()
             .find(|(known, _)| known.eq_ignore_ascii_case(&name))
         {
-            Some((_, total)) => *total += count,
+            // Saturating: counts come from text and may be absurdly large.
+            Some((_, total)) => *total = total.saturating_add(count),
             None => authors.push((name, count)),
         }
     }
@@ -285,5 +288,24 @@ mod tests {
             "main branch"
         );
         assert_eq!(sanitized_metadata("abcdefgh", 3), "abc");
+    }
+
+    #[test]
+    fn a_length_cut_after_a_space_leaves_no_trailing_space() {
+        assert_eq!(sanitized_metadata("Ada Lovelace", 4), "Ada");
+        let long_name = format!("{} Lovelace", "A".repeat(63));
+        assert_eq!(
+            ranked_authors(&format!("     1\t{long_name}\n"), 1),
+            ["A".repeat(63)]
+        );
+    }
+
+    #[test]
+    fn huge_commit_counts_saturate_instead_of_overflowing() {
+        let shortlog = "18446744073709551615\tAda Lovelace\n18446744073709551615\tada lovelace\n     7\tGrace Hopper\n";
+        assert_eq!(
+            ranked_authors(shortlog, 2),
+            ["Ada Lovelace", "Grace Hopper"]
+        );
     }
 }
