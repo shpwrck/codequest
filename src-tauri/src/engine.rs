@@ -335,10 +335,11 @@ const ASCENSION_LEVEL_BOX: UiBox = UiBox {
     width: 70,
     height: 16,
 };
+/// The batch recap beside the risen hero, wide enough for `1ST TRY 99/99`.
 const ASCENSION_BATCH_BOX: UiBox = UiBox {
-    x: 158,
+    x: 148,
     y: 117,
-    width: 75,
+    width: 85,
     height: 16,
 };
 const AFTERMATH_CONTENT_BOX: UiBox = UiBox {
@@ -1041,6 +1042,66 @@ struct QuizRun {
     lens_woke: Option<(Concept, usize)>,
     /// Ticks left in which a second B leaves the run.
     leave_armed: u16,
+    /// What this run taught, reported by the Ascension and Aftermath debriefs.
+    ledger: RunLedger,
+}
+
+/// A per-run learning tally for the end-of-batch and end-of-run debriefs. It
+/// only reports; mastery evidence lives in the cartridge's `Mastery`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RunLedger {
+    /// First attempts (non-review questions) committed this run.
+    first_try: u32,
+    /// First attempts answered correctly this run.
+    first_try_right: u32,
+    /// Review questions answered correctly this run.
+    redeemed: u32,
+    /// First attempts committed in the batch still in progress.
+    batch_first_try: u32,
+    /// First attempts answered correctly in the batch still in progress.
+    batch_first_try_right: u32,
+    /// `(right, attempted)` first tries of the batch that completed last.
+    last_batch: (u32, u32),
+    /// Lit mastery runes per lens (`Concept::ALL` order) when the run began.
+    stages_at_start: [usize; 5],
+}
+
+impl RunLedger {
+    /// Records one committed answer. Only a review can redeem; only a
+    /// question's first appearance counts as a first try.
+    fn record(&mut self, review: bool, correct: bool) {
+        if review {
+            self.redeemed += u32::from(correct);
+        } else {
+            self.first_try += 1;
+            self.batch_first_try += 1;
+            self.first_try_right += u32::from(correct);
+            self.batch_first_try_right += u32::from(correct);
+        }
+    }
+
+    /// Snapshots the batch that just completed for the level-up screen and
+    /// starts counting the next one.
+    fn close_batch(&mut self) {
+        self.last_batch = (self.batch_first_try_right, self.batch_first_try);
+        self.batch_first_try = 0;
+        self.batch_first_try_right = 0;
+    }
+}
+
+/// `1ST TRY a/b`, capped so the worst case is `1ST TRY 99/99`.
+fn first_try_label((right, attempted): (u32, u32)) -> String {
+    format!("1ST TRY {}/{}", right.min(99), attempted.min(99))
+}
+
+/// The roman numeral of a lit mastery-rune stage.
+fn rune_numeral(stage: usize) -> &'static str {
+    match stage {
+        0 => "-",
+        1 => "I",
+        2 => "II",
+        _ => "III",
+    }
 }
 
 /// When a missed question comes back, as its lesson card tells it.
@@ -1082,6 +1143,7 @@ impl QuizRun {
             retry_note: None,
             lens_woke: None,
             leave_armed: 0,
+            ledger: RunLedger::default(),
         }
     }
 
@@ -1926,7 +1988,9 @@ fn start_quiz_run(state: &mut GameState) {
     retire_consumed_questions(state);
     state.oracle_data = 0;
     state.oracle_bug_hits = 0;
-    state.quiz = Some(QuizRun::new());
+    let mut run = QuizRun::new();
+    run.ledger.stages_at_start = Concept::ALL.map(|concept| state.mastery_stage(concept));
+    state.quiz = Some(run);
 }
 
 fn begin_quiz_run(state: &mut GameState) {
@@ -1998,6 +2062,7 @@ fn commit_answer(state: &mut GameState, effects: &mut Effects) {
     }
     run.feedback = Some((correct, QUIZ_FEEDBACK_TICKS));
     run.redeemed = correct && question.review;
+    run.ledger.record(question.review, correct);
     cartridge.question_attempts.insert(
         question_identity(&question.question),
         run.attempt.saturating_add(1),
@@ -2065,6 +2130,7 @@ fn continue_after_lesson(state: &mut GameState) {
                 run.completed_batches += 1;
                 run.level += 1;
                 run.leveled_up = true;
+                run.ledger.close_batch();
             } else if run.question < question_count {
                 // A short batch with questions after it joins the next one,
                 // so the level-up waits for a full batch.
@@ -4177,20 +4243,40 @@ fn render_level_up(frame: &mut Framebuffer, state: &GameState) {
     frame.centered_text(22, "LEVEL UP!", GOLD, 2);
     let rise = (state.settled_ticks(45) / 5) as i32;
     draw_hero(frame, 106, 91 - rise, 1, state);
+    let level = state.quiz.as_ref().map_or(1, |run| run.level);
+    frame.centered_text(42, bond_title(level), CYAN, 1);
     if let Some(run) = state.quiz.as_ref() {
         frame.centered_text(116, &format!("LEVEL {}", run.level), PARCH, 1);
-        frame.centered_text(
-            130,
-            &format!("BATCH {} SURVIVED", run.completed_batches),
-            SKY,
-            1,
-        );
+        frame.centered_text(130, &first_try_label(run.ledger.last_batch), CYAN, 1);
     }
     if state.level_up_can_continue() {
-        frame.centered_text(149, "A / START:CONTINUE", MIST, 1);
+        frame.centered_text(LEVEL_UP_FOOTER_Y, "A / START:CONTINUE", MIST, 1);
     } else {
-        frame.centered_text(149, "ORACLE BOND DEEPENS", MIST, 1);
+        frame.centered_text(LEVEL_UP_FOOTER_Y, &next_focus_label(level), MIST, 1);
     }
+}
+
+/// The legacy level-up footer, inside the frame like the result prompt.
+const LEVEL_UP_FOOTER_Y: i32 = 143;
+
+/// The level-up heading: the bond ascends only when the level crosses into a
+/// new presentation tier, and deepens within one.
+fn bond_title(level: u32) -> &'static str {
+    if PresentationTier::from_level(level.saturating_sub(1)) == PresentationTier::from_level(level)
+    {
+        "ORACLE BOND DEEPENS"
+    } else {
+        "ORACLE BOND ASCENDS"
+    }
+}
+
+/// The lenses the batch at `level` focuses on, e.g. `NEXT: FLOWS+TRADEOFFS`.
+fn next_focus_label(level: u32) -> String {
+    let lenses = Concept::focus_for_level(level)
+        .iter()
+        .map(|concept| concept.label())
+        .collect::<Vec<_>>();
+    format!("NEXT: {}", lenses.join("+"))
 }
 
 fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
@@ -4210,11 +4296,12 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         ASCENSION_TITLE_BOX.height,
         AMBER,
     );
+    let level = state.quiz.as_ref().map_or(1, |run| run.level);
     frame.centered_text_in(
         ASCENSION_TITLE_BOX.x,
         73,
         ASCENSION_TITLE_BOX.width,
-        "ORACLE BOND ASCENDS",
+        bond_title(level),
         AMBER,
         1,
     );
@@ -4269,7 +4356,7 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
         );
         frame.centered_text_box(
             ASCENSION_BATCH_BOX,
-            &format!("BATCH {}", run.completed_batches.min(99)),
+            &first_try_label(run.ledger.last_batch),
             PARCH,
             1,
         );
@@ -4291,7 +4378,7 @@ fn render_oracle_ascension(frame: &mut Framebuffer, state: &GameState) {
     if state.level_up_can_continue() {
         frame.centered_text_box(MENU_FOOTER_BOX, "A / START:CONTINUE", PARCH, 1);
     } else {
-        frame.centered_text_box(MENU_FOOTER_BOX, "THE NEW CREST TAKES HOLD", MIST, 1);
+        frame.centered_text_box(MENU_FOOTER_BOX, &next_focus_label(level), CYAN, 1);
     }
 }
 
@@ -4304,89 +4391,133 @@ fn render_game_over(frame: &mut Framebuffer, state: &GameState) {
     frame.outline(8, 8, 224, 144, PLUM);
     frame.centered_text(24, "GAME OVER", RED, 2);
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text(57, &format!("SCORE {:04}", run.score.min(9999)), GOLD, 1);
-        frame.centered_text(
-            83,
-            &format!("INSIGHT {}", InsightStage::from_score(run.score).label()),
-            InsightStage::from_score(run.score).color(),
-            1,
-        );
-        frame.centered_text(70, &format!("LEVEL {} REACHED", run.level), SKY, 1);
-        draw_oracle_sigil(frame, 120, 104, 0);
-        draw_hero(frame, 106, 99, 1, state);
+        let insight = InsightStage::from_score(run.score);
+        let mut rows = vec![
+            (format!("SCORE {:04}", run.score.min(9999)), GOLD),
+            (format!("INSIGHT {}", insight.label()), insight.color()),
+            (format!("LEVEL {} REACHED", run.level.min(99)), SKY),
+        ];
+        rows.extend(ledger_rows(state, run));
+        for ((text, color), y) in rows.iter().zip(GAME_OVER_ROW_YS) {
+            frame.centered_text(y, text, *color, 1);
+        }
+        draw_oracle_sigil(frame, GAME_OVER_SIGIL_X, 110, 0);
+        draw_hero(frame, GAME_OVER_SIGIL_X - 12, 99, 1, state);
     } else {
         frame.centered_text(70, "NO QUESTIONS FOUND", GOLD, 1);
     }
-    if state.blink_lit(30) {
-        frame.centered_text(143, "A/B/START:MENU", PARCH, 1);
+    frame.centered_text(143, RESULT_PROMPT, PARCH, 1);
+}
+
+/// Every input the result screen accepts; drawn steadily, never blinking.
+const RESULT_PROMPT: &str = "A/B/START:MENU";
+/// Legacy result rows: score, insight, level, then the learning ledger.
+const GAME_OVER_ROW_YS: [i32; 7] = [46, 56, 66, 80, 90, 100, 110];
+/// The legacy result hero stands left of the centered ledger.
+const GAME_OVER_SIGIL_X: i32 = 42;
+const AFTERMATH_TITLE_Y: i32 = 24;
+/// Aftermath rows: score and insight, tier and level, then the ledger.
+const AFTERMATH_ROW_YS: [i32; 8] = [36, 46, 58, 68, 80, 90, 100, 110];
+const AFTERMATH_PROMPT_Y: i32 = 124;
+
+/// Lessons in the journal whose latest attempt was a miss.
+fn open_reviews(state: &GameState) -> usize {
+    state
+        .lessons()
+        .iter()
+        .filter(|lesson| lesson.outstanding)
+        .count()
+}
+
+/// The lens whose mastery rose the most since the run began, with its stage
+/// now; ties go to the earliest lens in `Concept::ALL`.
+fn woken_lens(state: &GameState) -> Option<(Concept, usize)> {
+    let run = state.quiz.as_ref()?;
+    let mut woken: Option<(Concept, usize, usize)> = None;
+    for (concept, start) in Concept::ALL.into_iter().zip(run.ledger.stages_at_start) {
+        let stage = state.mastery_stage(concept);
+        let rise = stage.saturating_sub(start);
+        if rise > 0 && woken.is_none_or(|(_, _, best)| rise > best) {
+            woken = Some((concept, stage, rise));
+        }
     }
+    woken.map(|(concept, stage, _)| (concept, stage))
+}
+
+/// The run's learning ledger, shared by both result screens: first-try
+/// successes, redemptions, open reviews, and where to go next (the lens that
+/// woke this run, else the Codex while reviews are open).
+fn ledger_rows(state: &GameState, run: &QuizRun) -> Vec<(String, Color)> {
+    let ledger = &run.ledger;
+    let open = open_reviews(state);
+    let mut rows = vec![
+        (
+            first_try_label((ledger.first_try_right, ledger.first_try)),
+            PARCH,
+        ),
+        (format!("REDEEMED {:02}", ledger.redeemed.min(99)), CYAN),
+        if open == 0 {
+            ("ALL CLEAR".into(), MIST)
+        } else {
+            (format!("REVIEW {:02}", open.min(99)), AMBER)
+        },
+    ];
+    if let Some((concept, stage)) = woken_lens(state) {
+        rows.push((
+            format!("{} {}", concept.label(), rune_numeral(stage)),
+            mastery_rune_color(stage),
+        ));
+    } else if open > 0 {
+        rows.push(("SEE CODEX".into(), AMBER));
+    }
+    rows
+}
+
+/// The Aftermath panel's rows below its title, each with its baseline.
+fn aftermath_rows(state: &GameState, run: &QuizRun) -> Vec<(i32, String, Color)> {
+    let tier = state.visual_tier();
+    let insight = InsightStage::from_score(run.score);
+    let mut rows = vec![
+        (format!("SCORE {:04}", run.score.min(9999)), AMBER),
+        (format!("INSIGHT {}", insight.label()), insight.color()),
+        (
+            tier.label().to_string(),
+            if tier == PresentationTier::Initiate {
+                CYAN
+            } else {
+                AMBER
+            },
+        ),
+        (format!("LEVEL {}", run.level.min(99)), PARCH),
+    ];
+    rows.extend(ledger_rows(state, run));
+    rows.into_iter()
+        .zip(AFTERMATH_ROW_YS)
+        .map(|((text, color), y)| (y, text, color))
+        .collect()
 }
 
 fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
-    let tier = state.visual_tier();
     frame.blit_rgb(ORACLE_AFTERMATH);
     frame.centered_text_in(
         AFTERMATH_CONTENT_BOX.x,
-        24,
+        AFTERMATH_TITLE_Y,
         AFTERMATH_CONTENT_BOX.width,
         "VISION CLOSED",
         RED,
         1,
     );
     if let Some(run) = state.quiz.as_ref() {
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            49,
-            AFTERMATH_CONTENT_BOX.width,
-            "FINAL SCORE",
-            MIST,
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            59,
-            AFTERMATH_CONTENT_BOX.width,
-            &format!("{:04}", run.score.min(9999)),
-            AMBER,
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            76,
-            AFTERMATH_CONTENT_BOX.width,
-            "BOND REACHED",
-            MIST,
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            87,
-            AFTERMATH_CONTENT_BOX.width,
-            tier.label(),
-            if tier == PresentationTier::Initiate {
-                CYAN
-            } else {
-                AMBER
-            },
-            1,
-        );
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            104,
-            AFTERMATH_CONTENT_BOX.width,
-            &format!("LEVEL {}", run.level.min(99)),
-            PARCH,
-            1,
-        );
-        let insight = InsightStage::from_score(run.score);
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            114,
-            AFTERMATH_CONTENT_BOX.width,
-            &format!("INSIGHT {}", insight.label()),
-            insight.color(),
-            1,
-        );
+        for (y, text, color) in aftermath_rows(state, run) {
+            frame.centered_text_in(
+                AFTERMATH_CONTENT_BOX.x,
+                y,
+                AFTERMATH_CONTENT_BOX.width,
+                &text,
+                color,
+                1,
+            );
+        }
         draw_defeated_hero(frame, 52, 106, state);
     } else {
         frame.centered_text_in(
@@ -4398,16 +4529,14 @@ fn render_oracle_aftermath(frame: &mut Framebuffer, state: &GameState) {
             1,
         );
     }
-    if state.blink_lit(30) {
-        frame.centered_text_in(
-            AFTERMATH_CONTENT_BOX.x,
-            126,
-            AFTERMATH_CONTENT_BOX.width,
-            "A/B/START:MENU",
-            PARCH,
-            1,
-        );
-    }
+    frame.centered_text_in(
+        AFTERMATH_CONTENT_BOX.x,
+        AFTERMATH_PROMPT_Y,
+        AFTERMATH_CONTENT_BOX.width,
+        RESULT_PROMPT,
+        PARCH,
+        1,
+    );
 }
 
 fn mastery_rune_color(stage: usize) -> Color {
@@ -5850,9 +5979,9 @@ mod tests {
                 centered_text_box_bounds(ASCENSION_LEVEL_BOX, "LEVEL 99", 1),
             ),
             (
-                "ascension batch",
+                "ascension batch recap",
                 ascension_batch,
-                centered_text_box_bounds(ASCENSION_BATCH_BOX, "BATCH 99", 1),
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 99/99", 1),
             ),
             (
                 "ascension controls",
@@ -5860,24 +5989,19 @@ mod tests {
                 centered_text_box_bounds(MENU_FOOTER_BOX, "A / START:CONTINUE", 1),
             ),
             (
-                "aftermath tier",
-                aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 87, "ORACLE-BOUND", 1),
+                "ascension next lenses",
+                menu_footer,
+                centered_text_box_bounds(MENU_FOOTER_BOX, "NEXT: INVARIANTS+TRADEOFFS", 1),
             ),
             (
                 "aftermath title",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 24, "VISION CLOSED", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_TITLE_Y, "VISION CLOSED", 1),
             ),
             (
                 "aftermath controls",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 126, "A/B/START:MENU", 1),
-            ),
-            (
-                "aftermath insight rune",
-                aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 114, "INSIGHT UNLIT", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_PROMPT_Y, RESULT_PROMPT, 1),
             ),
         ] {
             assert!(
@@ -5970,9 +6094,9 @@ mod tests {
                 centered_text_box_bounds(ASCENSION_LEVEL_BOX, "LEVEL 99", 1),
             ),
             (
-                "ascension batch",
+                "ascension batch recap",
                 ascension_batch,
-                centered_text_box_bounds(ASCENSION_BATCH_BOX, "BATCH 99", 1),
+                centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 99/99", 1),
             ),
         ] {
             assert!(
@@ -5999,17 +6123,12 @@ mod tests {
             (
                 "aftermath title",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 24, "VISION CLOSED", 1),
-            ),
-            (
-                "aftermath score",
-                aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 59, "9999", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_TITLE_Y, "VISION CLOSED", 1),
             ),
             (
                 "aftermath controls",
                 aftermath_panel,
-                centered_text_in_bounds(aftermath_panel, 126, "A/B/START:MENU", 1),
+                centered_text_in_bounds(aftermath_panel, AFTERMATH_PROMPT_Y, RESULT_PROMPT, 1),
             ),
         ] {
             assert!(
@@ -6146,6 +6265,451 @@ mod tests {
                 "{name} foreground contrast {ratio:.2}:1 is below 4.5:1"
             );
         }
+    }
+
+    /// A result-screen state whose every debrief row carries its widest copy:
+    /// an unlit insight, the widest tier, two-digit counts, and a lens woken to
+    /// its third rune.
+    fn worst_case_debrief_state() -> GameState {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.lessons = (0..120)
+            .map(|index| Lesson {
+                question: format!("MISSED {index}"),
+                outstanding: true,
+                ..Lesson::default()
+            })
+            .collect();
+        cartridge.mastery = Mastery::from([(
+            Concept::Invariant,
+            LensRecord {
+                first_try: 5,
+                ..LensRecord::default()
+            },
+        )]);
+        GameState {
+            cartridge: Some(cartridge),
+            quiz: Some(QuizRun {
+                score: 0,
+                level: 99,
+                ledger: RunLedger {
+                    first_try: 150,
+                    first_try_right: 120,
+                    redeemed: 120,
+                    last_batch: (120, 150),
+                    ..RunLedger::default()
+                },
+                ..QuizRun::new()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn debrief_rows_stay_contained_disjoint_and_readable_on_their_panels() {
+        let state = worst_case_debrief_state();
+        let run = state.quiz.as_ref().unwrap();
+        let panel = ui_box_bounds(AFTERMATH_CONTENT_BOX);
+        let rows = aftermath_rows(&state, run);
+        assert_eq!(
+            rows.iter()
+                .map(|(_, text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "SCORE 0000",
+                "INSIGHT UNLIT",
+                "ORACLE-BOUND",
+                "LEVEL 99",
+                "1ST TRY 99/99",
+                "REDEEMED 99",
+                "REVIEW 99",
+                "INVARIANTS III",
+            ],
+            "the worst case fills every ledger row"
+        );
+        let mut children = vec![(
+            "title".to_string(),
+            centered_text_in_bounds(panel, AFTERMATH_TITLE_Y, "VISION CLOSED", 1),
+            vec![RED],
+        )];
+        for (y, text, color) in &rows {
+            // Every color the row can take: the insight, tier, and lens rows
+            // change color with their stage.
+            let colors = vec![*color, CYAN, AMBER, MAGENTA, MIST, PARCH];
+            children.push((
+                text.clone(),
+                centered_text_in_bounds(panel, *y, text, 1),
+                colors,
+            ));
+        }
+        // Alternative copy for a row, at that row's baseline.
+        for (row, alternative) in [
+            (0, "SCORE 9999"),
+            (1, "INSIGHT III"),
+            (2, "INITIATE"),
+            (6, "ALL CLEAR"),
+            (7, "SEE CODEX"),
+        ] {
+            let bounds = centered_text_in_bounds(panel, rows[row].0, alternative, 1);
+            assert!(
+                bounds_contains(panel, bounds),
+                "{alternative} exceeds the aftermath panel"
+            );
+        }
+        children.push((
+            "prompt".to_string(),
+            centered_text_in_bounds(panel, AFTERMATH_PROMPT_Y, RESULT_PROMPT, 1),
+            vec![PARCH],
+        ));
+        for (name, bounds, colors) in &children {
+            assert!(
+                bounds_contains(panel, *bounds),
+                "aftermath {name} {bounds:?} exceeds the panel {panel:?}"
+            );
+            let fill = brightest_plate_color(ORACLE_AFTERMATH, *bounds);
+            for color in colors {
+                let ratio = contrast_ratio(*color, fill);
+                assert!(
+                    ratio >= 4.5,
+                    "aftermath {name} contrast {ratio:.2}:1 against plate fill {:?} is below 4.5:1",
+                    (fill.0, fill.1, fill.2)
+                );
+            }
+        }
+        for (index, (left_name, left, _)) in children.iter().enumerate() {
+            for (right_name, right, _) in &children[index + 1..] {
+                assert!(
+                    bounds_are_disjoint(*left, *right),
+                    "aftermath {left_name} {left:?} overlaps {right_name} {right:?}"
+                );
+            }
+        }
+
+        // The legacy result: centered rows inside the frame, clear of the
+        // hero and sigil standing to their left, readable on ink.
+        let frame_interior = LayoutBounds {
+            x: 9,
+            y: 9,
+            width: 222,
+            height: 142,
+        };
+        let hero = LayoutBounds {
+            x: GAME_OVER_SIGIL_X - 12,
+            y: 99,
+            width: HERO_SPRITE_WIDTH as i32,
+            height: HERO_SPRITE_HEIGHT as i32,
+        };
+        let sigil = LayoutBounds {
+            x: GAME_OVER_SIGIL_X - 24,
+            y: 110 - 13,
+            width: 49,
+            height: 27,
+        };
+        let mut legacy = vec![
+            (
+                "heading".to_string(),
+                centered_text_bounds(24, "GAME OVER", 2),
+            ),
+            (
+                "prompt".to_string(),
+                centered_text_bounds(143, RESULT_PROMPT, 1),
+            ),
+        ];
+        let legacy_copy = [
+            "SCORE 9999",
+            "INSIGHT UNLIT",
+            "LEVEL 99 REACHED",
+            "1ST TRY 99/99",
+            "REDEEMED 99",
+            "REVIEW 99",
+            "INVARIANTS III",
+        ];
+        for (text, y) in legacy_copy.into_iter().zip(GAME_OVER_ROW_YS) {
+            legacy.push((text.to_string(), centered_text_bounds(y, text, 1)));
+        }
+        for (name, bounds) in &legacy {
+            assert!(
+                bounds_contains(frame_interior, *bounds),
+                "legacy {name} {bounds:?} exceeds the frame"
+            );
+            assert!(
+                bounds_are_disjoint(*bounds, hero),
+                "legacy {name} overlaps the hero"
+            );
+            assert!(
+                bounds_are_disjoint(*bounds, sigil),
+                "legacy {name} overlaps the sigil"
+            );
+        }
+        for (index, (left_name, left)) in legacy.iter().enumerate() {
+            for (right_name, right) in &legacy[index + 1..] {
+                assert!(
+                    bounds_are_disjoint(*left, *right),
+                    "legacy {left_name} overlaps {right_name}"
+                );
+            }
+        }
+        for color in [GOLD, SKY, PARCH, CYAN, MIST, AMBER, MAGENTA] {
+            let ratio = contrast_ratio(color, INK);
+            assert!(
+                ratio >= 4.5,
+                "legacy {:?} on ink is {ratio:.2}:1",
+                (color.0, color.1, color.2)
+            );
+        }
+
+        // The Ascension recap boxes and the legacy level-up lines.
+        let batch = inset(ASCENSION_BATCH_BOX);
+        let footer = inset(MENU_FOOTER_BOX);
+        let recap = centered_text_box_bounds(ASCENSION_BATCH_BOX, "1ST TRY 99/99", 1);
+        assert!(bounds_contains(batch, recap), "{recap:?} exceeds {batch:?}");
+        let hero_column = LayoutBounds {
+            x: 108,
+            y: 0,
+            width: HERO_SPRITE_WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        assert!(bounds_are_disjoint(
+            ui_box_bounds(ASCENSION_BATCH_BOX),
+            hero_column
+        ));
+        assert!(bounds_are_disjoint(
+            ui_box_bounds(ASCENSION_BATCH_BOX),
+            ui_box_bounds(ASCENSION_LEVEL_BOX)
+        ));
+        for level in 2..=5 {
+            let next = next_focus_label(level);
+            let bounds = centered_text_box_bounds(MENU_FOOTER_BOX, &next, 1);
+            assert!(bounds_contains(footer, bounds), "{next} exceeds the footer");
+            let legacy_next = centered_text_bounds(LEVEL_UP_FOOTER_Y, &next, 1);
+            assert!(
+                bounds_contains(frame_interior, legacy_next),
+                "{next} exceeds the frame"
+            );
+            assert!(bounds_are_disjoint(
+                legacy_next,
+                centered_text_bounds(130, "1ST TRY 99/99", 1)
+            ));
+        }
+        assert!(bounds_are_disjoint(
+            centered_text_bounds(22, "LEVEL UP!", 2),
+            centered_text_bounds(42, "ORACLE BOND DEEPENS", 1)
+        ));
+        assert!(
+            centered_text_bounds(42, "ORACLE BOND DEEPENS", 1).y + 7 < 72 - 13,
+            "the legacy bond title clears the sigil"
+        );
+        for (name, foreground, background) in [
+            ("recap", PARCH, VOID),
+            ("next lenses", CYAN, VOID),
+            ("legacy bond title", CYAN, NAVY),
+            ("legacy recap", CYAN, NAVY),
+            ("legacy next lenses", MIST, NAVY),
+        ] {
+            let ratio = contrast_ratio(foreground, background);
+            assert!(ratio >= 4.5, "{name} contrast {ratio:.2}:1 is below 4.5:1");
+        }
+    }
+
+    #[test]
+    fn the_result_prompt_stays_lit_on_every_frame() {
+        for template in [true, false] {
+            let mut state = worst_case_debrief_state();
+            if !template {
+                state.cartridge = Some(quiz_cartridge());
+            }
+            let (x_range, prompt_y) = if template {
+                let panel = AFTERMATH_CONTENT_BOX;
+                (
+                    panel.x as usize..(panel.x + panel.width) as usize,
+                    AFTERMATH_PROMPT_Y as usize,
+                )
+            } else {
+                (0..WIDTH, 143)
+            };
+            let y_range = prompt_y..prompt_y + 7;
+            for ticks in [0, 29, 30, 45, 60, 95] {
+                state.screen_ticks = ticks;
+                let mut frame = Framebuffer::default();
+                if template {
+                    render_oracle_aftermath(&mut frame, &state);
+                } else {
+                    render_game_over(&mut frame, &state);
+                }
+                assert!(
+                    color_pixels_in_region(&frame.pixels, PARCH, x_range.clone(), y_range.clone())
+                        > 20,
+                    "the result prompt is drawn at tick {ticks} (template={template})"
+                );
+                if ticks == 30 {
+                    let name = if template {
+                        "debrief-aftermath-worst"
+                    } else {
+                        "debrief-game-over-legacy"
+                    };
+                    maybe_write_preview(name, &frame.pixels);
+                }
+            }
+            state.quiz.as_mut().unwrap().level = 3;
+            let mut level_up = Framebuffer::default();
+            let name = if template {
+                render_oracle_ascension(&mut level_up, &state);
+                "debrief-ascension-deepens"
+            } else {
+                render_level_up(&mut level_up, &state);
+                "debrief-level-up-legacy"
+            };
+            maybe_write_preview(name, &level_up.pixels);
+        }
+    }
+
+    #[test]
+    fn the_bond_ascends_only_across_a_tier_and_names_the_next_lenses() {
+        assert_eq!(bond_title(2), "ORACLE BOND ASCENDS", "initiate to adept");
+        assert_eq!(bond_title(3), "ORACLE BOND DEEPENS", "adept stays adept");
+        assert_eq!(
+            bond_title(4),
+            "ORACLE BOND ASCENDS",
+            "adept to oracle-bound"
+        );
+        assert_eq!(bond_title(5), "ORACLE BOND DEEPENS");
+        for level in 2..=5 {
+            let [first, second] = Concept::focus_for_level(level) else {
+                panic!("each level focuses on two lenses");
+            };
+            assert_eq!(
+                next_focus_label(level),
+                format!("NEXT: {}+{}", first.label(), second.label())
+            );
+        }
+        assert_eq!(next_focus_label(4), "NEXT: INVARIANTS+TRADEOFFS");
+    }
+
+    #[test]
+    fn woken_lens_names_the_largest_rise_since_the_run_began() {
+        let mut state = GameState {
+            cartridge: Some(quiz_cartridge()),
+            ..Default::default()
+        };
+        start_quiz_run(&mut state);
+        assert_eq!(woken_lens(&state), None, "no evidence, no rise");
+
+        let cartridge = state.cartridge.as_mut().unwrap();
+        cartridge.mastery = Mastery::from([
+            (
+                Concept::Purpose,
+                LensRecord {
+                    first_try: 1,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Interaction,
+                LensRecord {
+                    first_try: 3,
+                    ..LensRecord::default()
+                },
+            ),
+            (
+                Concept::Tradeoff,
+                LensRecord {
+                    redeemed: 3,
+                    ..LensRecord::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            woken_lens(&state),
+            Some((Concept::Interaction, 2)),
+            "the largest rise wins and ties go to the earlier lens"
+        );
+
+        // A new run starts from the stages already lit: nothing has woken yet.
+        start_quiz_run(&mut state);
+        assert_eq!(
+            state.quiz.as_ref().unwrap().ledger.stages_at_start,
+            [1, 0, 2, 0, 2]
+        );
+        assert_eq!(woken_lens(&state), None);
+    }
+
+    #[test]
+    fn the_run_ledger_counts_first_tries_redemptions_and_open_reviews() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        // q0 and q1 right, q2 missed (its review joins the batch after three
+        // more), q3 and q4 right, q5 missed, the q2 review redeemed, and the
+        // q5 review missed on the last ward.
+        for correct in [true, true, false, true, true, false] {
+            assert!(!current_question(&engine).review);
+            commit(&mut engine, correct);
+            finish_lesson(&mut engine);
+        }
+        assert!(current_question(&engine).review);
+        commit(&mut engine, true);
+        finish_lesson(&mut engine);
+        assert!(current_question(&engine).review);
+        commit(&mut engine, false);
+
+        let state = engine_state(&engine);
+        let ledger = &state.quiz.as_ref().unwrap().ledger;
+        assert_eq!(ledger.first_try, 6);
+        assert_eq!(ledger.first_try_right, 4);
+        assert_eq!(ledger.redeemed, 1);
+        assert_eq!(ledger.batch_first_try, 6, "the batch never completed");
+        assert_eq!(
+            open_reviews(state),
+            state
+                .lessons()
+                .iter()
+                .filter(|lesson| lesson.outstanding)
+                .count()
+        );
+        assert_eq!(open_reviews(state), 1, "q2 was redeemed; q5 stays open");
+        let rows = ledger_rows(state, state.quiz.as_ref().unwrap());
+        assert_eq!(
+            rows.iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            // Four first-try successes and one redemption wake all three runes.
+            ["1ST TRY 4/6", "REDEEMED 01", "REVIEW 01", "ROLES III"]
+        );
+        finish_lesson(&mut engine);
+        assert_eq!(engine.screen(), Screen::GameOver);
+
+        let mut state = engine.app.world_mut().resource_mut::<GameState>();
+        start_quiz_run(&mut state);
+        let ledger = &state.quiz.as_ref().unwrap().ledger;
+        assert_eq!(
+            (ledger.first_try, ledger.first_try_right, ledger.redeemed),
+            (0, 0, 0),
+            "a new run starts a fresh ledger"
+        );
+        assert_eq!(
+            ledger.stages_at_start[1], 3,
+            "from the roles runes already lit"
+        );
+        assert_eq!(woken_lens(&state), None);
+    }
+
+    #[test]
+    fn a_completed_batch_snapshots_its_first_tries_for_the_level_up() {
+        let mut engine = batch_quiz_engine(QUESTION_BATCH_SIZE);
+        // q0 missed; its review arrives after three more and joins the batch.
+        commit(&mut engine, false);
+        finish_lesson(&mut engine);
+        while engine.screen() == Screen::Quiz {
+            commit(&mut engine, true);
+            finish_lesson(&mut engine);
+        }
+        assert_eq!(engine.screen(), Screen::LevelUp);
+        let ledger = &engine_state(&engine).quiz.as_ref().unwrap().ledger;
+        assert_eq!(ledger.last_batch, (5, 6), "six first tries, one missed");
+        assert_eq!(ledger.redeemed, 1);
+        assert_eq!(
+            (ledger.batch_first_try, ledger.batch_first_try_right),
+            (0, 0),
+            "the next batch counts from zero"
+        );
+        assert_eq!((ledger.first_try, ledger.first_try_right), (6, 5));
     }
 
     #[test]
@@ -9596,8 +10160,8 @@ mod tests {
             frame.pixels
         };
         assert_ne!(
-            frame_region(&early, 0..WIDTH, 145..156),
-            frame_region(&ready, 0..WIDTH, 145..156),
+            frame_region(&early, 0..WIDTH, 143..150),
+            frame_region(&ready, 0..WIDTH, 143..150),
             "the continue prompt appears with the hold"
         );
         press(&mut engine, Button::A);
@@ -10016,6 +10580,14 @@ mod tests {
                 level: 4,
                 streak: 3,
                 leveled_up: true,
+                ledger: RunLedger {
+                    first_try: 11,
+                    first_try_right: 7,
+                    redeemed: 2,
+                    last_batch: (4, 6),
+                    stages_at_start: [1, 2, 0, 1, 0],
+                    ..RunLedger::default()
+                },
                 ..QuizRun::new()
             }),
             questions_loading: true,
@@ -10094,6 +10666,10 @@ mod tests {
             previews.push(frame.pixels);
         }
         state.codex_page = 0;
+        // With a journal, the debrief names the lens that woke this run.
+        let mut ledger = Framebuffer::default();
+        render_oracle_aftermath(&mut ledger, &state);
+        maybe_write_preview("09b-aftermath-ledger", &ledger.pixels);
 
         state.quiz.as_mut().unwrap().selected = 1;
         state.quiz.as_mut().unwrap().feedback = Some((false, QUIZ_FEEDBACK_TICKS));

@@ -1175,7 +1175,7 @@ mod tests {
         assert_eq!(
             engine.transcript(),
             format!(
-                "Trial 1. Correct. REVIEW ANSWER. The answer: {}. Why it holds: {} \
+                "Trial 1. Correct. ROLES RUNE I. The answer: {}. Why it holds: {} \
                  Roles mastery: 1 of 3 runes. Wards 3 of 3, flow x1, score 100. \
                  A or Start continues after a short hold.",
                 question.choices[0], question.rationales[0]

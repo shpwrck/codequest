@@ -71,6 +71,11 @@ score. Every question assesses one of five concept lenses: **purpose**,
   every score banner, the new rune blinks on the lesson card, and it has its
   own chime. The Codex shows the runes with pending reviews, and pages through
   the lesson journal: question, answer, and rationale.
+- **Every ending is a debrief.** A level-up recaps the batch's first-try
+  successes and names the lenses the next batch focuses on. When the run ends,
+  the result screen adds a learning ledger to the score: first-try successes,
+  redemptions, reviews still open, and the lens whose runes woke this run (or
+  a pointer to the Codex while reviews remain).
 - **Generation adapts to you.** Each request names your weakest lens and the
   questions you have already been asked, so new batches target your gaps
   without repeating themselves.
