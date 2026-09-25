@@ -737,17 +737,14 @@ fn load_verified_question_batch_with<F>(
     count: usize,
     provider_state: &AiProviderState,
     generate: &F,
-) -> Vec<QQuestion>
+) -> Result<Vec<QQuestion>, String>
 where
     F: Fn(&std::path::Path, u32, usize, AiProvider) -> Result<Vec<QQuestion>, String>,
 {
-    let Some(provider) = provider_state.ready_provider() else {
-        return Vec::new();
-    };
-    generate(path, level, count, provider).unwrap_or_else(|error| {
-        eprintln!("CODE QUEST question generation failed: {error}");
-        Vec::new()
-    })
+    let provider = provider_state
+        .ready_provider()
+        .ok_or_else(|| "AI BATTERIES NOT VERIFIED".to_string())?;
+    generate(path, level, count, provider)
 }
 
 /// The engine's question loader: a fresh verified batch, without questions
@@ -758,13 +755,58 @@ fn load_new_questions_with<F>(
     count: usize,
     provider_state: &AiProviderState,
     generate: &F,
-) -> Vec<engine::QuizQuestion>
+) -> Result<Vec<engine::QuizQuestion>, String>
 where
     F: Fn(&std::path::Path, u32, usize, AiProvider) -> Result<Vec<QQuestion>, String>,
 {
-    let generated = load_verified_question_batch_with(path, level, count, provider_state, generate);
+    let generated =
+        load_verified_question_batch_with(path, level, count, provider_state, generate)?;
     let retired = questions::load_retired_questions(path).unwrap_or_default();
-    questions::playable_new_questions(generated, &retired)
+    Ok(questions::playable_new_questions(generated, &retired))
+}
+
+/// The short reason the waiting Oracle shows for a failed generation
+/// request. The full error goes to the log; the device gets its category.
+fn question_failure_reason(error: &str) -> String {
+    let error = error.to_ascii_uppercase();
+    let mentions = |needles: &[&str]| needles.iter().any(|needle| error.contains(needle));
+    if mentions(&["TIMED OUT"]) {
+        "TIMED OUT"
+    } else if mentions(&["CLI UNAVAILABLE"]) {
+        "CLI UNAVAILABLE"
+    } else if mentions(&[
+        "RATE LIMIT",
+        "RATE_LIMIT",
+        "USAGE LIMIT",
+        "TOO MANY REQUESTS",
+        "QUOTA",
+    ]) {
+        "RATE LIMITED"
+    } else if mentions(&["OVERLOADED"]) {
+        "PROVIDER OVERLOADED"
+    } else if mentions(&[
+        "LOG IN",
+        "LOGGED IN",
+        "LOGIN",
+        "AUTHENTICAT",
+        "UNAUTHORIZED",
+        "API KEY",
+    ]) {
+        "LOGIN NEEDED"
+    } else if mentions(&["NOT VERIFIED"]) {
+        "BATTERIES UNVERIFIED"
+    } else if mentions(&["NOT A GIT REPOSITORY"]) {
+        "NOT A GIT REPO"
+    } else if mentions(&["CALL FAILED"]) {
+        "CALL FAILED"
+    } else if mentions(&["QUESTION", "JSON", "CLI OUTPUT"]) {
+        "REJECTED BATCH"
+    } else if mentions(&["SAVE"]) {
+        "SAVE FAILED"
+    } else {
+        "GENERATION FAILED"
+    }
+    .to_string()
 }
 
 /// Builds the answer recorder the engine calls when a player commits an
@@ -952,7 +994,7 @@ pub fn run() {
     let question_provider_state = provider_state.clone();
     let question_loader: engine::QuestionLoader = Arc::new(move |path, level, count| {
         if environment_flag_enabled(std::env::var("CQA_NO_AI").ok().as_deref()) {
-            return Vec::new();
+            return Err("AI DISABLED".to_string());
         }
         load_new_questions_with(
             std::path::Path::new(&path),
@@ -961,6 +1003,10 @@ pub fn run() {
             &question_provider_state,
             &generate_and_save_questions,
         )
+        .map_err(|error| {
+            eprintln!("CODE QUEST question generation failed: {error}");
+            question_failure_reason(&error)
+        })
     });
     let (answered_question_recorder, _save_writer) = answer_recorder_with(|path, evidence| {
         let _ = questions::persist_answer_evidence(path, evidence);
@@ -1064,18 +1110,28 @@ mod question_policy_tests {
             Ok(generated)
         };
 
-        assert!(load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).is_empty());
+        let unverified = Err("AI BATTERIES NOT VERIFIED".to_string());
+        assert_eq!(
+            load_verified_question_batch_with(&repo, 1, 1, &providers, &generate),
+            unverified
+        );
 
         providers.select(Some(AiProvider::Codex)).unwrap();
-        assert!(load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).is_empty());
+        assert_eq!(
+            load_verified_question_batch_with(&repo, 1, 1, &providers, &generate),
+            unverified
+        );
         providers.mark_verified(AiProvider::Codex).unwrap();
-        let codex = load_verified_question_batch_with(&repo, 1, 1, &providers, &generate);
+        let codex = load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).unwrap();
         assert_eq!(codex[0].q, "WHAT DOES CODEX GENERATE?");
 
         providers.select(Some(AiProvider::Claude)).unwrap();
-        assert!(load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).is_empty());
+        assert_eq!(
+            load_verified_question_batch_with(&repo, 1, 1, &providers, &generate),
+            unverified
+        );
         providers.mark_verified(AiProvider::Claude).unwrap();
-        let claude = load_verified_question_batch_with(&repo, 1, 1, &providers, &generate);
+        let claude = load_verified_question_batch_with(&repo, 1, 1, &providers, &generate).unwrap();
         assert_eq!(claude[0].q, "WHAT DOES CLAUDE GENERATE?");
 
         assert_eq!(
@@ -1931,7 +1987,7 @@ mod question_policy_tests {
         let batch = vec![retired, missed.clone()];
         let generate = |_: &std::path::Path, _: u32, _: usize, _: AiProvider| Ok(batch.clone());
 
-        let loaded = load_new_questions_with(&repo, 2, 6, &providers, &generate);
+        let loaded = load_new_questions_with(&repo, 2, 6, &providers, &generate).unwrap();
 
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].question, missed.q);
@@ -1939,7 +1995,48 @@ mod question_policy_tests {
         assert_eq!(loaded[0].rationales, missed.rationales());
         assert!(!loaded[0].review);
 
+        let failing = |_: &std::path::Path, _: u32, _: usize, _: AiProvider| {
+            Err("CLAUDE CALL TIMED OUT".to_string())
+        };
+        assert_eq!(
+            load_new_questions_with(&repo, 2, 6, &providers, &failing).map(|batch| batch.len()),
+            Err("CLAUDE CALL TIMED OUT".to_string()),
+            "the loader passes a failure on instead of an empty batch"
+        );
+
         remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn question_failures_reach_the_device_as_short_categories() {
+        for (error, reason) in [
+            ("CLAUDE CALL TIMED OUT", "TIMED OUT"),
+            ("CODEX CLI UNAVAILABLE - NOT FOUND", "CLI UNAVAILABLE"),
+            (
+                "CLAUDE CALL FAILED - ERROR: RATE LIMIT REACHED FOR REQUESTS",
+                "RATE LIMITED",
+            ),
+            (
+                "CODEX CALL FAILED - USAGE LIMIT HIT. TRY AGAIN",
+                "RATE LIMITED",
+            ),
+            (
+                "CLAUDE CALL FAILED - API ERROR: OVERLOADED",
+                "PROVIDER OVERLOADED",
+            ),
+            ("CLAUDE CALL FAILED - INVALID API KEY", "LOGIN NEEDED"),
+            ("CODEX CALL FAILED - NOT LOGGED IN", "LOGIN NEEDED"),
+            ("AI BATTERIES NOT VERIFIED", "BATTERIES UNVERIFIED"),
+            ("NOT A GIT REPOSITORY", "NOT A GIT REPO"),
+            ("CODEX CALL FAILED - EXIT CODE 7", "CALL FAILED"),
+            ("INCOMPLETE OR INVALID QUESTIONS", "REJECTED BATCH"),
+            ("NO JSON IN RESPONSE", "REJECTED BATCH"),
+            ("BAD CLAUDE CLI OUTPUT", "REJECTED BATCH"),
+            ("COULD NOT SERIALIZE CARTRIDGE SAVE", "SAVE FAILED"),
+            ("something new went wrong", "GENERATION FAILED"),
+        ] {
+            assert_eq!(question_failure_reason(error), reason, "{error}");
+        }
     }
 
     #[test]

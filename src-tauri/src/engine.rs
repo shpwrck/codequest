@@ -502,8 +502,10 @@ pub struct QuizQuestion {
     pub review: bool,
 }
 
+/// Generates a question batch for a cartridge, level, and count. A failure
+/// carries a short upper-case reason the waiting Oracle shows the player.
 pub type QuestionLoader =
-    Arc<dyn Fn(String, u32, usize) -> Vec<QuizQuestion> + Send + Sync + 'static>;
+    Arc<dyn Fn(String, u32, usize) -> Result<Vec<QuizQuestion>, String> + Send + Sync + 'static>;
 pub type AnsweredQuestionRecorder = Arc<dyn Fn(String, AnswerEvidence) + Send + Sync + 'static>;
 
 pub fn quiz_question_fits(question: &str, choices: &[String], answer: usize) -> bool {
@@ -652,7 +654,8 @@ enum EngineCommand {
     Cartridge(Option<CartridgeSpec>),
     Questions {
         cartridge_id: String,
-        questions: Vec<QuizQuestion>,
+        /// The generated batch, or why generation failed.
+        result: Result<Vec<QuizQuestion>, String>,
         /// The `RequestQuestions` sequence number this reply answers.
         seq: u64,
     },
@@ -1203,6 +1206,9 @@ struct GameState {
     question_request_seq: u64,
     /// The level the newest question request asked for.
     question_request_level: u32,
+    /// Why the newest answered question request failed, as the Oracle line
+    /// shows it; cleared when a request succeeds or a cartridge is inserted.
+    question_failure: Option<String>,
     /// Deck prefix committed in this session; the next run drops it.
     consumed_questions: usize,
     oracle_hero_x: i32,
@@ -1240,6 +1246,7 @@ impl Default for GameState {
             question_retry_ticks: 0,
             question_request_seq: 0,
             question_request_level: 1,
+            question_failure: None,
             consumed_questions: 0,
             oracle_hero_x: 104,
             oracle_drops: Vec::new(),
@@ -1567,6 +1574,123 @@ impl GameState {
                 pending.min(99)
             )
         })
+    }
+
+    /// Journal lessons in the order the waiting Oracle recalls them:
+    /// outstanding misses first, then cleared lessons, each newest first.
+    fn recall_order(&self) -> Vec<&Lesson> {
+        let lessons = self.lessons();
+        let outstanding = lessons.iter().rev().filter(|lesson| lesson.outstanding);
+        let cleared = lessons.iter().rev().filter(|lesson| !lesson.outstanding);
+        outstanding.chain(cleared).collect()
+    }
+
+    /// The lesson the Oracle recalls now. Each wait starts from the top of
+    /// the recall order and moves on every `ORACLE_RECALL_TICKS`.
+    fn recalled_lesson(&self) -> Option<&Lesson> {
+        let order = self.recall_order();
+        let slot = (self.screen_ticks / ORACLE_RECALL_TICKS) as usize;
+        order.get(slot.checked_rem(order.len())?).copied()
+    }
+
+    /// The waiting Oracle's second status line. While a failed request waits
+    /// out its retry delay the line says why; otherwise it recalls a journal
+    /// lesson, and with no journal it keeps naming the last failure while
+    /// the retry is in flight. A ready question has no failure to explain.
+    fn oracle_line(&self) -> Option<OracleLine> {
+        let failure = self
+            .question_failure
+            .as_ref()
+            .filter(|_| !self.has_unanswered_question());
+        if let Some(reason) = failure.filter(|_| self.question_retry_ticks > 0) {
+            return Some(OracleLine::Failure {
+                reason: reason.clone(),
+                retry_in: Some(u64::from(self.question_retry_ticks).div_ceil(60)),
+            });
+        }
+        if let Some(lesson) = self.recalled_lesson() {
+            return Some(OracleLine::Recall {
+                outstanding: lesson.outstanding,
+                concept: lesson.concept,
+                answer: lesson.answer.clone(),
+            });
+        }
+        failure.map(|reason| OracleLine::Failure {
+            reason: reason.clone(),
+            retry_in: None,
+        })
+    }
+
+    /// Characters of the Oracle line drawn this tick. A newly recalled
+    /// lesson is written in over a few ticks; reduced motion shows it whole,
+    /// and a failure line is always whole.
+    fn oracle_line_reveal(&self, line: &OracleLine) -> usize {
+        match line {
+            OracleLine::Recall { .. } if !self.reduced_motion => {
+                ((self.screen_ticks % ORACLE_RECALL_TICKS) as usize + 1)
+                    * ORACLE_RECALL_REVEAL_PER_TICK
+            }
+            _ => usize::MAX,
+        }
+    }
+}
+
+/// The second line of a waiting Oracle's header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum OracleLine {
+    /// Why the last question request failed, and the whole seconds until the
+    /// retry, or `None` while the retry is in flight.
+    Failure {
+        reason: String,
+        retry_in: Option<u64>,
+    },
+    /// One journal lesson offered as retrieval practice.
+    Recall {
+        outstanding: bool,
+        concept: Option<Concept>,
+        answer: String,
+    },
+}
+
+/// Ticks each recalled lesson stays on the Oracle line: four seconds.
+const ORACLE_RECALL_TICKS: u64 = 240;
+/// Characters a newly recalled lesson reveals per tick.
+const ORACLE_RECALL_REVEAL_PER_TICK: usize = 2;
+/// Longest failure reason the Oracle line carries.
+const ORACLE_FAILURE_CHARS: usize = 24;
+
+/// A provider failure reason as the Oracle line shows it: one upper-case line
+/// of letters, digits, and simple punctuation, cut at a word boundary.
+fn oracle_failure_reason(reason: &str) -> String {
+    let cleaned: String = reason
+        .chars()
+        .map(|ch| {
+            let ch = ch.to_ascii_uppercase();
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | ':' | '.' | '/') {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let mut short = String::new();
+    for word in cleaned.split_whitespace() {
+        let separator = usize::from(!short.is_empty());
+        if short.chars().count() + separator + word.chars().count() > ORACLE_FAILURE_CHARS {
+            if short.is_empty() {
+                short = truncate(word, ORACLE_FAILURE_CHARS);
+            }
+            break;
+        }
+        if separator == 1 {
+            short.push(' ');
+        }
+        short.push_str(word);
+    }
+    if short.is_empty() {
+        "GENERATION FAILED".into()
+    } else {
+        short
     }
 }
 
@@ -2187,6 +2311,7 @@ fn apply_commands(
                 state.pending_questions = None;
                 state.questions_loading = false;
                 state.question_retry_ticks = 0;
+                state.question_failure = None;
                 // Replies to requests for the previous insert no longer land.
                 state.question_request_seq = state.question_request_seq.wrapping_add(1);
                 if state.cartridge.as_ref().is_some_and(|cartridge| {
@@ -2200,22 +2325,29 @@ fn apply_commands(
             }
             EngineCommand::Questions {
                 cartridge_id,
-                questions,
+                result,
                 seq,
             } => {
                 let is_current_quiz = state.cartridge.as_ref().is_some_and(|cartridge| {
                     cartridge.id == cartridge_id && cartridge.mode() == CartridgeMode::Quiz
                 });
                 // A superseded request's reply must not end the newer
-                // request's loading state or add a batch of its own.
+                // request's loading state, add a batch of its own, or
+                // report a failure the newer request has not had.
                 if !is_current_quiz || seq != state.question_request_seq {
                     continue;
                 }
                 state.questions_loading = false;
-                if questions.is_empty() {
-                    state.question_retry_ticks = 300;
-                    continue;
-                }
+                let questions = match result {
+                    Ok(questions) if !questions.is_empty() => questions,
+                    failed => {
+                        let reason = failed.err().unwrap_or_else(|| "NO NEW QUESTIONS".into());
+                        state.question_failure = Some(oracle_failure_reason(&reason));
+                        state.question_retry_ticks = 300;
+                        continue;
+                    }
+                };
+                state.question_failure = None;
                 state.question_retry_ticks = 0;
                 let level = state.question_request_level;
                 if state.screen == Screen::Quiz {
@@ -3051,6 +3183,95 @@ fn render_oracle_atelier(frame: &mut Framebuffer, state: &GameState) {
     frame.text(174, 148, "START:BIND", MIST, 1);
 }
 
+/// Header band heights of the Datafall scenes with one row, and with the
+/// Oracle line beneath it. The tall bands end above the highest drop.
+const SANCTUM_HEADER_HEIGHT: i32 = 15;
+const SANCTUM_TALL_HEADER_HEIGHT: i32 = 22;
+const LEGACY_HEADER_HEIGHT: i32 = 12;
+const LEGACY_TALL_HEADER_HEIGHT: i32 = 21;
+/// Where each Datafall scene writes its Oracle line.
+const SANCTUM_ORACLE_LINE_BOX: UiBox = UiBox {
+    x: 5,
+    y: 13,
+    width: 230,
+    height: 7,
+};
+const LEGACY_ORACLE_LINE_BOX: UiBox = UiBox {
+    x: 4,
+    y: 12,
+    width: 232,
+    height: 7,
+};
+
+/// Rendered width of text segments drawn one space apart.
+fn segments_width(segments: &[(String, Color)]) -> i32 {
+    let characters = segments
+        .iter()
+        .map(|(text, _)| text.chars().count())
+        .sum::<usize>()
+        + segments.len().saturating_sub(1);
+    text_width(&" ".repeat(characters), 1)
+}
+
+/// The Oracle line as colored segments that fit `width` pixels at full
+/// letter spacing. A recalled lesson drops its lens label before any of its
+/// answer would be cut.
+fn oracle_line_segments(line: &OracleLine, width: i32) -> Vec<(String, Color)> {
+    match line {
+        OracleLine::Failure { reason, retry_in } => vec![
+            (reason.clone(), AMBER),
+            (
+                match retry_in {
+                    Some(seconds) => format!("- RETRY IN {seconds}S"),
+                    None => "- RETRYING".into(),
+                },
+                MIST,
+            ),
+        ],
+        OracleLine::Recall {
+            outstanding,
+            concept,
+            answer,
+        } => {
+            let tag = if *outstanding {
+                ("REVIEW", AMBER)
+            } else {
+                ("RECALL", CYAN)
+            };
+            let mut segments = vec![(tag.0.to_string(), tag.1)];
+            if let Some(concept) = concept {
+                segments.push((format!("{}:", concept.label()), MIST));
+            }
+            segments.push((truncate(answer.trim(), QUIZ_CHOICE_CHARS), PARCH));
+            if segments.len() == 3 && segments_width(&segments) > width {
+                segments.remove(1);
+            }
+            segments
+        }
+    }
+}
+
+/// Draws the Oracle line inside `bounds`, as many characters of it as
+/// [`GameState::oracle_line_reveal`] allows this tick.
+fn draw_oracle_line(frame: &mut Framebuffer, bounds: UiBox, state: &GameState, line: &OracleLine) {
+    let segments = oracle_line_segments(line, bounds.width);
+    debug_assert!(
+        segments_width(&segments) <= bounds.width,
+        "Oracle line {line:?} does not fit {bounds:?}"
+    );
+    let mut remaining = state.oracle_line_reveal(line);
+    let mut x = bounds.x;
+    for (text, color) in segments {
+        if remaining == 0 {
+            break;
+        }
+        let shown = truncate(&text, remaining);
+        frame.text(x, bounds.y, &shown, color, 1);
+        remaining = remaining.saturating_sub(text.chars().count() + 1);
+        x += (text.chars().count() as i32 + 1) * GLYPH_ADVANCE;
+    }
+}
+
 fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
     if state.uses_visual_template(VisualTemplate::Sanctum) {
         render_oracle_sanctum(frame, state);
@@ -3061,9 +3282,18 @@ fn render_oracle(frame: &mut Framebuffer, state: &GameState) {
         let x = ((index * 71 + state.motion_ticks() as usize * 2) % WIDTH) as i32;
         frame.pixel(x, 14 + (index * 29 % 96) as i32, MIST);
     }
-    frame.rect(0, 0, WIDTH as i32, 12, NAVY);
-    frame.rect(0, 11, WIDTH as i32, 1, PLUM);
+    let oracle_line = state.oracle_line();
+    let header_height = if oracle_line.is_some() {
+        LEGACY_TALL_HEADER_HEIGHT
+    } else {
+        LEGACY_HEADER_HEIGHT
+    };
+    frame.rect(0, 0, WIDTH as i32, header_height, NAVY);
+    frame.rect(0, header_height - 1, WIDTH as i32, 1, PLUM);
     frame.text(4, 2, "ORACLE DATAFALL", GOLD, 1);
+    if let Some(line) = &oracle_line {
+        draw_oracle_line(frame, LEGACY_ORACLE_LINE_BOX, state, line);
+    }
     let status = if state.has_unanswered_question() {
         "QUESTION READY".to_string()
     } else if state.questions_loading {
@@ -3136,12 +3366,22 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         PresentationTier::Adept => frame.blit_rgb_graded(ORACLE_SANCTUM, 236, 250, 226),
         PresentationTier::OracleBound => frame.blit_rgb(ORACLE_SANCTUM),
     };
-    frame.rect(0, 0, WIDTH as i32, 15, VOID);
+    let oracle_line = state.oracle_line();
+    let (header_height, header_y) = if oracle_line.is_some() {
+        (SANCTUM_TALL_HEADER_HEIGHT, 4)
+    } else {
+        (SANCTUM_HEADER_HEIGHT, 5)
+    };
+    frame.rect(0, 0, WIDTH as i32, header_height, VOID);
+    if oracle_line.is_some() {
+        // The tall band covers the plate's own header rule; restate it.
+        frame.rect(0, header_height - 1, WIDTH as i32, 1, NAVY);
+    }
     frame.rect(0, 143, WIDTH as i32, 17, VOID);
-    frame.text(5, 5, "DATAFALL", AMBER, 1);
+    frame.text(5, header_y, "DATAFALL", AMBER, 1);
     frame.text(
         60,
-        5,
+        header_y,
         tier.label(),
         match tier {
             PresentationTier::Initiate => CYAN_DIM,
@@ -3160,7 +3400,10 @@ fn render_oracle_sanctum(frame: &mut Framebuffer, state: &GameState) {
         state.ai_provider_status("CHANNEL")
     };
     let status_width = status.chars().count() as i32 * GLYPH_ADVANCE - 1;
-    frame.text(235 - status_width, 5, &status, CYAN, 1);
+    frame.text(235 - status_width, header_y, &status, CYAN, 1);
+    if let Some(line) = &oracle_line {
+        draw_oracle_line(frame, SANCTUM_ORACLE_LINE_BOX, state, line);
+    }
 
     if tier == PresentationTier::OracleBound {
         for (x, y) in [
@@ -4388,10 +4631,10 @@ fn handle_effect(
             let sender = sender.clone();
             let loader = Arc::clone(question_loader);
             thread::spawn(move || {
-                let questions = loader(cartridge_id.clone(), level, count);
+                let result = loader(cartridge_id.clone(), level, count);
                 let _ = sender.send(EngineCommand::Questions {
                     cartridge_id,
-                    questions,
+                    result,
                     seq,
                 });
             });
@@ -4778,7 +5021,20 @@ mod tests {
             engine,
             EngineCommand::Questions {
                 cartridge_id: cartridge_id.into(),
-                questions,
+                result: Ok(questions),
+                seq,
+            },
+        );
+    }
+
+    /// Fails the engine's newest question request with `reason`.
+    fn fail(engine: &mut GameEngine, cartridge_id: &str, reason: &str) {
+        let seq = engine_state(engine).question_request_seq;
+        issue(
+            engine,
+            EngineCommand::Questions {
+                cartridge_id: cartridge_id.into(),
+                result: Err(reason.into()),
                 seq,
             },
         );
@@ -7645,7 +7901,7 @@ mod tests {
             &mut engine,
             EngineCommand::Questions {
                 cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![concept_question(0)],
+                result: Ok(vec![concept_question(0)]),
                 seq: first[0].1,
             },
         );
@@ -7660,7 +7916,7 @@ mod tests {
             &mut engine,
             EngineCommand::Questions {
                 cartridge_id: "/tmp/engine-test".into(),
-                questions: vec![concept_question(1)],
+                result: Ok(vec![concept_question(1)]),
                 seq: second[0].1,
             },
         );
@@ -7669,6 +7925,528 @@ mod tests {
         assert_eq!(
             state.cartridge.as_ref().unwrap().questions[0].question,
             concept_question(1).question
+        );
+    }
+
+    fn oracle_line_texts(state: &GameState) -> Vec<String> {
+        state
+            .oracle_line()
+            .map(|line| {
+                oracle_line_segments(&line, SANCTUM_ORACLE_LINE_BOX.width)
+                    .into_iter()
+                    .map(|(text, _)| text)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn question_failures_reach_the_oracle_line_and_clear_on_success() {
+        let mut engine = waiting_oracle_engine();
+        let current = engine_state(&engine).question_request_seq;
+        assert!(engine_state(&engine).questions_loading);
+
+        // A superseded request's failure, or another cartridge's, says
+        // nothing about the request still in flight.
+        issue(
+            &mut engine,
+            EngineCommand::Questions {
+                cartridge_id: "/tmp/engine-test".into(),
+                result: Err("TIMED OUT".into()),
+                seq: current.wrapping_sub(1),
+            },
+        );
+        fail(&mut engine, "/tmp/other-cartridge", "TIMED OUT");
+        let state = engine_state(&engine);
+        assert!(state.questions_loading, "the current request is in flight");
+        assert_eq!(state.question_failure, None);
+        assert_eq!(state.question_retry_ticks, 0);
+        assert_eq!(state.oracle_line(), None);
+
+        fail(&mut engine, "/tmp/engine-test", "timed out");
+        let state = engine_state(&engine);
+        assert!(!state.questions_loading);
+        assert_eq!(state.question_failure.as_deref(), Some("TIMED OUT"));
+        assert_eq!(
+            state.oracle_line(),
+            Some(OracleLine::Failure {
+                reason: "TIMED OUT".into(),
+                retry_in: Some(5),
+            })
+        );
+        assert_eq!(oracle_line_texts(state), ["TIMED OUT", "- RETRY IN 5S"]);
+        let frame = engine.frame();
+        let line = LEGACY_ORACLE_LINE_BOX;
+        let line_x = line.x as usize..(line.x + line.width) as usize;
+        let line_y = line.y as usize..(line.y + line.height) as usize;
+        assert!(
+            color_pixels_in_region(frame, AMBER, line_x.clone(), line_y.clone()) > 0,
+            "the Datafall header names the failure"
+        );
+
+        let mut requests = Vec::new();
+        for _ in 0..300 {
+            engine.update();
+            requests.extend(request_seqs(&engine.take_effects()));
+        }
+        assert_eq!(requests.len(), 1, "the existing retry delay still holds");
+        let state = engine_state(&engine);
+        assert!(state.questions_loading);
+        assert_eq!(
+            oracle_line_texts(state),
+            ["TIMED OUT", "- RETRYING"],
+            "without a journal the line keeps the last reason while retrying"
+        );
+
+        deliver(&mut engine, "/tmp/engine-test", vec![concept_question(0)]);
+        let state = engine_state(&engine);
+        assert_eq!(state.question_failure, None, "success clears the reason");
+        assert_eq!(state.oracle_line(), None);
+        let mut cleared = Framebuffer::default();
+        render_oracle(&mut cleared, state);
+        assert_eq!(
+            color_pixels_in_region(&cleared.pixels, AMBER, line_x, line_y),
+            0,
+            "the header returns to one row"
+        );
+    }
+
+    #[test]
+    fn an_empty_batch_is_reported_as_a_failure_too() {
+        let mut engine = waiting_oracle_engine();
+        deliver(&mut engine, "/tmp/engine-test", Vec::new());
+        let state = engine_state(&engine);
+        assert_eq!(state.question_failure.as_deref(), Some("NO NEW QUESTIONS"));
+        assert!(state.question_retry_ticks > 0);
+
+        // Inserting a cartridge forgets the previous cartridge's failure.
+        let mut cartridge = quiz_cartridge();
+        cartridge.questions.clear();
+        issue(&mut engine, EngineCommand::Cartridge(Some(cartridge)));
+        assert_eq!(engine_state(&engine).question_failure, None);
+    }
+
+    #[test]
+    fn failure_reasons_are_sanitized_to_one_short_device_line() {
+        assert_eq!(oracle_failure_reason("timed out"), "TIMED OUT");
+        assert_eq!(
+            oracle_failure_reason("CLI\nUNAVAILABLE \u{2014} \u{2713} not found"),
+            "CLI UNAVAILABLE NOT"
+        );
+        assert_eq!(
+            oracle_failure_reason("ONE TWO THREE FOUR FIVE SIX SEVEN"),
+            "ONE TWO THREE FOUR FIVE"
+        );
+        assert_eq!(
+            oracle_failure_reason("SUPERCALIFRAGILISTICEXPIALIDOCIOUS"),
+            "SUPERCALIFRAGILISTICEXPI"
+        );
+        for empty in ["", "   ", "\u{2603}\u{2603}"] {
+            assert_eq!(oracle_failure_reason(empty), "GENERATION FAILED");
+        }
+        for reason in [
+            "RATE LIMITED",
+            "a much longer reason than the oracle line has room to show",
+        ] {
+            let short = oracle_failure_reason(reason);
+            assert!(short.chars().count() <= ORACLE_FAILURE_CHARS, "{short}");
+            assert!(short
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == ' '));
+        }
+    }
+
+    fn recall_lesson(answer: &str, concept: Option<Concept>, outstanding: bool) -> Lesson {
+        Lesson {
+            question: format!("WHAT IS {answer}?"),
+            answer: answer.into(),
+            rationale: String::new(),
+            concept,
+            outstanding,
+        }
+    }
+
+    /// A waiting Oracle state whose journal holds `lessons`.
+    fn waiting_state_with(lessons: Vec<Lesson>) -> GameState {
+        let mut cartridge = oracle_template_cartridge();
+        cartridge.questions.clear();
+        cartridge.lessons = lessons;
+        GameState {
+            cartridge: Some(cartridge),
+            ai_provider: Some("CLAUDE".into()),
+            quiz: Some(QuizRun::new()),
+            questions_loading: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_oracle_recalls_missed_lessons_first_and_cycles_the_journal() {
+        let mut state = waiting_state_with(vec![
+            recall_lesson("OLDEST CLEARED", Some(Concept::Purpose), false),
+            recall_lesson("OLDER MISS", Some(Concept::Interaction), true),
+            recall_lesson("NEWER CLEARED", None, false),
+            recall_lesson("NEWEST MISS", Some(Concept::Invariant), true),
+        ]);
+        let answer_at = |state: &mut GameState, ticks: u64| {
+            state.screen_ticks = ticks;
+            state.recalled_lesson().map(|lesson| lesson.answer.clone())
+        };
+        let expected = [
+            "NEWEST MISS",
+            "OLDER MISS",
+            "NEWER CLEARED",
+            "OLDEST CLEARED",
+        ];
+        for (slot, answer) in expected.iter().enumerate() {
+            let start = slot as u64 * ORACLE_RECALL_TICKS;
+            assert_eq!(answer_at(&mut state, start).as_deref(), Some(*answer));
+            assert_eq!(
+                answer_at(&mut state, start + ORACLE_RECALL_TICKS - 1).as_deref(),
+                Some(*answer),
+                "each lesson holds for its whole slot"
+            );
+        }
+        assert_eq!(
+            answer_at(&mut state, 4 * ORACLE_RECALL_TICKS).as_deref(),
+            Some("NEWEST MISS"),
+            "the cycle wraps back to the top"
+        );
+
+        state.screen_ticks = 0;
+        assert_eq!(
+            oracle_line_texts(&state),
+            ["REVIEW", "INVARIANTS:", "NEWEST MISS"]
+        );
+        state.screen_ticks = 2 * ORACLE_RECALL_TICKS;
+        assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
+
+        // A failure waiting out its retry delay takes the line; once the
+        // retry is in flight the journal returns.
+        state.question_failure = Some("RATE LIMITED".into());
+        state.questions_loading = false;
+        state.question_retry_ticks = 61;
+        assert_eq!(oracle_line_texts(&state), ["RATE LIMITED", "- RETRY IN 2S"]);
+        state.question_retry_ticks = 0;
+        state.questions_loading = true;
+        assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
+
+        // A ready question has no failure to explain, but recall continues.
+        state.question_retry_ticks = 120;
+        state.cartridge.as_mut().unwrap().questions = vec![concept_question(0)];
+        assert_eq!(oracle_line_texts(&state), ["RECALL", "NEWER CLEARED"]);
+
+        assert_eq!(waiting_state_with(Vec::new()).oracle_line(), None);
+    }
+
+    #[test]
+    fn recalled_lessons_are_written_in_but_stay_static_under_reduced_motion() {
+        let header = |frame: &Framebuffer| {
+            frame.pixels[..WIDTH * SANCTUM_TALL_HEADER_HEIGHT as usize * 4].to_vec()
+        };
+        let mut state = waiting_state_with(journal_lessons());
+        let slot_start = ORACLE_RECALL_TICKS;
+        state.screen_ticks = slot_start;
+        let line = state.oracle_line().unwrap();
+        assert_eq!(
+            state.oracle_line_reveal(&line),
+            ORACLE_RECALL_REVEAL_PER_TICK
+        );
+        let mut arriving = Framebuffer::default();
+        render_oracle_sanctum(&mut arriving, &state);
+        maybe_write_preview("06f-sanctum-recall-arriving", &arriving.pixels);
+        state.screen_ticks = slot_start + 60;
+        let mut settled = Framebuffer::default();
+        render_oracle_sanctum(&mut settled, &state);
+        assert_ne!(
+            header(&arriving),
+            header(&settled),
+            "a new lesson is written in with motion"
+        );
+
+        state.reduced_motion = true;
+        assert_eq!(state.oracle_line_reveal(&line), usize::MAX);
+        for ticks in [
+            slot_start,
+            slot_start + 1,
+            slot_start + 30,
+            slot_start + 239,
+        ] {
+            state.screen_ticks = ticks;
+            let mut still = Framebuffer::default();
+            render_oracle_sanctum(&mut still, &state);
+            assert_eq!(
+                header(&still),
+                header(&settled),
+                "reduced motion shows the whole line at once and holds it still"
+            );
+        }
+    }
+
+    #[test]
+    fn recall_never_changes_datafall_play() {
+        let mut plain = waiting_oracle_engine();
+        let mut recalling = waiting_oracle_engine();
+        recalling
+            .app
+            .world_mut()
+            .resource_mut::<GameState>()
+            .cartridge
+            .as_mut()
+            .unwrap()
+            .lessons = journal_lessons();
+        for engine in [&mut plain, &mut recalling] {
+            issue(
+                engine,
+                EngineCommand::Input {
+                    button: Button::Right,
+                    pressed: true,
+                },
+            );
+            for _ in 0..240 {
+                engine.update();
+            }
+        }
+        let play = |engine: &GameEngine| {
+            let state = engine_state(engine);
+            format!(
+                "{:?} {} {} {}",
+                state.oracle_drops, state.oracle_hero_x, state.oracle_data, state.oracle_bug_hits
+            )
+        };
+        assert!(engine_state(&recalling).oracle_line().is_some());
+        assert_eq!(play(&plain), play(&recalling));
+        assert_eq!(recalling.screen(), Screen::Oracle);
+    }
+
+    #[test]
+    fn the_oracle_line_stays_contained_disjoint_and_readable() {
+        let screen = LayoutBounds {
+            x: 0,
+            y: 0,
+            width: WIDTH as i32,
+            height: HEIGHT as i32,
+        };
+        let longest_answer = "W".repeat(QUIZ_CHOICE_CHARS);
+        let worst_lines = [
+            OracleLine::Failure {
+                reason: "W".repeat(ORACLE_FAILURE_CHARS),
+                retry_in: Some(5),
+            },
+            OracleLine::Failure {
+                reason: "W".repeat(ORACLE_FAILURE_CHARS),
+                retry_in: None,
+            },
+            OracleLine::Recall {
+                outstanding: true,
+                concept: Some(Concept::Invariant),
+                answer: longest_answer.clone(),
+            },
+            OracleLine::Recall {
+                outstanding: false,
+                concept: Some(Concept::Invariant),
+                answer: "W".repeat(18),
+            },
+        ];
+        // The lens is kept whenever it fits beside the answer.
+        assert_eq!(
+            oracle_line_segments(&worst_lines[3], SANCTUM_ORACLE_LINE_BOX.width).len(),
+            3
+        );
+        assert_eq!(
+            oracle_line_segments(&worst_lines[2], SANCTUM_ORACLE_LINE_BOX.width)
+                .last()
+                .map(|(text, _)| text.clone()),
+            Some(longest_answer.clone()),
+            "the answer is never cut"
+        );
+
+        let drop_offset = DROP_SPRITE_SIZE as i32 / 2;
+        for (scene, band_height, band_color, line_box, row_one, hero) in [
+            (
+                "sanctum",
+                SANCTUM_TALL_HEADER_HEIGHT,
+                VOID,
+                SANCTUM_ORACLE_LINE_BOX,
+                vec![
+                    text_bounds(5, 4, "DATAFALL", 1),
+                    text_bounds(60, 4, "ORACLE-BOUND", 1),
+                    text_bounds(
+                        235 - text_width("CLAUDE:CHANNEL", 1),
+                        4,
+                        "CLAUDE:CHANNEL",
+                        1,
+                    ),
+                ],
+                LayoutBounds {
+                    x: ORACLE_HERO_MIN_X,
+                    y: 106,
+                    width: ORACLE_HERO_MAX_X + HERO_SPRITE_WIDTH as i32 - ORACLE_HERO_MIN_X,
+                    height: HERO_SPRITE_HEIGHT as i32,
+                },
+            ),
+            (
+                "legacy",
+                LEGACY_TALL_HEADER_HEIGHT,
+                NAVY,
+                LEGACY_ORACLE_LINE_BOX,
+                vec![
+                    text_bounds(4, 2, "ORACLE DATAFALL", 1),
+                    text_bounds(
+                        211 - text_width("CONTACTING CLAUDE", 1),
+                        2,
+                        "CONTACTING CLAUDE",
+                        1,
+                    ),
+                    text_bounds(216, 2, "...", 1),
+                ],
+                LayoutBounds {
+                    x: ORACLE_HERO_MIN_X,
+                    y: 111,
+                    width: ORACLE_HERO_MAX_X + 28 - ORACLE_HERO_MIN_X,
+                    height: 17,
+                },
+            ),
+        ] {
+            let band = LayoutBounds {
+                x: 0,
+                y: 0,
+                width: WIDTH as i32,
+                height: band_height,
+            };
+            let line = ui_box_bounds(line_box);
+            assert!(bounds_contains(screen, band), "{scene} band");
+            assert!(bounds_contains(band, line), "{scene} line inside its band");
+            for (index, element) in row_one.iter().enumerate() {
+                assert!(bounds_contains(band, *element), "{scene} row one {index}");
+                assert!(
+                    bounds_are_disjoint(*element, line),
+                    "{scene} row one {index} overlaps the line"
+                );
+            }
+            assert!(
+                bounds_are_disjoint(band, hero),
+                "{scene} band meets the hero"
+            );
+            for lane in [24, 54, 82, 112, 142, 210] {
+                let highest_drop = LayoutBounds {
+                    x: lane - drop_offset,
+                    y: 30 - drop_offset,
+                    width: DROP_SPRITE_SIZE as i32,
+                    height: DROP_SPRITE_SIZE as i32,
+                };
+                assert!(
+                    bounds_are_disjoint(band, highest_drop),
+                    "{scene} band would hide a falling drop in lane {lane}"
+                );
+            }
+            for worst in &worst_lines {
+                let segments = oracle_line_segments(worst, line_box.width);
+                let drawn = LayoutBounds {
+                    x: line_box.x,
+                    y: line_box.y,
+                    width: segments_width(&segments),
+                    height: 7,
+                };
+                assert!(
+                    bounds_contains(line, drawn),
+                    "{scene} {worst:?} overflows its line"
+                );
+                for (text, color) in &segments {
+                    assert!(
+                        contrast_ratio(*color, band_color) >= 4.5,
+                        "{scene} `{text}` is not readable on its band"
+                    );
+                }
+
+                // Every pixel the line draws stays inside its box.
+                let mut isolated = Framebuffer::default();
+                let state = GameState {
+                    reduced_motion: true,
+                    ..Default::default()
+                };
+                draw_oracle_line(&mut isolated, line_box, &state, worst);
+                for (index, pixel) in isolated.pixels.as_chunks::<4>().0.iter().enumerate() {
+                    if pixel[3] == 0 {
+                        continue;
+                    }
+                    let (x, y) = ((index % WIDTH) as i32, (index / WIDTH) as i32);
+                    assert!(
+                        bounds_contains(
+                            line,
+                            LayoutBounds {
+                                x,
+                                y,
+                                width: 1,
+                                height: 1,
+                            }
+                        ),
+                        "{scene} drew outside its line at ({x}, {y})"
+                    );
+                }
+            }
+        }
+
+        // With a line, nothing below the tall band changes: drops, hero,
+        // plate, and footer are exactly what the one-row scene shows.
+        let mut quiet = waiting_state_with(Vec::new());
+        quiet.oracle_drops = vec![OracleDrop {
+            x: 112,
+            y: 30,
+            kind: OracleDropKind::Data,
+        }];
+        let mut recalling = waiting_state_with(vec![recall_lesson(
+            &longest_answer,
+            Some(Concept::Invariant),
+            true,
+        )]);
+        recalling.oracle_drops = quiet.oracle_drops.clone();
+        recalling.screen_ticks = 60;
+        let mut cloudy = waiting_state_with(journal_lessons());
+        cloudy.oracle_drops = quiet.oracle_drops.clone();
+        cloudy.questions_loading = false;
+        cloudy.question_retry_ticks = 240;
+        cloudy.question_failure = Some("TIMED OUT".into());
+        let mut quiet_frame = Framebuffer::default();
+        render_oracle_sanctum(&mut quiet_frame, &quiet);
+        let below = SANCTUM_TALL_HEADER_HEIGHT as usize * WIDTH * 4;
+        for (name, state) in [
+            ("06c-sanctum-recall", &recalling),
+            ("06d-sanctum-cloudy", &cloudy),
+        ] {
+            let mut frame = Framebuffer::default();
+            render_oracle_sanctum(&mut frame, state);
+            maybe_write_preview(name, &frame.pixels);
+            assert_eq!(
+                frame.pixels[below..],
+                quiet_frame.pixels[below..],
+                "{name} changed the playfield"
+            );
+        }
+
+        let legacy_state = |lessons: Vec<Lesson>| {
+            let mut cartridge = quiz_cartridge();
+            cartridge.questions.clear();
+            cartridge.lessons = lessons;
+            GameState {
+                cartridge: Some(cartridge),
+                oracle_drops: recalling.oracle_drops.clone(),
+                screen_ticks: 60,
+                ..waiting_state_with(Vec::new())
+            }
+        };
+        let legacy_quiet = legacy_state(Vec::new());
+        let legacy_recalling = legacy_state(journal_lessons());
+        let mut legacy_quiet_frame = Framebuffer::default();
+        render_oracle(&mut legacy_quiet_frame, &legacy_quiet);
+        let mut legacy_frame = Framebuffer::default();
+        render_oracle(&mut legacy_frame, &legacy_recalling);
+        maybe_write_preview("06e-datafall-recall", &legacy_frame.pixels);
+        let legacy_below = LEGACY_TALL_HEADER_HEIGHT as usize * WIDTH * 4;
+        assert_eq!(
+            legacy_frame.pixels[legacy_below..],
+            legacy_quiet_frame.pixels[legacy_below..],
+            "the legacy line changed the playfield"
         );
     }
 
