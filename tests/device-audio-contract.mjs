@@ -310,6 +310,25 @@ assert.deepEqual(
   "Late notes and cuts end their voice now; notes in time keep their tick",
 );
 assert.ok(MAX_LATENESS_SECONDS >= 0.05, "Only clearly stale notes are skipped");
+{
+  // A note only slightly late still sounds, starting now rather than in the
+  // past; a zero-length note is a cut whatever its volume.
+  const slightly = createTickClock();
+  slightly.sync(100, 5);
+  const plan = planBatch(
+    slightly,
+    { tick: 106, notes: [note({ tick: 100 }), note({ voice: "wave", tick: 106, durationTicks: 0 })] },
+    5.1,
+  );
+  assert.deepEqual(
+    plan.map(({ note: { voice }, at, sounds }) => [voice, Number(at.toFixed(4)), sounds]),
+    [
+      ["pulse1", 5.1, true],
+      ["wave", Number((5.1 + SCHEDULE_LEAD_SECONDS).toFixed(4)), false],
+    ],
+    "A note 40 ms late starts at once, and a zero-length note never sounds",
+  );
+}
 
 /* ---------- Volume wheel detents ---------- */
 
@@ -352,6 +371,30 @@ assert.equal(WHEEL_GESTURE_GAP_MS, 200);
   assert.equal(roll(0, 0, 3001), 0, "Horizontal-only events leave the wheel alone");
   assert.equal(roll(-2, 0, 3002), 1, "Reversing direction mid-gesture responds at once");
   assert.equal(roll(Number.NaN, 0, 3003), 0);
+}
+{
+  // A pause ends the gesture, so each separate light nudge still clicks.
+  const roll = createWheelDetents();
+  assert.equal(rollGesture(roll, Array(5).fill(-4)), 1, "A light nudge turns one detent");
+  assert.equal(
+    rollGesture(roll, Array(5).fill(-4), { start: 1000 }),
+    1,
+    "A second nudge after a pause turns one more, not zero",
+  );
+  assert.equal(roll(-4, 0, 1100), 0, "Within one gesture, small travel waits for the next detent");
+}
+{
+  // A fast spin reported as one large event turns every detent it covers,
+  // and the keyboard end stops jump straight to MUTE and HIGH.
+  const shell = await bootShell({ storage: { [VOLUME_STORAGE_KEY]: "mute" } });
+  const wheel = shell.el("volume-wheel");
+  wheel.dispatch("wheel", { deltaY: -300 });
+  assert.equal(wheel.dataset.level, "high", "One 300 px spin turns the wheel three detents");
+  wheel.dispatch("keydown", { key: "Home" });
+  assert.equal(wheel.dataset.level, "mute", "Home rolls the wheel to MUTE");
+  wheel.dispatch("keydown", { key: "End" });
+  assert.equal(wheel.dataset.level, "high", "End rolls the wheel to HIGH");
+  shell.close();
 }
 {
   // The real adapter wires the accumulator into the wheel it renders.
@@ -414,6 +457,13 @@ assert.ok(pulse.wave, "Pulse voices use a duty-shaped periodic wave");
 assert.equal(wave.type, "triangle", "The wave voice is triangle-like");
 assert.equal(noiseSource.loop, true, "The noise voice loops a noise buffer");
 assert.ok(slid.frequency.events.some(([kind]) => kind === "exp"), "Slides glide the pitch");
+// Decay steps the volume down one unit every `decay` ticks: the noise note
+// (volume 12, decay 1, 6 ticks) ends halfway down; a held note stays level.
+const noiseEnvelope = noiseSource.output.gain.events;
+assert.deepEqual(noiseEnvelope.map(([kind]) => kind), ["set", "ramp"], "A decaying note ramps its volume");
+assert.ok(Math.abs(noiseEnvelope[1][1] - noiseEnvelope[0][1] / 2) < 1e-9, "Six of twelve decay steps halve it");
+assert.ok(Math.abs(noiseEnvelope[1][2] - (noiseSource.startAt + 6 / 60)) < 1e-9, "The ramp lands on the note's end");
+assert.deepEqual(pulse.output.gain.events.map(([kind]) => kind), ["set"], "A note without decay holds its volume");
 
 // A zero-volume note cuts its voice on the requested tick.
 speaker.play({ tick: 101, notes: [note({ tick: 101, volume: 0, durationTicks: 0 })] });
@@ -576,7 +626,13 @@ assert.deepEqual(
 
 /* ---------- Mute and persistence ---------- */
 
+const stillSounding = [noiseSource, slid, sources().at(-1)];
+assert.ok(stillSounding.every((source) => source.stopAt > audio.currentTime + 0.05), "Notes are still sounding");
 assert.equal(speaker.setVolume("mute"), "mute");
+assert.ok(
+  stillSounding.every((source) => source.stopAt <= audio.currentTime + 0.01),
+  "MUTE silences the notes already sounding, not only later ones",
+);
 assert.equal(storage.values.get(VOLUME_STORAGE_KEY), "mute", "The detent persists");
 const before = sources().length;
 assert.equal(speaker.play({ tick: 200, notes: [note({ tick: 200 })] }), 0, "MUTE schedules nothing");
@@ -584,6 +640,21 @@ assert.equal(sources().length, before);
 speaker.setVolume("high");
 assert.equal(storage.values.get(VOLUME_STORAGE_KEY), "high");
 assert.equal(speaker.play({ tick: 205, notes: [note({ tick: 205 })] }), 1);
+
+{
+  // A suspended context drops drained notes instead of replaying them as a
+  // burst, and the next gesture resumes it.
+  const suspended = createSpeaker({ AudioContextClass: FakeAudioContext, storage: memoryStorage() });
+  suspended.unlock();
+  const suspendedAudio = FakeAudioContext.last;
+  suspendedAudio.state = "suspended";
+  const nodeCount = suspendedAudio.nodes.length;
+  assert.equal(suspended.play({ tick: 100, notes: [note()] }), 0, "A suspended speaker schedules nothing");
+  assert.equal(suspendedAudio.nodes.length, nodeCount);
+  assert.equal(suspended.unlock(), true);
+  assert.equal(suspendedAudio.state, "running", "A later gesture resumes a suspended context");
+  assert.equal(suspended.play({ tick: 110, notes: [note({ tick: 110 })] }), 1);
+}
 
 const unavailable = createSpeaker({ AudioContextClass: null, storage: memoryStorage() });
 assert.equal(unavailable.unlock(), false, "A missing WebAudio implementation stays silent");
