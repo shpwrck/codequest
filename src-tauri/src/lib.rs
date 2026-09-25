@@ -213,12 +213,7 @@ const NOT_A_REPOSITORY: &str = "NOT A GIT REPOSITORY - CARTRIDGE REFUSED";
 /// folder) is an `Err` naming that cause, because it says nothing about the
 /// folder and the shell keeps such cartridges racked.
 fn git_repo_check_within(path: &std::path::Path, timeout: Duration) -> Result<bool, String> {
-    let mut command = git_repo_command(path);
-    // Untranslated messages, so the refusal below is recognized in any locale.
-    command
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .env("LC_ALL", "C");
-    let output = command_output_with_timeout(command, timeout, "GIT", None)?;
+    let output = command_output_with_timeout(git_repo_check_command(path), timeout, "GIT", None)?;
     if output.status.success() {
         return Ok(true);
     }
@@ -229,6 +224,16 @@ fn git_repo_check_within(path: &std::path::Path, timeout: Duration) -> Result<bo
         return Ok(false);
     }
     Err(format!("GIT CALL FAILED - {}", exit_reason(&output)))
+}
+
+/// The query behind [`git_repo_check_within`].
+fn git_repo_check_command(path: &std::path::Path) -> Command {
+    let mut command = git_repo_command(path);
+    // Untranslated messages, so the refusal is recognized in any locale.
+    command
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .env("LC_ALL", "C");
+    command
 }
 
 /// Succeeds when `path` is a repository; otherwise [`NOT_A_REPOSITORY`] or
@@ -291,6 +296,19 @@ fn repository_provenance(path: &std::path::Path) -> engine::RepositoryProvenance
         latest_year: latest_years.iter().max().copied(),
         copyright: explicit_copyright_notice(path),
     }
+}
+
+/// Cartridge label colors; each repository path keeps one of them.
+const CARTRIDGE_PALETTE: [&str; 8] = [
+    "#6a6fd1", "#38b764", "#e8a33d", "#b13e53", "#41a6f6", "#a06ee0", "#3ec8b8", "#d17ab0",
+];
+
+/// The label color for the cartridge at `path`, stable across loads.
+fn cartridge_color(path: &str) -> &'static str {
+    let h: usize = path
+        .bytes()
+        .fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
+    CARTRIDGE_PALETTE[h % CARTRIDGE_PALETTE.len()]
 }
 
 fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
@@ -383,12 +401,6 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
             &format!("cd {q} && make -n 2>&1 | head -40"),
         ));
     }
-    let palette = [
-        "#6a6fd1", "#38b764", "#e8a33d", "#b13e53", "#41a6f6", "#a06ee0", "#3ec8b8", "#d17ab0",
-    ];
-    let h: usize = p
-        .bytes()
-        .fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
     let mode = match codequest.as_ref().map(|config| config.game.game_type) {
         Some(GameType::Quiz) => "quiz",
         Some(GameType::Quest) => "custom",
@@ -403,7 +415,7 @@ fn build_cartridge(path: &std::path::Path) -> Result<Cartridge, String> {
         title: name,
         branch,
         revision,
-        color: palette[h % palette.len()].to_string(),
+        color: cartridge_color(&p).to_string(),
         path: p,
         mode: mode.to_string(),
         quests,
@@ -2554,5 +2566,272 @@ mod question_policy_tests {
         assert!(brief.contains("A tracked overview."));
 
         remove_temporary_repo(repo);
+    }
+
+    /// Runs git in `repo` as a fixed identity at `date` and asserts success.
+    fn git_in(repo: &std::path::Path, date: &str, args: &[&str]) -> String {
+        let output = external_tools::git_command()
+            .arg("-C")
+            .arg(repo)
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Ada Lovelace")
+            .env("GIT_AUTHOR_EMAIL", "ada@example.com")
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_NAME", "Ada Lovelace")
+            .env("GIT_COMMITTER_EMAIL", "ada@example.com")
+            .env("GIT_COMMITTER_DATE", date)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn the_repository_check_asks_git_for_untranslated_messages() {
+        let command = git_repo_check_command(std::path::Path::new("/repo"));
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| { key == "LC_ALL" && value == Some(std::ffi::OsStr::new("C")) }));
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args[args.len() - 2..],
+            ["rev-parse", "--is-inside-work-tree"]
+        );
+    }
+
+    #[test]
+    fn cartridges_without_a_named_head_show_placeholders() {
+        let repo = temporary_git_repo();
+        // An unborn branch has no revision; git's failed query must not
+        // leak its echo of the argument onto the label.
+        assert_eq!(build_cartridge(&repo).unwrap().revision, "-------");
+
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2024-01-02T12:00:00Z",
+            "first",
+        );
+        git_in(
+            &repo,
+            "2024-01-02T12:00:00Z",
+            &["checkout", "--quiet", "--detach"],
+        );
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.branch, "DETACHED HEAD");
+        assert_eq!(cartridge.revision.len(), 7);
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn the_first_year_is_the_oldest_of_several_root_commits() {
+        let repo = temporary_git_repo();
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2021-05-06T07:08:09Z",
+            "newer root",
+        );
+        let first_branch = git_in(
+            &repo,
+            "2021-05-06T07:08:09Z",
+            &["symbolic-ref", "--short", "HEAD"],
+        );
+        git_in(
+            &repo,
+            "2019-01-01T00:00:00Z",
+            &["checkout", "--quiet", "--orphan", "imported"],
+        );
+        commit_as(
+            &repo,
+            "Ada Lovelace",
+            "ada@example.com",
+            "2019-01-01T00:00:00Z",
+            "older root",
+        );
+        git_in(
+            &repo,
+            "2022-03-04T05:06:07Z",
+            &[
+                "merge",
+                "--quiet",
+                "--strategy=ours",
+                "--allow-unrelated-histories",
+                "-m",
+                "join histories",
+                &first_branch,
+            ],
+        );
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(cartridge.provenance.first_year, Some(2019));
+        assert_eq!(cartridge.provenance.latest_year, Some(2022));
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn a_dedicated_copyright_file_outranks_the_license_text() {
+        let repo = temporary_git_repo();
+        std::fs::write(
+            repo.join("LICENSE"),
+            "MIT License\n\nCopyright (c) 2024 License Holder\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("COPYRIGHT"), "Copyright 2020 Project Owner\n").unwrap();
+
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(
+            cartridge.provenance.copyright.as_deref(),
+            Some("Copyright 2020 Project Owner")
+        );
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn project_manifests_add_their_quests() {
+        let repo = temporary_git_repo();
+        let quest_ids = |cartridge: &Cartridge| -> Vec<String> {
+            cartridge
+                .quests
+                .iter()
+                .map(|quest| quest.id.clone())
+                .collect()
+        };
+        assert_eq!(
+            quest_ids(&build_cartridge(&repo).unwrap()),
+            ["scry", "barrow", "marsh"]
+        );
+
+        std::fs::write(
+            repo.join("package.json"),
+            r#"{"scripts":{"lint":"eslint .","build":"vite build","test":"node --test"}}"#,
+        )
+        .unwrap();
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::write(repo.join("Makefile"), "all:\n\ttrue\n").unwrap();
+        let cartridge = build_cartridge(&repo).unwrap();
+        assert_eq!(
+            quest_ids(&cartridge),
+            ["scry", "barrow", "marsh", "lint", "forge", "dungeon", "crates", "mines"]
+        );
+        let q = shquote(&shell_path(&std::fs::canonicalize(&repo).unwrap()));
+        let commands: Vec<&str> = cartridge.quests[3..]
+            .iter()
+            .map(|quest| quest.command.as_str())
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                format!("cd {q} && npm run lint"),
+                format!("cd {q} && npm run build"),
+                format!("cd {q} && npm test"),
+                format!("cd {q} && cargo check --color never 2>&1"),
+                format!("cd {q} && make -n 2>&1 | head -40"),
+            ]
+        );
+
+        // Each script is looked up by its own name.
+        std::fs::remove_file(repo.join("Cargo.toml")).unwrap();
+        std::fs::remove_file(repo.join("Makefile")).unwrap();
+        std::fs::write(
+            repo.join("package.json"),
+            r#"{"scripts":{"test":"node --test"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            quest_ids(&build_cartridge(&repo).unwrap()),
+            ["scry", "barrow", "marsh", "dungeon"]
+        );
+
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn a_codequest_story_file_alone_makes_a_custom_cartridge() {
+        let repo = temporary_git_repo();
+        assert_eq!(build_cartridge(&repo).unwrap().mode, "quiz");
+        std::fs::write(repo.join("CODEQUEST.md"), "# A hand-written quest\n").unwrap();
+        assert_eq!(build_cartridge(&repo).unwrap().mode, "custom");
+        remove_temporary_repo(repo);
+    }
+
+    #[test]
+    fn cartridge_colors_are_stable_per_path_and_spread_over_the_palette() {
+        assert_eq!(
+            cartridge_color("/repos/demo"),
+            cartridge_color("/repos/demo")
+        );
+        let colors: std::collections::BTreeSet<&str> = (0..64)
+            .map(|index| cartridge_color(&format!("/repos/project-{index}")))
+            .collect();
+        assert_eq!(colors.len(), CARTRIDGE_PALETTE.len());
+    }
+
+    #[test]
+    fn every_rate_limit_and_login_phrase_reaches_the_device_as_its_category() {
+        for (error, reason) in [
+            (
+                "CLAUDE CALL FAILED - ERROR: RATE_LIMIT_ERROR",
+                "RATE LIMITED",
+            ),
+            ("CODEX CALL FAILED - 429 TOO MANY REQUESTS", "RATE LIMITED"),
+            ("CODEX CALL FAILED - ERROR: QUOTA EXCEEDED", "RATE LIMITED"),
+            ("CLAUDE CALL FAILED - PLEASE LOG IN", "LOGIN NEEDED"),
+            ("CODEX CALL FAILED - RUN CODEX LOGIN", "LOGIN NEEDED"),
+            ("CLAUDE CALL FAILED - AUTHENTICATION FAILED", "LOGIN NEEDED"),
+            ("CODEX CALL FAILED - 401 UNAUTHORIZED", "LOGIN NEEDED"),
+        ] {
+            assert_eq!(question_failure_reason(error), reason, "{error}");
+        }
+    }
+
+    #[test]
+    fn every_tracked_path_below_the_cap_reaches_the_brief() {
+        let repo = temporary_git_repo();
+        std::fs::create_dir(repo.join("src")).unwrap();
+        for file in [
+            "README.md",
+            "src/main.rs",
+            "src/lib.rs",
+            "src/space name.rs",
+        ] {
+            std::fs::write(repo.join(file), "fn main() {}\n").unwrap();
+        }
+        git_in(&repo, "2024-01-02T12:00:00Z", &["add", "."]);
+
+        let canon = std::fs::canonicalize(&repo).unwrap();
+        assert_eq!(
+            tracked_files(&canon),
+            [
+                "README.md",
+                "src/lib.rs",
+                "src/main.rs",
+                "src/space name.rs"
+            ]
+        );
+
+        remove_temporary_repo(repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_call_stopped_by_a_signal_says_so() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "kill -9 $$"]);
+        let output =
+            command_output_with_timeout(command, Duration::from_secs(10), "CODEX", None).unwrap();
+        assert_eq!(
+            provider_reply(AiProvider::Codex, &output).unwrap_err(),
+            "CODEX CALL FAILED - STOPPED BY A SIGNAL"
+        );
     }
 }
