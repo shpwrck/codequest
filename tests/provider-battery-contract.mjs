@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { engineSource } from "./engine-source.mjs";
 
 import { reducedMotionCss } from "./contract-css.mjs";
 
@@ -7,7 +8,7 @@ const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8")
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const adapter = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
-const engine = readFileSync(new URL("../src-tauri/src/engine.rs", import.meta.url), "utf8");
+const engine = engineSource();
 const externalTools = readFileSync(
   new URL("../src-tauri/src/external_tools.rs", import.meta.url),
   "utf8",
@@ -437,7 +438,7 @@ assert.match(
 );
 assert.match(engine, /AiProvider\(Option<String>\)/, "The engine cannot render provider-aware status");
 assert.doesNotMatch(
-  engine.split("#[cfg(test)]")[0],
+  engineSource({ production: true }),
   /"CLAUDE:(?:READY|SCRYING|CLOUDY|CHANNEL)"/,
   "Engine status must not be hard-coded to Claude",
 );
