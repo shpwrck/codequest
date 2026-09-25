@@ -4,6 +4,7 @@ mod engine;
 mod external_tools;
 mod font5x7;
 mod learning;
+mod provenance;
 mod save;
 pub mod scene_machine;
 
@@ -20,6 +21,7 @@ use tauri_plugin_dialog::DialogExt;
 use wait_timeout::ChildExt;
 
 use codequest::{CodeQuestConfig, GameType};
+use provenance::sanitized_metadata;
 use scene_machine::{SceneMachineDefinition, SceneMachineTemplate};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -205,76 +207,38 @@ fn repository_revision(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "-------".to_string())
 }
 
-fn sanitized_metadata(value: &str, max_chars: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(max_chars)
-        .collect()
-}
-
 fn explicit_copyright_notice(path: &std::path::Path) -> Option<String> {
-    const NOTICE_FILES: [&str; 9] = [
-        "COPYRIGHT",
-        "COPYRIGHT.txt",
-        "COPYRIGHT.md",
-        "LICENSE",
-        "LICENSE.txt",
-        "LICENSE.md",
-        "NOTICE",
-        "NOTICE.txt",
-        "NOTICE.md",
-    ];
-
-    NOTICE_FILES.iter().find_map(|name| {
+    provenance::NOTICE_FILES.iter().find_map(|name| {
         let file = std::fs::File::open(path.join(name)).ok()?;
         let mut bytes = Vec::new();
         file.take(16 * 1024).read_to_end(&mut bytes).ok()?;
-        String::from_utf8_lossy(&bytes).lines().find_map(|line| {
-            let notice = sanitized_metadata(line, 96);
-            let lowercase = notice.to_ascii_lowercase();
-            let declares_copyright = lowercase.starts_with("copyright ")
-                || lowercase.starts_with("copyright(")
-                || lowercase.starts_with("(c) ")
-                || lowercase.starts_with("spdx-filecopyrighttext:")
-                || notice.starts_with('©');
-            declares_copyright.then_some(notice)
-        })
+        provenance::copyright_notice_in(&String::from_utf8_lossy(&bytes))
     })
 }
 
 fn repository_provenance(path: &std::path::Path) -> engine::RepositoryProvenance {
-    let authors = git_out(path, &["shortlog", "-sne", "--all"])
-        .lines()
-        .filter_map(|line| {
-            let author = line
-                .trim_start()
-                .trim_start_matches(|ch: char| ch.is_ascii_digit())
-                .trim();
-            let name = author
-                .rsplit_once(" <")
-                .map_or(author, |(name, _)| name)
-                .trim();
-            let name = sanitized_metadata(name, 64);
-            (!name.is_empty()).then_some(name)
-        })
-        .take(3)
-        .collect();
-
-    let years: Vec<u16> = git_out(path, &["log", "--all", "--format=%cd", "--date=format:%Y"])
-        .lines()
-        .filter_map(|year| year.parse().ok())
-        .collect();
+    let authors = provenance::ranked_authors(&git_out(path, &["shortlog", "-sn", "--all"]), 3);
+    let years = |args: &[&str]| -> Vec<u16> {
+        git_out(path, args)
+            .lines()
+            .filter_map(|year| year.trim().parse().ok())
+            .collect()
+    };
+    // Root commits bound the first year and the newest commit bounds the
+    // latest, so large histories are not formatted commit by commit.
+    let first_years = years(&[
+        "log",
+        "--all",
+        "--max-parents=0",
+        "--format=%cd",
+        "--date=format:%Y",
+    ]);
+    let latest_years = years(&["log", "--all", "-1", "--format=%cd", "--date=format:%Y"]);
 
     engine::RepositoryProvenance {
         authors,
-        first_year: years.iter().min().copied(),
-        latest_year: years.iter().max().copied(),
+        first_year: first_years.iter().min().copied(),
+        latest_year: latest_years.iter().max().copied(),
         copyright: explicit_copyright_notice(path),
     }
 }
