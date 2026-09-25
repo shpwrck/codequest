@@ -3421,4 +3421,233 @@ pub(crate) mod tests {
         assert_eq!(batch.merge_repairs(&request, &fixed, 6), 1);
         assert_eq!(batch.into_questions().unwrap().len(), 1);
     }
+
+    // Tests added by a mutation-testing sweep: each pins a behavior that a
+    // small, realistic code change could previously break without failing
+    // any test.
+
+    #[test]
+    fn a_question_on_both_progress_lists_stays_a_review_instead_of_retiring() {
+        // Saves written by earlier builds can list one question as both
+        // answered and missed; a miss must keep it playable.
+        let progress = SavedQuizProgress {
+            answered_questions: vec!["WHY WRITE SAVES ATOMICALLY?".into()],
+            missed_questions: vec!["why write saves  atomically?".into()],
+            ..SavedQuizProgress::default()
+        };
+        assert!(progress.retired().is_empty());
+
+        let loaded = cartridge_questions(
+            vec![SavedQuestionBatch {
+                level: 1,
+                questions: vec![QQuestion {
+                    q: "WHY WRITE SAVES ATOMICALLY?".into(),
+                    ..engine_state_question()
+                }],
+            }],
+            progress.clone(),
+        );
+        assert_eq!(loaded.questions.len(), 1);
+        assert!(loaded.questions[0].review);
+        assert!(loaded.lessons[0].outstanding);
+        assert_eq!(
+            playable_new_questions(
+                vec![QQuestion {
+                    q: "WHY WRITE SAVES ATOMICALLY?".into(),
+                    ..engine_state_question()
+                }],
+                &progress
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn years_are_trivia_across_the_whole_declared_range() {
+        let choices = [
+            "THE GAME ENGINE",
+            "THE DEVICE SHELL",
+            "THE STYLES",
+            "THE VIEW",
+        ];
+        for text in ["WHAT CHANGED IN 1990?", "WHAT CHANGED IN 2039?"] {
+            assert!(
+                !generated_question_is_acceptable(&question(text, &choices)),
+                "{text}"
+            );
+        }
+        for text in [
+            "WHY CAP SAVES AT 1989 BYTES?",
+            "WHY CAP SAVES AT 2040 BYTES?",
+        ] {
+            assert!(
+                generated_question_is_acceptable(&question(text, &choices)),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn three_segment_slashed_words_are_paths_even_without_known_directories() {
+        assert!(is_location_word("engine/input/keys"));
+        assert!(!generated_question_is_acceptable(&question(
+            "WHAT DOES ENGINE/INPUT/KEYS DO?",
+            &[
+                "THE GAME ENGINE",
+                "THE DEVICE SHELL",
+                "THE STYLES",
+                "THE VIEW"
+            ],
+        )));
+        assert!(
+            !is_location_word("input/output"),
+            "two plain words stay prose"
+        );
+    }
+
+    #[test]
+    fn legacy_questions_with_an_unknown_lens_are_not_acceptable() {
+        let choices = [
+            "THE GAME ENGINE",
+            "THE DEVICE SHELL",
+            "THE STYLES",
+            "THE VIEW",
+        ];
+        let mut known = legacy_question("WHAT SHOULD OWN GAMEPLAY STATE?", &choices);
+        known.concept = Some("Responsibilities".into());
+        assert!(question_is_acceptable(&known));
+
+        let mut unknown = known.clone();
+        unknown.concept = Some("file layout".into());
+        assert!(!question_is_acceptable(&unknown));
+
+        let saved = serde_json::json!({
+            "level": 1,
+            "questions": [
+                serde_json::to_value(&known).unwrap(),
+                serde_json::to_value(&unknown).unwrap(),
+            ],
+        });
+        assert_eq!(saved_batch(saved).unwrap().questions, [known]);
+    }
+
+    #[test]
+    fn a_repair_that_moves_the_answer_index_is_dropped_even_when_it_is_valid() {
+        let batch = over_length_batch();
+        let request = batch.repair_request(6).unwrap();
+        assert_eq!(request.originals[1].answer, 1);
+        // Otherwise a perfect repair of id 2, but the answer moved to 0.
+        let moved = r#"[{"id": 2, "q": "Why does loading a cartridge never run its code?", "concept": "invariant", "choices": [
+            {"text": "Only its own handlers act", "why": "Only the app's own handlers act, so a hostile project cannot."},
+            {"text": "Running code would be too slow", "why": "Misconception: speed is not why loaded code stays inert."},
+            {"text": "The shell cannot start programs", "why": "Misconception: the shell could, but loading never asks it to."},
+            {"text": "Saves would grow too large", "why": "Misconception: save size has nothing to do with running code."}
+        ], "answer": 0}]"#;
+        let mut merged = batch.clone();
+        assert_eq!(merged.merge_repairs(&request, moved, 6), 0);
+        assert_eq!(merged, batch);
+
+        let kept = moved.replace(
+            r#"{"text": "Only its own handlers act", "why": "Only the app's own handlers act, so a hostile project cannot."},
+            {"text": "Running code would be too slow", "why": "Misconception: speed is not why loaded code stays inert."},"#,
+            r#"{"text": "Running code would be too slow", "why": "Misconception: speed is not why loaded code stays inert."},
+            {"text": "Only its own handlers act", "why": "Only the app's own handlers act, so a hostile project cannot."},"#,
+        )
+        .replace(r#""answer": 0"#, r#""answer": 1"#);
+        assert_eq!(merged.merge_repairs(&request, &kept, 6), 1);
+        assert_eq!(merged.accepted.last().unwrap().answer, 1);
+    }
+
+    #[test]
+    fn a_full_tie_between_lenses_goes_to_the_earlier_lens() {
+        let record = |first_try, missed| learning::LensRecord {
+            first_try,
+            redeemed: 0,
+            missed,
+        };
+        let mut mastery = Mastery::new();
+        mastery.insert(Concept::Tradeoff, record(1, 1));
+        mastery.insert(Concept::Interaction, record(1, 1));
+        mastery.insert(Concept::Invariant, record(1, 1));
+        assert_eq!(weakest_lens(&mastery), Some(Concept::Interaction));
+    }
+
+    #[test]
+    fn the_focus_minimum_rounds_two_thirds_up() {
+        assert_eq!(
+            [1, 2, 3, 4, 5, 6, 12].map(focus_minimum),
+            [1, 2, 2, 3, 4, 4, 8]
+        );
+        let prompt = ai_question_prompt("DEMO", 1, 5, "BRIEF", &LearnerState::default());
+        assert!(prompt.contains("at least 4 of the 5 questions must use"));
+    }
+
+    #[test]
+    fn level_zero_batches_are_neither_saved_nor_loaded() {
+        let path = temporary_cartridge_path();
+        assert!(persist_ai_question_batch(&path, 0, &[engine_state_question()]).is_err());
+        let unsaved = save::SaveFile::open_or_create(&path).unwrap();
+        assert!(unsaved
+            .get::<serde_json::Value>(AI_QUESTION_BATCHES_KEY)
+            .is_none());
+
+        let mut save = save::SaveFile::open_or_create(&path).unwrap();
+        save.set(
+            AI_QUESTION_BATCHES_KEY,
+            &serde_json::json!([
+                { "level": 0, "questions": [serde_json::to_value(engine_state_question()).unwrap()] },
+                { "level": 2, "questions": [serde_json::to_value(engine_state_question()).unwrap()] },
+            ]),
+        )
+        .unwrap();
+        let loaded = load_saved_question_batches(&path).unwrap();
+        assert_eq!(
+            loaded.iter().map(|batch| batch.level).collect::<Vec<_>>(),
+            [2]
+        );
+        remove_save(&path);
+    }
+
+    #[test]
+    fn typographic_punctuation_folds_into_drawable_ascii() {
+        assert_eq!(
+            display_text("\u{2018}a\u{2019} \u{201C}b\u{201D} c\u{2010}d\u{2013}e\u{2014}f \u{2212}1 wait\u{2026}"),
+            "'A' \"B\" C-D-E-F -1 WAIT..."
+        );
+        let mut dashed = engine_state_question();
+        dashed.q = "Why does the engine own state \u{2014} not the shell?".into();
+        let normalized = normalized_question(dashed);
+        assert_eq!(
+            normalized.q,
+            "WHY DOES THE ENGINE OWN STATE - NOT THE SHELL?"
+        );
+        assert!(generated_question_is_acceptable(&normalized));
+    }
+
+    #[test]
+    fn each_undrawable_character_is_reported_once_in_order() {
+        let mut arrows = engine_state_question();
+        arrows.q = "WHY DOES STATE \u{2192} ENGINE \u{2192} FRAME \u{2260} SHELL?".into();
+        assert_eq!(
+            question_violations(&arrows),
+            [Violation::NotAscii {
+                field: Field::Question,
+                characters: vec!['\u{2192}', '\u{2260}'],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_question_that_fills_exactly_the_question_rows_is_accepted_without_diagnostics() {
+        let mut full = engine_state_question();
+        full.q = "WHY DOES THE ENGINE OWN EVERY RULE WHILE THE SHELL ONLY DRAWS THE FRAMES IT RECEIVES ON EACH TICK?"
+            .into();
+        assert_eq!(
+            engine::wrap_text(&full.q, engine::QUIZ_QUESTION_COLUMNS).len(),
+            engine::QUIZ_QUESTION_ROWS
+        );
+        assert!(generated_question_is_acceptable(&full));
+        assert_eq!(question_violations(&full), []);
+    }
 }

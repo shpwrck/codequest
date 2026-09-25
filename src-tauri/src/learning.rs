@@ -345,6 +345,9 @@ mod tests {
         assert_eq!(Concept::parse("data flow"), Some(Concept::Interaction));
         assert_eq!(Concept::parse("file layout"), None);
         assert_eq!(Concept::parse(""), None);
+        // Providers pad JSON strings; the lens survives surrounding whitespace.
+        assert_eq!(Concept::parse("  Purpose\n"), Some(Concept::Purpose));
+        assert_eq!(Concept::parse(" data flow "), Some(Concept::Interaction));
     }
 
     #[test]
