@@ -2200,4 +2200,294 @@ mod tests {
             assert_eq!(serde_json::to_value(duty).unwrap(), eighths);
         }
     }
+
+    #[test]
+    fn datafall_cues_name_the_single_event_that_changed() {
+        // (data, data_stage, bugs, breach_stage) after a settled 1/0/0/0 field.
+        let cases = [
+            ((2, 0, 0, 0), Cue::DataCollect(2)),
+            ((2, 1, 0, 0), Cue::ChargeRune(1)),
+            ((1, 0, 1, 0), Cue::BugHit),
+            ((1, 0, 1, 1), Cue::SealBreak(1)),
+            // A bug costs the run, so it outranks a pickup on the same tick.
+            ((2, 0, 1, 0), Cue::BugHit),
+        ];
+        for ((data, data_stage, bugs, breach_stage), expected) in cases {
+            let mut director = AudioDirector::default();
+            let mut snapshot = AudioSnapshot {
+                data: 1,
+                ..scene(AudioScene::Oracle)
+            };
+            run_for(&mut director, &mut snapshot, 5);
+            snapshot.data = data;
+            snapshot.data_stage = data_stage;
+            snapshot.bugs = bugs;
+            snapshot.breach_stage = breach_stage;
+            step(&mut director, &mut snapshot);
+            assert_eq!(
+                director.last_cue(),
+                Some(expected),
+                "{:?}",
+                (data, data_stage, bugs, breach_stage)
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_status_is_announced_once_when_it_changes() {
+        let mut director = AudioDirector::default();
+        let mut snapshot = scene(AudioScene::Oracle);
+        run_for(&mut director, &mut snapshot, 5);
+        for (status, expected) in [
+            (QuestionStatus::Writing, None),
+            (QuestionStatus::Retrying, Some(Cue::Retry)),
+            (QuestionStatus::Ready, Some(Cue::Ready)),
+        ] {
+            snapshot.questions = status;
+            step(&mut director, &mut snapshot);
+            assert_eq!(director.last_cue(), expected, "{status:?}");
+            for _ in 0..30 {
+                step(&mut director, &mut snapshot);
+                assert_eq!(director.last_cue(), None, "{status:?} repeated its cue");
+            }
+        }
+    }
+
+    #[test]
+    fn quiz_edges_start_one_cue_and_held_state_starts_none() {
+        let mut director = AudioDirector::default();
+        let mut snapshot = quiz_scene(3);
+        run_for(&mut director, &mut snapshot, 5);
+
+        // Redeeming a miss is rarer than a flow step, so it wins the commit.
+        let mut run = snapshot.run.unwrap();
+        run.phase = AnswerPhase::Correct;
+        run.multiplier = 2;
+        run.redeemed = true;
+        snapshot.run = Some(run);
+        step(&mut director, &mut snapshot);
+        assert_eq!(director.last_cue(), Some(Cue::Redeemed));
+
+        // The answer review ignores cursor moves and dead presses.
+        run.selected = 2;
+        snapshot.run = Some(run);
+        snapshot.held = pad::DOWN;
+        step(&mut director, &mut snapshot);
+        assert_eq!(director.last_cue(), None, "the review has no cursor");
+        snapshot.held = 0;
+        step(&mut director, &mut snapshot);
+        snapshot.held = pad::LEFT;
+        step(&mut director, &mut snapshot);
+        assert_eq!(
+            director.last_cue(),
+            None,
+            "the review keeps dead presses quiet"
+        );
+        snapshot.held = 0;
+
+        // A lens rune an earlier answer woke is not announced again.
+        run.question = 1;
+        run.phase = AnswerPhase::Choosing;
+        run.redeemed = false;
+        run.lens_woke = Some(1);
+        snapshot.run = Some(run);
+        step(&mut director, &mut snapshot);
+        assert_eq!(director.last_cue(), Some(Cue::QuestionReveal));
+        run_for(&mut director, &mut snapshot, 5);
+        run.phase = AnswerPhase::Correct;
+        snapshot.run = Some(run);
+        step(&mut director, &mut snapshot);
+        assert_eq!(director.last_cue(), Some(Cue::Correct));
+
+        // Arming the leave confirmation warns once, however long it stays armed.
+        run.question = 2;
+        run.phase = AnswerPhase::Choosing;
+        run.lens_woke = None;
+        snapshot.run = Some(run);
+        step(&mut director, &mut snapshot);
+        run_for(&mut director, &mut snapshot, 5);
+        run.leave_armed = true;
+        snapshot.run = Some(run);
+        step(&mut director, &mut snapshot);
+        assert_eq!(director.last_cue(), Some(Cue::LeaveWarning));
+        for _ in 0..30 {
+            step(&mut director, &mut snapshot);
+            assert_eq!(director.last_cue(), None, "an armed leave warns once");
+        }
+    }
+
+    #[test]
+    fn scene_entries_announce_where_the_player_came_from() {
+        use AudioScene as S;
+        let cases = [
+            (S::Title, S::QuizMenu, Some(Cue::Confirm)),
+            (S::QuizMenu, S::Title, Some(Cue::Cancel)),
+            (S::QuizMenu, S::Codex, Some(Cue::Confirm)),
+            (S::Codex, S::QuizMenu, Some(Cue::Cancel)),
+            (S::CharacterCreation, S::Oracle, Some(Cue::BeginRun)),
+            (S::Oracle, S::Quiz, Some(Cue::QuestionReveal)),
+            (S::Oracle, S::QuizMenu, Some(Cue::Leave)),
+            (S::Quiz, S::Oracle, Some(Cue::OracleEnter)),
+            (S::Quiz, S::LevelUp, Some(Cue::BatchComplete)),
+            (S::Quiz, S::GameOver, Some(Cue::Defeat)),
+            (S::GameOver, S::QuizMenu, Some(Cue::Replay)),
+            (S::QuestSelect, S::Battle, Some(Cue::Confirm)),
+            (S::Battle, S::Victory, Some(Cue::Victory)),
+            (S::Battle, S::Defeat, Some(Cue::Defeat)),
+            (S::Victory, S::QuestSelect, Some(Cue::Confirm)),
+            (S::Copyright, S::Opening(OpeningBeat::SourceEmber), None),
+            (S::Opening(OpeningBeat::OracleAwakening), S::Title, None),
+        ];
+        for (from, to, expected) in cases {
+            let mut director = AudioDirector::default();
+            let mut snapshot = scene(from);
+            run_for(&mut director, &mut snapshot, 5);
+            enter(&mut director, &mut snapshot, to);
+            assert_eq!(director.last_cue(), expected, "{from:?} -> {to:?}");
+        }
+
+        // Continuing from a level-up plays the arrangement of the tier reached.
+        let mut director = AudioDirector::default();
+        let mut snapshot = scene(S::LevelUp);
+        run_for(&mut director, &mut snapshot, 5);
+        snapshot.tier = Tier::Adept;
+        enter(&mut director, &mut snapshot, S::Oracle);
+        assert_eq!(director.last_cue(), Some(Cue::Continue(Tier::Adept)));
+
+        // A scene last seen without power announces nothing when power returns.
+        let mut director = AudioDirector::default();
+        let mut snapshot = AudioSnapshot {
+            powered: false,
+            ..scene(S::Defeat)
+        };
+        run_for(&mut director, &mut snapshot, 5);
+        snapshot.powered = true;
+        enter(&mut director, &mut snapshot, S::Title);
+        assert_eq!(director.last_cue(), None);
+    }
+
+    #[test]
+    fn re_entering_a_scene_restarts_its_script() {
+        let mut director = AudioDirector::default();
+        let mut snapshot = scene(AudioScene::Copyright);
+        let first = run_for(&mut director, &mut snapshot, 60);
+        assert_eq!(audible(&first).len(), ARCHIVE_REVEAL_TICKS.len());
+        // The engine restarts the scene: its tick count falls back to zero.
+        let mut again = enter(&mut director, &mut snapshot, AudioScene::Copyright);
+        again.extend(run_for(&mut director, &mut snapshot, 59));
+        assert_eq!(
+            audible(&again).len(),
+            ARCHIVE_REVEAL_TICKS.len(),
+            "a restarted chronicle ticks through its reveals again"
+        );
+    }
+
+    #[test]
+    fn a_new_cue_cuts_every_voice_the_previous_cue_still_sounds() {
+        let mut director = AudioDirector::default();
+        let mut snapshot = quiz_scene(3);
+        run_for(&mut director, &mut snapshot, 5);
+        let mut run = snapshot.run.unwrap();
+        run.phase = AnswerPhase::Wrong;
+        run.hearts = 2;
+        snapshot.run = Some(run);
+        let mut wrong = step(&mut director, &mut snapshot);
+        assert_eq!(director.last_cue(), Some(Cue::Wrong));
+        wrong.extend(run_for(&mut director, &mut snapshot, 4));
+
+        // The reveal speaks on the wave voice alone while the buzz still
+        // sounds on Pulse1; the buzz must not ring on under it.
+        run.question = 1;
+        run.phase = AnswerPhase::Choosing;
+        snapshot.run = Some(run);
+        let reveal = step(&mut director, &mut snapshot);
+        let tick = director.tick();
+        assert_eq!(director.last_cue(), Some(Cue::QuestionReveal));
+        let ringing = audible(&wrong)
+            .into_iter()
+            .filter(|note| note.end() > tick)
+            .map(|note| note.voice)
+            .collect::<BTreeSet<_>>();
+        assert!(ringing.contains(&Pulse1), "the buzz is still sounding");
+        for voice in ringing {
+            assert!(
+                reveal
+                    .iter()
+                    .any(|note| note.voice == voice && note.tick == tick),
+                "{voice:?} kept the wrong-answer buzz under the reveal"
+            );
+        }
+    }
+
+    #[test]
+    fn loops_reclaim_a_voice_as_soon_as_no_cue_holds_it() {
+        // The Initiate bass enters 32 ticks after the scene (tick 33) and next
+        // plays C3 on step 8, 80 ticks later: tick 113.
+        let bass_returns = |notes: &[Note]| {
+            notes
+                .iter()
+                .any(|note| note.voice == Wave && note.tick == 113 && note.pitch == C3)
+        };
+        // A seal break holds the wave voice for 18 ticks: one at tick 95 ends
+        // exactly at 113, and one at 105 is replaced by a pickup at 107.
+        for (seal_at, pickup_at) in [(95, None), (105, Some(107))] {
+            let mut director = AudioDirector::default();
+            let mut snapshot = scene(AudioScene::Oracle);
+            run_for(&mut director, &mut snapshot, seal_at - 1);
+            snapshot.bugs = 1;
+            snapshot.breach_stage = 1;
+            let mut notes = step(&mut director, &mut snapshot);
+            assert_eq!(director.tick(), seal_at);
+            assert_eq!(director.last_cue(), Some(Cue::SealBreak(1)));
+            if let Some(pickup_at) = pickup_at {
+                notes.extend(run_for(
+                    &mut director,
+                    &mut snapshot,
+                    pickup_at - seal_at - 1,
+                ));
+                snapshot.data = 1;
+                notes.extend(step(&mut director, &mut snapshot));
+                assert_eq!(director.last_cue(), Some(Cue::DataCollect(1)));
+            }
+            let remaining = 120 - director.tick();
+            notes.extend(run_for(&mut director, &mut snapshot, remaining));
+            assert!(
+                bass_returns(&notes),
+                "the bass must return at tick 113 after a seal break at {seal_at}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_heartbeat_stops_on_the_tick_the_last_ward_breaks() {
+        let mut director = AudioDirector::default();
+        let mut snapshot = quiz_scene(1);
+        // The bed enters at tick 25 and beats again at tick 33 for five ticks.
+        let bed = audible(&run_for(&mut director, &mut snapshot, 34));
+        assert!(bed
+            .iter()
+            .any(|note| note.voice == Wave && note.tick == 33 && note.end() > 35));
+
+        snapshot.run = Some(RunAudio {
+            phase: AnswerPhase::Wrong,
+            hearts: 0,
+            ..snapshot.run.unwrap()
+        });
+        let broken = step(&mut director, &mut snapshot);
+        assert_eq!(director.tick(), 35);
+        assert_eq!(director.last_cue(), Some(Cue::WardBreak));
+        assert!(
+            broken
+                .iter()
+                .any(|note| note.voice == Wave && note.tick == 35 && note.is_cut()),
+            "the sounding heartbeat is cut when the last ward breaks"
+        );
+        let after = audible(&run_for(&mut director, &mut snapshot, 200));
+        assert!(
+            !after
+                .iter()
+                .any(|note| note.pitch == A2 || note.pitch == NOISE_THUD),
+            "the heartbeat must not return with no ward left"
+        );
+    }
 }

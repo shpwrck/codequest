@@ -88,6 +88,11 @@ assert.equal(deviceMessageText(null, { fallback: "CODEX NOT READY" }), "CODEX NO
 assert.equal(deviceMessageText("X".repeat(400)).length, DEVICE_MESSAGE_MAX_LENGTH);
 assert.ok(deviceMessageText("X".repeat(400)).endsWith("…"));
 assert.equal(
+  deviceMessageText("Z".repeat(DEVICE_MESSAGE_MAX_LENGTH)),
+  "Z".repeat(DEVICE_MESSAGE_MAX_LENGTH),
+  "A message that exactly fits the device line is shown whole",
+);
+assert.equal(
   deviceMessageText("Y".repeat(80), { maxLength: GUIDE_MESSAGE_MAX_LENGTH }).length,
   GUIDE_MESSAGE_MAX_LENGTH,
 );
@@ -458,6 +463,24 @@ const poweredOn = (shell) => shell.calledWith("engine_power", ({ powered }) => p
   await shell.advance(180);
   assert.deepEqual(rackPaths(shell), []);
   assert.equal(shell.storage.getItem("cqa-cart-id"), null, "A recycled cartridge must not come back next launch");
+  shell.close();
+}
+
+// 29: what the rack learns is saved for the next launch.
+{
+  const shell = await bootShell({
+    storage: rackStorage(["/repos/big"]),
+    respond: { cartridge_branch: () => "story/next-chapter" },
+  });
+  await shell.key("KeyC");
+  assert.equal(
+    JSON.parse(shell.storage.getItem("cqa-repo-carts"))[0].branch,
+    "story/next-chapter",
+    "A refreshed branch label is saved with the rack",
+  );
+  await shell.dispatch(shell.rackCard(0), "keydown", { key: "Enter" });
+  assert.ok(shell.loaded);
+  assert.equal(shell.storage.getItem("cqa-cart-id"), "/repos/big", "A seated cartridge is reseated next launch");
   shell.close();
 }
 
