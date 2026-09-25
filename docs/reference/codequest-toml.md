@@ -109,12 +109,13 @@ Cycles and branches are allowed. Every declared scene must be reachable from
 | `repository-credits` | shared | `continue`, `elapsed` |
 | `opening-fanfare` | shared | `continue`, `elapsed` |
 | `title` | shared | `continue` |
-| `quiz-menu` | quiz | `new-run`, `back` |
+| `quiz-menu` | quiz | `new-run`, `open-codex`, `back` |
 | `character-creation` | quiz | `hero-ready`, `back` |
 | `oracle` | quiz | `questions-ready`, `back` |
 | `concept-quiz` | quiz | `needs-question`, `batch-complete`, `hearts-empty`, `back` |
 | `level-up` | quiz | `questions-ready`, `needs-question` |
 | `game-over` | quiz | `replay` |
+| `codex` | quiz | `back` |
 | `quest-select` | quest | `quest-selected`, `back` |
 | `battle` | quest | `victory`, `defeat` |
 | `victory` | quest | `continue` |
@@ -123,6 +124,24 @@ Cycles and branches are allowed. Every declared scene must be reachable from
 A transition using a signal that its handler cannot emit is rejected at
 cartridge load time. Quiz-only handlers are rejected in quest games and vice
 versa.
+
+The quiz menu's second option follows its routes. When the current menu scene
+declares an `open-codex` transition, that option reads `OPEN THE CODEX` and
+emits `open-codex`; otherwise it keeps `RETURN TO TITLE` and emits `back`. B
+always emits `back`, so a manifest without a Codex route behaves exactly as it
+did before the Codex existed. With the route, the menu subtitle also summarizes
+the lesson journal (for example `LESSONS 07  REVIEW 02`).
+
+The `codex` handler is a read-only lesson journal. Its first page shows every
+concept lens with three mastery runes that wake at exactly 1, 3, and 5 pieces
+of evidence (first-try successes plus redeemed misses) and an amber count of
+that lens's lessons awaiting review. Each later page shows one lesson, oldest
+first: lens, question, correct answer, rationale, and whether a review is
+pending. Left, Up, and L page back; Right, Down, and R page forward; paging
+wraps between the mastery page and the newest lesson. A and Start are
+deliberately inactive, and B emits `back`. An empty journal renders an explicit
+`NO LESSONS YET` state. The built-in quiz template (used without a manifest)
+includes `quiz-menu` → `codex` → `quiz-menu`.
 
 ## Mechanics
 
@@ -169,16 +188,20 @@ The built-in Oracle template catalog is:
 - `oracle-ascension`
 - `oracle-aftermath`
 - `oracle-progression`
+- `oracle-codex`
 
 Scene handlers activate a visual template only when the current scene references
-the corresponding art entry. `oracle-hero` and `oracle-progression` are shared
+the corresponding art entry. `oracle-codex` composites the Codex mastery page on
+the dormant archive plate and each lesson page on the trial-chamber plate; a
+Codex scene without it uses the plain legacy renderer. `oracle-hero` and
+`oracle-progression` are shared
 systems: once selected by the cartridge, they preserve the chosen hero and
 Initiate/Adept/Oracle-bound visual tier across the scenes that use them. Unknown
 template names are rejected instead of falling back silently.
 
-Renderer changes can emit all thirteen reachable Oracle scenes—including the
-five-beat opening story—as native 240×160 PPM files for visual review without
-packaging the application:
+Renderer changes can emit all fourteen reachable Oracle scenes—including the
+five-beat opening story and both Codex page layouts—as native 240×160 PPM files
+for visual review without packaging the application:
 
 ```bash
 CQA_VISUAL_PREVIEW_DIR=/tmp/codequest-previews \

@@ -16,6 +16,7 @@ templates selected by `art[].template` in `CODEQUEST.toml`.
 | `oracle-ascension` | `ascension.png` | Hero rise, earned tier, level, batch, hold/continue state |
 | `oracle-aftermath` | `aftermath.png` | Defeated hero, final score, earned tier, replay prompt |
 | `oracle-progression` | shared plates | Cyan/gold balance, hero identity, and earned tier across the run |
+| `oracle-codex` | `chronicle.png`, `trial.png`, `portrait-*.png` | Lens mastery runes (1/3/5 evidence), pending-review counts, and learned/pending totals inside the archive frame; one lesson per page (counter, lens, question, answer, rationale, review status) over the trial chamber |
 
 The PNG files are the inspectable source assets. Matching `.rgb` files are the
 dependency-free native buffers embedded by the Rust renderer. Hero and portrait
