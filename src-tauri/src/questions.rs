@@ -3448,7 +3448,7 @@ pub(crate) mod tests {
             progress.clone(),
         );
         assert_eq!(loaded.questions.len(), 1);
-        assert!(loaded.questions[0].review);
+        assert_eq!(loaded.questions[0].review, Review::Spaced);
         assert!(loaded.lessons[0].outstanding);
         assert_eq!(
             playable_new_questions(
@@ -3563,8 +3563,8 @@ pub(crate) mod tests {
     fn a_full_tie_between_lenses_goes_to_the_earlier_lens() {
         let record = |first_try, missed| learning::LensRecord {
             first_try,
-            redeemed: 0,
             missed,
+            ..learning::LensRecord::default()
         };
         let mut mastery = Mastery::new();
         mastery.insert(Concept::Tradeoff, record(1, 1));
